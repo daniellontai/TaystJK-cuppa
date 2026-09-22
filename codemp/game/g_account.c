@@ -1,4 +1,5 @@
 #include "g_local.h"
+#include "g_secretcourses.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -2019,6 +2020,36 @@ void Cmd_Unlocks_f(gentity_t *ent) {
 }
 
 void StripWhitespace(char *s);
+static void SC_RecordActiveCourseRun(sqlite3 *db, const char *username, const char *coursename, int style, int duration_ms, int topspeed, int average, time_t end_time) {
+	sqlite3_stmt *stmt;
+	const char *id = NULL;
+	int s;
+	char courseId[64] = {0};
+
+	CALL_SQLITE(prepare_v2(db, "SELECT id FROM LocalSecretCourse WHERE course_name = ? AND retired_at IS NULL AND starts_at <= ? AND (type = 1 OR expires_at > ?) LIMIT 1", -1, &stmt, NULL));
+	CALL_SQLITE(bind_text(stmt, 1, coursename, -1, SQLITE_STATIC));
+	CALL_SQLITE(bind_int64(stmt, 2, (sqlite3_int64)end_time));
+	CALL_SQLITE(bind_int64(stmt, 3, (sqlite3_int64)end_time));
+	s = sqlite3_step(stmt);
+	if (s == SQLITE_ROW) id = (const char *)sqlite3_column_text(stmt, 0);
+	if (id) Q_strncpyz(courseId, id, sizeof(courseId));
+	CALL_SQLITE(finalize(stmt));
+	if (!courseId[0]) return;
+
+	CALL_SQLITE(prepare_v2(db, "SELECT duration_ms FROM LocalSecretCourseRun WHERE secret_course_id = ? AND username = ? AND style = ?", -1, &stmt, NULL));
+	CALL_SQLITE(bind_text(stmt, 1, courseId, -1, SQLITE_STATIC));
+	CALL_SQLITE(bind_text(stmt, 2, username, -1, SQLITE_STATIC));
+	CALL_SQLITE(bind_int(stmt, 3, style));
+	s = sqlite3_step(stmt);
+	if (s == SQLITE_ROW && sqlite3_column_int(stmt, 0) <= duration_ms) { CALL_SQLITE(finalize(stmt)); return; }
+	CALL_SQLITE(finalize(stmt));
+	CALL_SQLITE(prepare_v2(db, "INSERT OR REPLACE INTO LocalSecretCourseRun (secret_course_id, username, style, duration_ms, topspeed, average, end_time) VALUES (?, ?, ?, ?, ?, ?, ?)", -1, &stmt, NULL));
+	CALL_SQLITE(bind_text(stmt, 1, courseId, -1, SQLITE_STATIC));
+	CALL_SQLITE(bind_text(stmt, 2, username, -1, SQLITE_STATIC));
+	CALL_SQLITE(bind_int(stmt, 3, style)); CALL_SQLITE(bind_int(stmt, 4, duration_ms)); CALL_SQLITE(bind_int(stmt, 5, topspeed)); CALL_SQLITE(bind_int(stmt, 6, average)); CALL_SQLITE(bind_int64(stmt, 7, (sqlite3_int64)end_time));
+	if (sqlite3_step(stmt) != SQLITE_DONE) G_ErrorPrint("ERROR: Failed to record Secret Course run", sqlite3_errcode(db));
+	CALL_SQLITE(finalize(stmt));
+}
 void G_AddRaceTime(char *username, char *message, int duration_ms, int style, int topspeed, int average, int clientNum, int awesomenoise, int worldrecordnoise) {//should be short.. but have to change elsewhere? is it worth it?
 	time_t	rawtime;
 	char	string[1024] = {0}, info[1024] = {0}, coursename[40], timeStr[32] = {0}, styleString[32] = {0};
@@ -2061,6 +2092,7 @@ void G_AddRaceTime(char *username, char *message, int duration_ms, int style, in
 		trap->FS_Write(string, strlen(string), level.raceLog); //Always write to text file races.log
 
 	CALL_SQLITE(open(LOCAL_DB_PATH, &db));
+	SC_RecordActiveCourseRun(db, username, coursename, style, duration_ms, topspeed, average, rawtime);
 
 	sql = "SELECT MIN(duration_ms), season_rank FROM LocalRun WHERE username = ? AND coursename = ? AND style = ? AND season = ? "
 		"UNION ALL SELECT MIN(duration_ms), rank FROM LocalRun WHERE username = ? AND coursename = ? AND style = ? AND invalid = 0";
@@ -2543,6 +2575,7 @@ void Cmd_ACLogin_f( gentity_t *ent ) { //loda fixme show lastip ? or use lastip 
 				if (flags & (1 << i))//Problem, only add to flags, not remove?
 					ent->client->sess.accountFlags |= (1 << i);
 			}
+			SC_NotifyConfigRevisionAfterAdminLogin(ent);
 		}
 		else {
 			trap->SendServerCommand(ent - g_entities, "print \"Incorrect password!\n\"");
@@ -7540,6 +7573,31 @@ void InitGameAccountStuff( void ) { //Called every mapload , move the create tab
 		G_ErrorPrint("ERROR: SQL Create Failed (InitGameAccountStuff 5)", s);
 	CALL_SQLITE(finalize(stmt));
 
+	/* Configuration-owned Secret Course projection. LocalSecretCourses remains
+	 * temporarily for legacy active-course migration during rollout. */
+	sql = "CREATE TABLE IF NOT EXISTS LocalSecretCourse(id VARCHAR(64) PRIMARY KEY, course_name VARCHAR(40) NOT NULL UNIQUE, type UNSIGNED TINYINT NOT NULL, season_id VARCHAR(32), starts_at INTEGER NOT NULL, expires_at INTEGER, applied_revision VARCHAR(64) NOT NULL, retired_at INTEGER)";
+	CALL_SQLITE(prepare_v2(db, sql, strlen(sql) + 1, &stmt, NULL));
+	s = sqlite3_step(stmt);
+	if (s != SQLITE_DONE)
+		G_ErrorPrint("ERROR: SQL Create Failed (InitGameAccountStuff LocalSecretCourse)", s);
+	CALL_SQLITE(finalize(stmt));
+
+	sql = "CREATE TABLE IF NOT EXISTS LocalSecretCourseMeta(key TEXT PRIMARY KEY, value TEXT NOT NULL)";
+	CALL_SQLITE(prepare_v2(db, sql, strlen(sql) + 1, &stmt, NULL));
+	s = sqlite3_step(stmt);
+	if (s != SQLITE_DONE)
+		G_ErrorPrint("ERROR: SQL Create Failed (InitGameAccountStuff LocalSecretCourseMeta)", s);
+	CALL_SQLITE(finalize(stmt));
+
+	/* This table intentionally records Secret Course PBs separately from the
+	 * mutable all-time LocalRun table. */
+	sql = "CREATE TABLE IF NOT EXISTS LocalSecretCourseRun(id INTEGER PRIMARY KEY, secret_course_id VARCHAR(64) NOT NULL, username VARCHAR(16) NOT NULL, style UNSIGNED TINYINT NOT NULL, duration_ms UNSIGNED INTEGER NOT NULL, topspeed UNSIGNED SMALLINT, average UNSIGNED SMALLINT, end_time INTEGER NOT NULL, UNIQUE(secret_course_id, username, style))";
+	CALL_SQLITE(prepare_v2(db, sql, strlen(sql) + 1, &stmt, NULL));
+	s = sqlite3_step(stmt);
+	if (s != SQLITE_DONE)
+		G_ErrorPrint("ERROR: SQL Create Failed (InitGameAccountStuff LocalSecretCourseRun)", s);
+	CALL_SQLITE(finalize(stmt));
+
 #if _ELORANKING
 	/*
 	sql = "CREATE TABLE IF NOT EXISTS DuelRanks(id INTEGER PRIMARY KEY, username VARCHAR(16), type UNSIGNED SMALLINT, rank DECIMAL(6,2), TSSUM DECIMAL(9,2), count UNSIGNED INTEGER)"; //We only need like 2 decimal precision here so how do that in sqlite C? --todo
@@ -8386,6 +8444,127 @@ void SC_Cmd_RemoveSecret_f(gentity_t *ent) {
 
     trap->SendServerCommand(ent - g_entities, 
         va("print \"Secret course removed: ^3%s^7\n\"", fullCourseName));
+}
+
+qboolean SC_DBGetAppliedRevision(char revision[65])
+{
+	sqlite3 *db;
+	sqlite3_stmt *stmt;
+	int result;
+
+	if (!revision) return qfalse;
+	revision[0] = '\0';
+	CALL_SQLITE(open(LOCAL_DB_PATH, &db));
+	result = sqlite3_prepare_v2(db, "SELECT value FROM LocalSecretCourseMeta WHERE key = 'revision'", -1, &stmt, NULL);
+	if (result == SQLITE_OK && sqlite3_step(stmt) == SQLITE_ROW)
+		Q_strncpyz(revision, (const char *)sqlite3_column_text(stmt, 0), 65);
+	if (result == SQLITE_OK) CALL_SQLITE(finalize(stmt));
+	CALL_SQLITE(close(db));
+	return qtrue;
+}
+
+qboolean SC_DBPlanProjection(const sc_config_t *config, sc_projection_plan_t *plan)
+{
+	sqlite3 *db;
+	sqlite3_stmt *stmt;
+	int result;
+	int index;
+
+	if (!config || !plan) return qfalse;
+	memset(plan, 0, sizeof(*plan));
+	CALL_SQLITE(open(LOCAL_DB_PATH, &db));
+	result = sqlite3_prepare_v2(db, "SELECT id, course_name, type, retired_at FROM LocalSecretCourse", -1, &stmt, NULL);
+	if (result != SQLITE_OK) { CALL_SQLITE(close(db)); return qfalse; }
+	while ((result = sqlite3_step(stmt)) == SQLITE_ROW) {
+		const char *id = (const char *)sqlite3_column_text(stmt, 0);
+		const char *course_name = (const char *)sqlite3_column_text(stmt, 1);
+		int found = -1;
+		for (index = 0; index < config->num_courses; index++)
+			if (!strcmp(id, config->courses[index].id)) { found = index; break; }
+		if (found < 0) {
+			if (sqlite3_column_type(stmt, 3) == SQLITE_NULL) plan->retirements++;
+		} else if (strcmp(course_name, config->courses[found].course_name) ||
+			sqlite3_column_int(stmt, 2) != config->courses[found].type) {
+			plan->changes++;
+		} else if (sqlite3_column_type(stmt, 3) != SQLITE_NULL) {
+			plan->retirements++;
+		}
+	}
+	CALL_SQLITE(finalize(stmt));
+	if (result != SQLITE_DONE) { CALL_SQLITE(close(db)); return qfalse; }
+	for (index = 0; index < config->num_courses; index++) {
+		int exists = 0;
+		result = sqlite3_prepare_v2(db, "SELECT 1 FROM LocalSecretCourse WHERE id = ?", -1, &stmt, NULL);
+		if (result != SQLITE_OK) { CALL_SQLITE(close(db)); return qfalse; }
+		CALL_SQLITE(bind_text(stmt, 1, config->courses[index].id, -1, SQLITE_STATIC));
+		exists = sqlite3_step(stmt) == SQLITE_ROW;
+		CALL_SQLITE(finalize(stmt));
+		if (!exists) plan->additions++;
+	}
+	CALL_SQLITE(close(db));
+	return qtrue;
+}
+
+qboolean SC_DBApplyProjection(const sc_config_t *config, const char *revision, qboolean allow_destructive)
+{
+	sqlite3 *db;
+	sqlite3_stmt *stmt;
+	sc_projection_plan_t plan;
+	time_t now;
+	int index;
+	int result = SQLITE_OK;
+
+	if (!config || !revision || !SC_DBPlanProjection(config, &plan) || plan.changes ||
+		((plan.retirements > 0) && !allow_destructive)) return qfalse;
+	time(&now);
+	CALL_SQLITE(open(LOCAL_DB_PATH, &db));
+	if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK) { CALL_SQLITE(close(db)); return qfalse; }
+	for (index = 0; index < config->num_courses && result == SQLITE_OK; index++) {
+		const sc_course_t *course = &config->courses[index];
+		result = sqlite3_prepare_v2(db,
+			"INSERT INTO LocalSecretCourse(id, course_name, type, season_id, starts_at, expires_at, applied_revision, retired_at) "
+			"VALUES (?, ?, ?, ?, ?, ?, ?, NULL) "
+			"ON CONFLICT(id) DO UPDATE SET season_id=excluded.season_id, starts_at=excluded.starts_at, expires_at=excluded.expires_at, applied_revision=excluded.applied_revision, retired_at=NULL",
+			-1, &stmt, NULL);
+		if (result != SQLITE_OK) break;
+		CALL_SQLITE(bind_text(stmt, 1, course->id, -1, SQLITE_STATIC));
+		CALL_SQLITE(bind_text(stmt, 2, course->course_name, -1, SQLITE_STATIC));
+		CALL_SQLITE(bind_int(stmt, 3, course->type));
+		if (course->type == SC_COURSE_TYPE_CUP) {
+			CALL_SQLITE(bind_text(stmt, 4, course->season_id, -1, SQLITE_STATIC));
+		} else {
+			CALL_SQLITE(bind_null(stmt, 4));
+		}
+		CALL_SQLITE(bind_int64(stmt, 5, (sqlite3_int64)course->starts_at));
+		if (course->type == SC_COURSE_TYPE_CUP) {
+			CALL_SQLITE(bind_int64(stmt, 6, (sqlite3_int64)course->expires_at));
+		} else {
+			CALL_SQLITE(bind_null(stmt, 6));
+		}
+		CALL_SQLITE(bind_text(stmt, 7, revision, -1, SQLITE_STATIC));
+		result = sqlite3_step(stmt) == SQLITE_DONE ? SQLITE_OK : SQLITE_ERROR;
+		CALL_SQLITE(finalize(stmt));
+	}
+	if (result == SQLITE_OK && plan.retirements) {
+		result = sqlite3_prepare_v2(db, "UPDATE LocalSecretCourse SET retired_at = ? WHERE retired_at IS NULL AND id NOT IN (SELECT id FROM LocalSecretCourse WHERE applied_revision = ? AND retired_at IS NULL)", -1, &stmt, NULL);
+		if (result == SQLITE_OK) {
+			CALL_SQLITE(bind_int64(stmt, 1, (sqlite3_int64)now));
+			CALL_SQLITE(bind_text(stmt, 2, revision, -1, SQLITE_STATIC));
+			result = sqlite3_step(stmt) == SQLITE_DONE ? SQLITE_OK : SQLITE_ERROR;
+			CALL_SQLITE(finalize(stmt));
+		}
+	}
+	if (result == SQLITE_OK) {
+		result = sqlite3_prepare_v2(db, "INSERT INTO LocalSecretCourseMeta(key, value) VALUES('revision', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", -1, &stmt, NULL);
+		if (result == SQLITE_OK) {
+			CALL_SQLITE(bind_text(stmt, 1, revision, -1, SQLITE_STATIC));
+			result = sqlite3_step(stmt) == SQLITE_DONE ? SQLITE_OK : SQLITE_ERROR;
+			CALL_SQLITE(finalize(stmt));
+		}
+	}
+	if (result == SQLITE_OK) sqlite3_exec(db, "COMMIT", NULL, NULL, NULL); else sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+	CALL_SQLITE(close(db));
+	return result == SQLITE_OK ? qtrue : qfalse;
 }
 
 void SC_Cmd_ListSecret_f(gentity_t *ent) {
