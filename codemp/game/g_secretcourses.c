@@ -119,3 +119,12 @@ void SC_NotifyConfigRevisionAfterAdminLogin(gentity_t *ent)
 	trap->SendServerCommand(ent - g_entities, "print \"Secret Courses cfg differs from the applied projection; run /sc_validatecfg then /sc_applycfg.\\n\"");
 	trap->Print("Secret Courses cfg revision mismatch for full admin %s.\\n", ent->client->pers.userName);
 }
+
+void SC_ReconcileSchedule(time_t now)
+{
+	static time_t last_reconcile;
+
+	if (now < last_reconcile) last_reconcile = 0;
+	SC_LoadSecretCourses();
+	last_reconcile = now;
+}

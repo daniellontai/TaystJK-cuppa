@@ -62,6 +62,10 @@ typedef struct {
 	int valid;
 } sc_apply_plan_t;
 
+typedef struct {
+	int num_expired_cup_courses;
+} sc_transition_set_t;
+
 int SC_ParseUtcTimestamp(const char *text, time_t *out);
 sc_course_state_t SC_ResolveCourseState(const sc_course_t *course, time_t now);
 int SC_ValidatePathComponent(const char *component);
@@ -72,6 +76,8 @@ int SC_ParseConfigText(const char *text, sc_config_t *out, sc_validation_result_
 void SC_FreeConfig(sc_config_t *config);
 int SC_ConfigRequiresConfirmation(const sc_config_t *applied, const sc_config_t *proposed);
 int SC_CourseIdentityChanged(const sc_course_t *applied, const sc_course_t *proposed);
+void SC_CollectTransitions(const sc_config_t *config, time_t previous, time_t now, sc_transition_set_t *out);
+int SC_IsConfiguredCourseActive(const sc_config_t *config, const char *course_name, time_t now);
 void SC_RememberApplyPlan(sc_apply_plan_t *plan, const char *revision, int destructive, time_t now);
 int SC_CanConfirmApply(const char *token, const char *revision, time_t now);
 

@@ -422,8 +422,7 @@ void G_InitGame( int levelTime, int randomSeed, int restart ) {
 	G_SpawnCapRoutesFromCFG();
 	G_SpawnCosmeticUnlocks();
 	InitGameAccountStuff();
-	// SC_CleanupSecretCourses(); // maybe suboptimal to do every mapload but shouldn't be too expensive?
-	SC_LoadSecretCourses();
+	SC_ReconcileSchedule(time(NULL));
 	SetGametypeFuncSolids();
 
 	// general initialization

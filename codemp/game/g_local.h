@@ -2120,6 +2120,7 @@ typedef struct secretCourse_s
 {
 	char coursename[40];
 	time_t secret_until;
+	qboolean permanent;
 } secretCourse_t;
 
 #define MAX_SECRET_COURSES 64

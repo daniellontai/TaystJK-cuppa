@@ -252,6 +252,33 @@ int SC_ConfigRequiresConfirmation(const sc_config_t *applied, const sc_config_t 
 	return 0;
 }
 
+void SC_CollectTransitions(const sc_config_t *config, time_t previous, time_t now, sc_transition_set_t *out)
+{
+	int index;
+
+	if (!out) return;
+	memset(out, 0, sizeof(*out));
+	if (!config || now < previous) return;
+	for (index = 0; index < config->num_courses; index++) {
+		const sc_course_t *course = &config->courses[index];
+		if (course->type == SC_COURSE_TYPE_CUP && previous < course->expires_at && now >= course->expires_at)
+			out->num_expired_cup_courses++;
+	}
+}
+
+int SC_IsConfiguredCourseActive(const sc_config_t *config, const char *course_name, time_t now)
+{
+	int index;
+
+	if (!config || !course_name) return 0;
+	for (index = 0; index < config->num_courses; index++) {
+		if (!strcmp(config->courses[index].course_name, course_name) &&
+			SC_ResolveCourseState(&config->courses[index], now) == SC_COURSE_STATE_ACTIVE)
+			return 1;
+	}
+	return 0;
+}
+
 int SC_ParseConfigText(const char *text, sc_config_t *out, sc_validation_result_t *result)
 {
 	const char *line_start;

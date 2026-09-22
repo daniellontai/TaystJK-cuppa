@@ -8123,26 +8123,9 @@ static void SC_ArchiveExpiredCourseDemos(const char *coursename) {
 }
 
 void SC_CleanupSecretCourses(void) {
-    time_t currentTime;
-    int i;
-    qboolean anyExpired = qfalse;
-
-    time(&currentTime);
-
-    // Check each secret course in memory
-    for (i = 0; i < g_numSecretCourses; i++) {
-        if (currentTime >= g_secretCourses[i].secret_until) {
-            SC_LogExpiredSecretCourse(g_secretCourses[i].coursename);
-            SC_ArchiveExpiredCourseDemos(g_secretCourses[i].coursename);
-            SC_RemoveSecretCourse(g_secretCourses[i].coursename, qtrue, qfalse);
-            anyExpired = qtrue;
-        }
-    }
-
-    // Reload in-memory array once at the end if any courses were expired
-    if (anyExpired) {
-        SC_LoadSecretCourses();
-    }
+	time_t currentTime;
+	time(&currentTime);
+	SC_ReconcileSchedule(currentTime);
 }
 
 void SC_LoadSecretCourses(void)
@@ -8161,9 +8144,10 @@ void SC_LoadSecretCourses(void)
 
 	CALL_SQLITE(open(LOCAL_DB_PATH, &db));
 
-	sql = "SELECT coursename, secret_until FROM LocalSecretCourses WHERE secret_until > ? ORDER BY secret_until ASC";
+	sql = "SELECT course_name, expires_at, type FROM LocalSecretCourse WHERE retired_at IS NULL AND starts_at <= ? AND (type = 1 OR expires_at > ?) ORDER BY type ASC, expires_at ASC";
 	CALL_SQLITE(prepare_v2(db, sql, strlen(sql) + 1, &stmt, NULL));
 	CALL_SQLITE(bind_int64(stmt, 1, (sqlite3_int64)currentTime));
+	CALL_SQLITE(bind_int64(stmt, 2, (sqlite3_int64)currentTime));
 
 	while (g_numSecretCourses < MAX_SECRET_COURSES)
 	{
@@ -8174,6 +8158,7 @@ void SC_LoadSecretCourses(void)
 					   (const char *)sqlite3_column_text(stmt, 0),
 					   sizeof(g_secretCourses[g_numSecretCourses].coursename));
 			g_secretCourses[g_numSecretCourses].secret_until = (time_t)sqlite3_column_int64(stmt, 1);
+			g_secretCourses[g_numSecretCourses].permanent = sqlite3_column_int(stmt, 2) == SC_COURSE_TYPE_PERMANENT;
 			g_numSecretCourses++;
 		}
 		else if (s == SQLITE_DONE)
@@ -8209,7 +8194,7 @@ qboolean SC_IsTimeSecret(const char *coursename)
 	{
 		if (!Q_stricmp(g_secretCourses[i].coursename, coursename))
 		{
-			return (currentTime < g_secretCourses[i].secret_until) ? qtrue : qfalse;
+			return g_secretCourses[i].permanent || currentTime < g_secretCourses[i].secret_until;
 		}
 	}
 
@@ -8592,6 +8577,7 @@ void SC_Cmd_ListSecret_f(gentity_t *ent) {
     trap->SendServerCommand(ent - g_entities, "print \"Active Secret Courses:\n    ^5Course Name                        Secret Until\n\"");
 
     for (i = 0; i < g_numSecretCourses; i++) {
+		if (g_secretCourses[i].permanent) continue;
 		struct tm *timeInfo = localtime(&g_secretCourses[i].secret_until);
 		strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", timeInfo);
 		if (i == 0 && g_secretCourses[i].secret_until - currentTime < 24*60*60) {
@@ -8645,6 +8631,16 @@ void SC_Cmd_ListSecret_f(gentity_t *ent) {
 	}
     
     trap->SendServerCommand(ent - g_entities, va("print \"%s\n\"", msg));
+	for (i = 0; i < g_numSecretCourses; i++) {
+		if (g_secretCourses[i].permanent) {
+			trap->SendServerCommand(ent - g_entities, "print \"------------------------------\nPermanent secret courses — not part of the Secret Cup\n\"");
+			break;
+		}
+	}
+	for (i = 0; i < g_numSecretCourses; i++) {
+		if (g_secretCourses[i].permanent)
+			trap->SendServerCommand(ent - g_entities, va("print \"^3%s^7\n\"", g_secretCourses[i].coursename));
+	}
 
 	struct tm *serverTimeInfo = localtime(&currentTime);
 	strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", serverTimeInfo);
