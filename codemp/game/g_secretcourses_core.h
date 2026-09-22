@@ -84,6 +84,7 @@ int SC_CourseIdentityChanged(const sc_course_t *applied, const sc_course_t *prop
 void SC_CollectTransitions(const sc_config_t *config, time_t previous, time_t now, sc_transition_set_t *out);
 int SC_IsConfiguredCourseActive(const sc_config_t *config, const char *course_name, time_t now);
 int SC_PlanDemoArchive(sc_demo_move_t *out, const char *player_and_file, const char *season_id, const char *course_id);
+int SC_RenderLeaderboardJson(char *out, size_t out_size, const sc_course_t *course, sc_course_state_t state, const char *revision);
 void SC_RememberApplyPlan(sc_apply_plan_t *plan, const char *revision, int destructive, time_t now);
 int SC_CanConfirmApply(const char *token, const char *revision, time_t now);
 

@@ -128,3 +128,44 @@ void SC_ReconcileSchedule(time_t now)
 	SC_LoadSecretCourses();
 	last_reconcile = now;
 }
+
+static void SC_WriteStaticFile(const char *path, const char *text)
+{
+	fileHandle_t file;
+	if (trap->FS_Open(path, &file, FS_WRITE) >= 0 && file) {
+		trap->FS_Write(text, strlen(text), file);
+		trap->FS_Close(file);
+	}
+}
+
+void SC_WriteStaticExports(void)
+{
+	sc_config_t config;
+	sc_validation_result_t error;
+	char revision[65];
+	char status[16384];
+	int used;
+	int index;
+	time_t now;
+
+	if (!SC_ReadAndValidateConfig(&config, revision, &error)) return;
+	time(&now);
+	used = Com_sprintf(status, sizeof(status), "{\"schema_version\":1,\"revision\":\"%s\",\"courses\":[", revision);
+	for (index = 0; index < config.num_courses; index++) {
+		const sc_course_t *course = &config.courses[index];
+		sc_course_state_t state = SC_ResolveCourseState(course, now);
+		char leaderboard[2048];
+		char path[MAX_QPATH];
+		const char *kind = course->type == SC_COURSE_TYPE_CUP ? "cup" : "permanent";
+		if (!SC_RenderLeaderboardJson(leaderboard, sizeof(leaderboard), course, state, revision)) continue;
+		if (course->type == SC_COURSE_TYPE_CUP)
+			Com_sprintf(path, sizeof(path), "secretcourses/cup/%s/%s/leaderboard.json", course->season_id, course->id);
+		else
+			Com_sprintf(path, sizeof(path), "secretcourses/permanent/%s/leaderboard.json", course->id);
+		SC_WriteStaticFile(path, leaderboard);
+		used += Com_sprintf(status + used, sizeof(status) - used, "%s{\"id\":\"%s\",\"course_name\":\"%s\",\"type\":\"%s\",\"lifecycle\":\"%s\",\"demos_visibility\":\"%s\",\"leaderboard_path\":\"/%s\"}", index ? "," : "", course->id, course->course_name, kind, state == SC_COURSE_STATE_ACTIVE ? "active" : (state == SC_COURSE_STATE_EXPIRED ? "expired" : "scheduled"), state == SC_COURSE_STATE_EXPIRED && course->type == SC_COURSE_TYPE_CUP ? "public" : "private", path);
+		if (used >= (int)sizeof(status) - 256) break;
+	}
+	Q_strcat(status, sizeof(status), "]}");
+	SC_WriteStaticFile("secretcourses/secretcourses-status.json", status);
+}

@@ -297,6 +297,22 @@ int SC_PlanDemoArchive(sc_demo_move_t *out, const char *player_and_file, const c
 	return SC_BuildArchivePath(out->destination, sizeof(out->destination), season_id, course_id, player, separator + 1);
 }
 
+int SC_RenderLeaderboardJson(char *out, size_t out_size, const sc_course_t *course, sc_course_state_t state, const char *revision)
+{
+	char id[SC_COURSE_ID_MAX * 2 + 8];
+	char name[SC_COURSE_NAME_MAX * 2 + 8];
+	char rev[136];
+	const char *visibility;
+	int written;
+
+	if (!out || !out_size || !course || !SC_JsonWriteEscapedString(id, sizeof(id), course->id) ||
+		!SC_JsonWriteEscapedString(name, sizeof(name), course->course_name) ||
+		!SC_JsonWriteEscapedString(rev, sizeof(rev), revision ? revision : "")) return 0;
+	visibility = state == SC_COURSE_STATE_EXPIRED && course->type == SC_COURSE_TYPE_CUP ? "public" : "private";
+	written = snprintf(out, out_size, "{\"schema_version\":1,\"revision\":%s,\"course_id\":%s,\"course_name\":%s,\"demos_visibility\":\"%s\",\"entries\":[]}", rev, id, name, visibility);
+	return written >= 0 && (size_t)written < out_size;
+}
+
 int SC_ParseConfigText(const char *text, sc_config_t *out, sc_validation_result_t *result)
 {
 	const char *line_start;
