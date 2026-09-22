@@ -66,6 +66,11 @@ typedef struct {
 	int num_expired_cup_courses;
 } sc_transition_set_t;
 
+typedef struct {
+	char source[256];
+	char destination[256];
+} sc_demo_move_t;
+
 int SC_ParseUtcTimestamp(const char *text, time_t *out);
 sc_course_state_t SC_ResolveCourseState(const sc_course_t *course, time_t now);
 int SC_ValidatePathComponent(const char *component);
@@ -78,6 +83,7 @@ int SC_ConfigRequiresConfirmation(const sc_config_t *applied, const sc_config_t 
 int SC_CourseIdentityChanged(const sc_course_t *applied, const sc_course_t *proposed);
 void SC_CollectTransitions(const sc_config_t *config, time_t previous, time_t now, sc_transition_set_t *out);
 int SC_IsConfiguredCourseActive(const sc_config_t *config, const char *course_name, time_t now);
+int SC_PlanDemoArchive(sc_demo_move_t *out, const char *player_and_file, const char *season_id, const char *course_id);
 void SC_RememberApplyPlan(sc_apply_plan_t *plan, const char *revision, int destructive, time_t now);
 int SC_CanConfirmApply(const char *token, const char *revision, time_t now);
 

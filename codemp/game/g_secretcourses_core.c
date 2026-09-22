@@ -279,6 +279,24 @@ int SC_IsConfiguredCourseActive(const sc_config_t *config, const char *course_na
 	return 0;
 }
 
+int SC_PlanDemoArchive(sc_demo_move_t *out, const char *player_and_file, const char *season_id, const char *course_id)
+{
+	const char *separator;
+	char player[SC_COURSE_NAME_MAX + 1];
+	int written;
+	size_t player_length;
+
+	if (!out || !player_and_file || !(separator = strchr(player_and_file, '/'))) return 0;
+	player_length = (size_t)(separator - player_and_file);
+	if (!player_length || player_length >= sizeof(player)) return 0;
+	memcpy(player, player_and_file, player_length);
+	player[player_length] = '\0';
+	if (!SC_ValidatePathComponent(player) || !SC_ValidatePathComponent(separator + 1)) return 0;
+	written = snprintf(out->source, sizeof(out->source), "demos/races/secret/%s/%s", player, separator + 1);
+	if (written < 0 || (size_t)written >= sizeof(out->source)) return 0;
+	return SC_BuildArchivePath(out->destination, sizeof(out->destination), season_id, course_id, player, separator + 1);
+}
+
 int SC_ParseConfigText(const char *text, sc_config_t *out, sc_validation_result_t *result)
 {
 	const char *line_start;
