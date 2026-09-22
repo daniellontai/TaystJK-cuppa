@@ -6962,95 +6962,47 @@ void Cmd_DFTodo_f(gentity_t *ent) {
 		char msg[1024-128] = {0}, timeStr[64], dateStr[64], styleStr[16], rankStr[16];
 		int s, row = 1;
 
-		CALL_SQLITE (open (LOCAL_DB_PATH, & db));
-		if (style == -1) {
-			if (enteredCoursename) {
-				//sql = "SELECT coursename, style, rank, entries, duration_ms, end_time FROM LocalRun WHERE rank != 0 AND username = ? AND instr(coursename, ?) > 0 ORDER BY (entries - entries / rank) DESC LIMIT ?, 10";
-				sql = "SELECT * FROM "
-						"(SELECT coursename, style, rank, entries, duration_ms, end_time "
-							"FROM LocalRun WHERE rank != 0 AND username = ? AND instr(coursename, ?) > 0 "
-						"UNION ALL "
-						"SELECT T1.coursename, T1.style, T1.entries AS rank, T1.entries, 0 AS duration_ms, 0 AS end_time "
-							"FROM "
-								"(SELECT coursename, style, entries FROM LocalRun WHERE instr(coursename, ?) > 0 GROUP BY coursename, style) T1 "
-								"LEFT JOIN (SELECT coursename, style FROM LocalRun WHERE username = ? AND instr(coursename, ?) > 0 GROUP BY coursename, style) T2 "
-								"ON T1.coursename = T2.coursename AND T1.style = T2.style "
-							"WHERE T2.coursename IS NULL OR T2.style IS NULL) "	
-					"ORDER BY (entries-((entries/cast(rank as float))+(entries-rank)/2.0)) DESC LIMIT ?, 10";
+			CALL_SQLITE (open (LOCAL_DB_PATH, & db));
+			if (style == -1) {
+				if (enteredCoursename) {
+					sql = "SELECT coursename, style, rank, entries, duration_ms, end_time "
+						"FROM LocalRun WHERE rank != 0 AND username = ? AND instr(coursename, ?) > 0 "
+						"ORDER BY (entries-((entries/cast(rank as float))+(entries-rank)/2.0)) DESC LIMIT ?, 10";
 					CALL_SQLITE (prepare_v2 (db, sql, strlen (sql) + 1, & stmt, NULL));
 					CALL_SQLITE (bind_text (stmt, 1, username, -1, SQLITE_STATIC));
 					CALL_SQLITE (bind_text (stmt, 2, partialCourseName, -1, SQLITE_STATIC));
-					CALL_SQLITE (bind_text (stmt, 3, partialCourseName, -1, SQLITE_STATIC));
-					CALL_SQLITE (bind_text (stmt, 4, username, -1, SQLITE_STATIC));
-					CALL_SQLITE (bind_text (stmt, 5, partialCourseName, -1, SQLITE_STATIC));
-					CALL_SQLITE (bind_int (stmt, 6, start));
-			}
-			else {
-				//sql = "SELECT coursename, style, rank, entries, duration_ms, end_time FROM LocalRun WHERE rank != 0 AND username = ? ORDER BY (entries - entries / rank) DESC LIMIT ?, 10";
-				sql = "SELECT * FROM "
-						"(SELECT coursename, style, rank, entries, duration_ms, end_time "
-							"FROM LocalRun WHERE rank != 0 AND username = ? "
-						"UNION ALL "
-						"SELECT T1.coursename, T1.style, T1.entries AS rank, T1.entries, 0 AS duration_ms, 0 AS end_time "
-							"FROM "
-								"(SELECT coursename, style, entries FROM LocalRun GROUP BY coursename, style) T1 "
-								"LEFT JOIN (SELECT coursename, style FROM LocalRun WHERE username = ? GROUP BY coursename, style) T2 "
-								"ON T1.coursename = T2.coursename AND T1.style = T2.style "
-							"WHERE T2.coursename IS NULL OR T2.style IS NULL) "	
-					"ORDER BY (entries-((entries/cast(rank as float))+(entries-rank)/2.0)) DESC LIMIT ?, 10";
-					CALL_SQLITE (prepare_v2 (db, sql, strlen (sql) + 1, & stmt, NULL));
-					CALL_SQLITE (bind_text (stmt, 1, username, -1, SQLITE_STATIC));
-					CALL_SQLITE (bind_text (stmt, 2, username, -1, SQLITE_STATIC));
 					CALL_SQLITE (bind_int (stmt, 3, start));
-			}	
-		}
-		else {
-			if (enteredCoursename) {
-				//sql = "SELECT coursename, style, rank, entries, duration_ms, end_time FROM LocalRun WHERE rank != 0 AND username = ? AND style = ? AND instr(coursename, ?) > 0 ORDER BY (entries - entries / rank) DESC LIMIT ?, 10";
-				sql = "SELECT * FROM "
-						"(SELECT coursename, style, rank, entries, duration_ms, end_time "
-							"FROM LocalRun WHERE rank != 0 AND username = ? AND style = ? AND instr(coursename, ?) > 0 "
-						"UNION ALL "
-						"SELECT T1.coursename, T1.style, T1.entries AS rank, T1.entries, 0 AS duration_ms, 0 AS end_time "
-							"FROM "
-								"(SELECT coursename, style, entries FROM LocalRun WHERE style = ? AND instr(coursename, ?) > 0 GROUP BY coursename, style) T1 "
-								"LEFT JOIN (SELECT coursename, style FROM LocalRun WHERE username = ? AND style = ? AND instr(coursename, ?) > 0 GROUP BY coursename, style) T2 "
-								"ON T1.coursename = T2.coursename AND T1.style = T2.style "
-							"WHERE T2.coursename IS NULL OR T2.style IS NULL) "	
-					"ORDER BY (entries-((entries/cast(rank as float))+(entries-rank)/2.0)) DESC LIMIT ?, 10";
+				}
+				else {
+					sql = "SELECT coursename, style, rank, entries, duration_ms, end_time "
+						"FROM LocalRun WHERE rank != 0 AND username = ? "
+						"ORDER BY (entries-((entries/cast(rank as float))+(entries-rank)/2.0)) DESC LIMIT ?, 10";
+					CALL_SQLITE (prepare_v2 (db, sql, strlen (sql) + 1, & stmt, NULL));
+					CALL_SQLITE (bind_text (stmt, 1, username, -1, SQLITE_STATIC));
+					CALL_SQLITE (bind_int (stmt, 2, start));
+				}	
+			}
+			else {
+				if (enteredCoursename) {
+					sql = "SELECT coursename, style, rank, entries, duration_ms, end_time "
+						"FROM LocalRun WHERE rank != 0 AND username = ? AND style = ? AND instr(coursename, ?) > 0 "
+						"ORDER BY (entries-((entries/cast(rank as float))+(entries-rank)/2.0)) DESC LIMIT ?, 10";
 					CALL_SQLITE (prepare_v2 (db, sql, strlen (sql) + 1, & stmt, NULL));
 					CALL_SQLITE (bind_text (stmt, 1, username, -1, SQLITE_STATIC));
 					CALL_SQLITE (bind_int (stmt, 2, style));
 					CALL_SQLITE (bind_text (stmt, 3, partialCourseName, -1, SQLITE_STATIC));
-					CALL_SQLITE (bind_int (stmt, 4, style));
-					CALL_SQLITE (bind_text (stmt, 5, partialCourseName, -1, SQLITE_STATIC));
-					CALL_SQLITE (bind_text (stmt, 6, username, -1, SQLITE_STATIC));
-					CALL_SQLITE (bind_int (stmt, 7, style));
-					CALL_SQLITE (bind_text (stmt, 8, partialCourseName, -1, SQLITE_STATIC));
-					CALL_SQLITE (bind_int (stmt, 9, start));
-			}
-			else {
-				//sql = "SELECT coursename, style, rank, entries, duration_ms, end_time FROM LocalRun WHERE rank != 0 AND username = ? AND style = ? ORDER BY (entries - entries / rank) DESC LIMIT ?, 10";
-				sql = "SELECT * FROM "
-						"(SELECT coursename, style, rank, entries, duration_ms, end_time "
-							"FROM LocalRun WHERE rank != 0 AND username = ? AND style = ?"
-						"UNION ALL "
-						"SELECT T1.coursename, T1.style, T1.entries AS rank, T1.entries, 0 AS duration_ms, 0 AS end_time "
-							"FROM "
-								"(SELECT coursename, style, entries FROM LocalRun WHERE style = ? GROUP BY coursename, style) T1 "
-								"LEFT JOIN (SELECT coursename, style FROM LocalRun WHERE username = ? AND style = ? GROUP BY coursename, style) T2 "
-								"ON T1.coursename = T2.coursename AND T1.style = T2.style "
-							"WHERE T2.coursename IS NULL OR T2.style IS NULL) "	
-					"ORDER BY (entries-((entries/cast(rank as float))+(entries-rank)/2.0)) DESC LIMIT ?, 10";
+					CALL_SQLITE (bind_int (stmt, 4, start));
+				}
+				else {
+					sql = "SELECT coursename, style, rank, entries, duration_ms, end_time "
+						"FROM LocalRun WHERE rank != 0 AND username = ? AND style = ? "
+						"ORDER BY (entries-((entries/cast(rank as float))+(entries-rank)/2.0)) DESC LIMIT ?, 10";
 					CALL_SQLITE (prepare_v2 (db, sql, strlen (sql) + 1, & stmt, NULL));
 					CALL_SQLITE (bind_text (stmt, 1, username, -1, SQLITE_STATIC));
 					CALL_SQLITE (bind_int (stmt, 2, style));
-					CALL_SQLITE (bind_int (stmt, 3, style));
-					CALL_SQLITE (bind_text (stmt, 4, username, -1, SQLITE_STATIC));
-					CALL_SQLITE (bind_int (stmt, 5, style));
-					CALL_SQLITE (bind_int (stmt, 6, start));
+					CALL_SQLITE (bind_int (stmt, 3, start));
+				}
 			}
-		}
 
 		trap->SendServerCommand(ent-g_entities, va("print \"Most improvable scores for %s:\n    ^5Course                      Style      Rank    Entries      Time         Date\n\"", styleString)); //Color rank yellow for global, normal for season -fixme match race print scheme
 		while (1) {
