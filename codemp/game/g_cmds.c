@@ -5901,9 +5901,7 @@ void Cmd_Aminfo_f(gentity_t *ent)
 			Q_strcat(buf, sizeof(buf), "amTele ");
 		if (G_AdminAllowed(ent, JAPRO_ACCOUNTFLAG_A_GRANTADMIN, qfalse, qfalse, NULL)) {
 			Q_strcat(buf, sizeof(buf), "amGrantAdmin ");
-			// Secret course add/remove check on amgrantadmin flag, maybe move later
-			Q_strcat(buf, sizeof(buf), "addSecretCourse ");
-			Q_strcat(buf, sizeof(buf), "removeSecretCourse ");
+			Q_strcat(buf, sizeof(buf), "sc_validatecfg sc_applycfg ");
 		}
 		if (G_AdminAllowed(ent, JAPRO_ACCOUNTFLAG_A_CHANGEMAP, qfalse, qfalse, NULL))
 			Q_strcat(buf, sizeof(buf), "amMap ");
@@ -9046,15 +9044,14 @@ void Cmd_Trace_f(gentity_t* ent);
 void Cmd_Nearby_f(gentity_t* ent);
 void Cmd_InvalidateRace_f(gentity_t* ent);
 void Cmd_Haste_f(gentity_t* ent);
-void SC_Cmd_AddSecret_f(gentity_t *ent);
-void SC_Cmd_RemoveSecret_f(gentity_t *ent);
+void SC_Cmd_ValidateConfig_f(gentity_t *ent);
+void SC_Cmd_ApplyConfig_f(gentity_t *ent);
 void SC_Cmd_ListSecret_f(gentity_t *ent);
 void Cmd_Unlocks_f(gentity_t *ent);
 
 /* This array MUST be sorted correctly by alphabetical name field */
 command_t commands[] = {
 	{ "addbot",				Cmd_AddBot_f,				0 },
-	{ "addsecretcourse",	SC_Cmd_AddSecret_f,			0 }, //SC
 	{ "amban",				Cmd_Amban_f,				0 },
 	{ "ambeg",				Cmd_EmoteBeg_f,				CMD_NOINTERMISSION|CMD_ALIVE },//EMOTE
 	{ "ambeg2",				Cmd_EmoteBeg2_f,			CMD_NOINTERMISSION|CMD_ALIVE },//EMOTE
@@ -9185,6 +9182,8 @@ command_t commands[] = {
 
 	{ "secretcourses",		SC_Cmd_ListSecret_f,		0 },
 	{ "sc",					SC_Cmd_ListSecret_f,		0 },
+	{ "sc_applycfg",		SC_Cmd_ApplyConfig_f,		0 },
+	{ "sc_validatecfg",	SC_Cmd_ValidateConfig_f,	0 },
 
 	{ "login",				Cmd_ACLogin_f,				CMD_NOINTERMISSION },
 	{ "logout",				Cmd_ACLogout_f,				CMD_NOINTERMISSION },
@@ -9220,7 +9219,6 @@ command_t commands[] = {
 
 	{ "register",			Cmd_ACRegister_f,			CMD_NOINTERMISSION },
 
-	{ "removesecretcourse",	SC_Cmd_RemoveSecret_f,  	0 }, //SC
 
 	{ "respos",				Cmd_Respos_f,				CMD_NOINTERMISSION },
 

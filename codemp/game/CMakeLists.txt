@@ -48,6 +48,7 @@ set(MPGameGameFiles
 	"${MPDir}/game/bg_weapons.c"
 	"${MPDir}/game/FighterNPC.c"
 	"${MPDir}/game/g_account.c"
+	"${MPDir}/game/g_secretcourses.c"
 	"${MPDir}/game/g_secretcourses_core.c"
 	"${MPDir}/game/g_active.c"
 	"${MPDir}/game/g_bot.c"
