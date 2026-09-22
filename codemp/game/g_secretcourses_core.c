@@ -146,10 +146,11 @@ static void SC_SetValidationError(sc_validation_result_t *result, int line, cons
 
 static int SC_CopyToken(char *destination, size_t destination_size, const char *source)
 {
-	if (!source || strlen(source) >= destination_size) {
+	size_t length;
+	if (!source || (length = strlen(source)) >= destination_size) {
 		return 0;
 	}
-	snprintf(destination, destination_size, "%s", source);
+	memcpy(destination, source, length + 1);
 	return 1;
 }
 
