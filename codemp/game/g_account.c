@@ -8634,6 +8634,8 @@ void SC_DBLogExpiredCourseById(const char *id)
 	sqlite3_stmt *stmt;
 	int result;
 	int rank = 0;
+	char message[1024];
+	int used;
 
 	if (!id || !id[0]) return;
 	CALL_SQLITE(open(LOCAL_DB_PATH, &db));
@@ -8642,13 +8644,25 @@ void SC_DBLogExpiredCourseById(const char *id)
 		CALL_SQLITE(bind_text(stmt, 1, id, -1, SQLITE_STATIC));
 		CALL_SQLITE(bind_int(stmt, 2, MV_JKA));
 		trap->Print("--SCLOG-START-- FINAL_STANDINGS: %s\n", id);
+		used = Com_sprintf(message, sizeof(message), "print \"^3Secret Course final standings:^7\n");
 		while (sqlite3_step(stmt) == SQLITE_ROW) {
 			const char *username = (const char *)sqlite3_column_text(stmt, 0);
 			int duration = sqlite3_column_int(stmt, 1);
+			char time_str[32];
+			char line[96];
 			rank++;
+			TimeToString(duration, time_str, sizeof(time_str));
 			trap->Print("--SCLOG-- %d. %s %dms\n", rank, username ? username : "unknown", duration);
-			trap->SendServerCommand(-1, va("print \"^3Secret Course final standings:^7 %d. %s - %dms\\n\"", rank, username ? username : "unknown", duration));
+			Com_sprintf(line, sizeof(line), "%d. %s - %s\n", rank, username ? username : "unknown", time_str);
+			if (used + (int)strlen(line) + 2 >= (int)sizeof(message)) {
+				Q_strcat(message, sizeof(message), "...\n");
+				break;
+			}
+			Q_strcat(message, sizeof(message), line);
+			used += strlen(line);
 		}
+		Q_strcat(message, sizeof(message), "\"");
+		trap->SendServerCommand(-1, message);
 		trap->Print("--SCLOG-END-- FINAL_STANDINGS: %s\n", id);
 		CALL_SQLITE(finalize(stmt));
 	}
