@@ -9044,8 +9044,8 @@ void Cmd_Trace_f(gentity_t* ent);
 void Cmd_Nearby_f(gentity_t* ent);
 void Cmd_InvalidateRace_f(gentity_t* ent);
 void Cmd_Haste_f(gentity_t* ent);
-void SC_Cmd_ValidateConfig_f(gentity_t *ent);
-void SC_Cmd_ApplyConfig_f(gentity_t *ent);
+void SC_ValidateConfig_f(gentity_t *ent);
+void SC_ApplyConfig_f(gentity_t *ent);
 void SC_Cmd_ListSecret_f(gentity_t *ent);
 void Cmd_Unlocks_f(gentity_t *ent);
 
@@ -9182,8 +9182,8 @@ command_t commands[] = {
 
 	{ "secretcourses",		SC_Cmd_ListSecret_f,		0 },
 	{ "sc",					SC_Cmd_ListSecret_f,		0 },
-	{ "sc_applycfg",		SC_Cmd_ApplyConfig_f,		0 },
-	{ "sc_validatecfg",	SC_Cmd_ValidateConfig_f,	0 },
+	{ "sc_applycfg",		SC_ApplyConfig_f,		0 },
+	{ "sc_validatecfg",	SC_ValidateConfig_f,	0 },
 
 	{ "login",				Cmd_ACLogin_f,				CMD_NOINTERMISSION },
 	{ "logout",				Cmd_ACLogout_f,				CMD_NOINTERMISSION },
