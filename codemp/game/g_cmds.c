@@ -4974,6 +4974,7 @@ void Cmd_Amlogin_f(gentity_t *ent)
 			}
 
 			if (added) {
+				SC_NotifyConfigRevisionAfterFullAdminLogin(ent);
 				if (Q_stricmp(g_fullAdminMsg.string, "")) //Ok, so just set this to " " if you want it to print the normal login msg, or set it to "" to skip.  or "with junior admin" for more info.. etc
 					trap->SendServerCommand(-1, va("print \"%s^7 has logged in %s\n\"", ent->client->pers.netname, g_fullAdminMsg.string));
 				else

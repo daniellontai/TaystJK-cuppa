@@ -248,6 +248,11 @@ time_t SC_NextConfiguredTransition(const sc_config_t *config, time_t now)
 	return next;
 }
 
+int SC_ShouldNotifyAfterFullAdminLogin(int gained_full_admin, int revision_mismatch)
+{
+	return gained_full_admin && revision_mismatch;
+}
+
 int SC_ConfigRequiresConfirmation(const sc_config_t *applied, const sc_config_t *proposed)
 {
 	int applied_index;

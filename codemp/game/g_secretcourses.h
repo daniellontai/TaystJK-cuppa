@@ -13,7 +13,7 @@ typedef struct {
 qboolean SC_ReadAndValidateConfig(sc_config_t *config, char revision[65], sc_validation_result_t *error);
 void SC_ValidateConfig_f(gentity_t *ent);
 void SC_ApplyConfig_f(gentity_t *ent);
-void SC_NotifyConfigRevisionAfterAdminLogin(gentity_t *ent);
+void SC_NotifyConfigRevisionAfterFullAdminLogin(gentity_t *ent);
 void SC_ReconcileSchedule(time_t now);
 time_t SC_GetNextTransitionTime(void);
 void SC_WriteStaticExports(void);

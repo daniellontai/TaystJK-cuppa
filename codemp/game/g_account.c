@@ -2576,7 +2576,6 @@ void Cmd_ACLogin_f( gentity_t *ent ) { //loda fixme show lastip ? or use lastip 
 				if (flags & (1 << i))//Problem, only add to flags, not remove?
 					ent->client->sess.accountFlags |= (1 << i);
 			}
-			SC_NotifyConfigRevisionAfterAdminLogin(ent);
 		}
 		else {
 			trap->SendServerCommand(ent - g_entities, "print \"Incorrect password!\n\"");

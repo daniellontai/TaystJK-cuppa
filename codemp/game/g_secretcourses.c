@@ -109,15 +109,15 @@ void SC_ApplyConfig_f(gentity_t *ent)
 	SC_WriteStaticExports();
 }
 
-void SC_NotifyConfigRevisionAfterAdminLogin(gentity_t *ent)
+void SC_NotifyConfigRevisionAfterFullAdminLogin(gentity_t *ent)
 {
 	sc_config_t config;
 	sc_validation_result_t error;
 	char revision[65];
 	char applied[65] = { 0 };
 
-	if (!(ent->client->sess.accountFlags & JAPRO_ACCOUNTFLAG_A_GRANTADMIN) ||
-		!SC_ReadAndValidateConfig(&config, revision, &error) || !SC_DBGetAppliedRevision(applied) || !Q_stricmp(applied, revision)) {
+	if (!SC_ReadAndValidateConfig(&config, revision, &error) || !SC_DBGetAppliedRevision(applied) ||
+		!SC_ShouldNotifyAfterFullAdminLogin(qtrue, Q_stricmp(applied, revision) != 0)) {
 		return;
 	}
 	trap->SendServerCommand(ent - g_entities, "print \"Secret Courses cfg differs from the applied projection; run /sc_validatecfg then /sc_applycfg.\n\"");
