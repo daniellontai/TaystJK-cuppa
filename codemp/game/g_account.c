@@ -8507,9 +8507,8 @@ qboolean SC_DBApplyProjection(const sc_config_t *config, const char *revision, q
 	for (index = 0; index < config->num_courses && result == SQLITE_OK; index++) {
 		const sc_course_t *course = &config->courses[index];
 		result = sqlite3_prepare_v2(db,
-			"INSERT INTO LocalSecretCourse(id, course_name, type, season_id, starts_at, expires_at, applied_revision, retired_at) "
-			"VALUES (?, ?, ?, ?, ?, ?, ?, NULL) "
-			"ON CONFLICT(id) DO UPDATE SET season_id=excluded.season_id, starts_at=excluded.starts_at, expires_at=excluded.expires_at, applied_revision=excluded.applied_revision, retired_at=NULL",
+			"INSERT OR REPLACE INTO LocalSecretCourse(id, course_name, type, season_id, starts_at, expires_at, applied_revision, retired_at) "
+			"VALUES (?, ?, ?, ?, ?, ?, ?, NULL)",
 			-1, &stmt, NULL);
 		if (result != SQLITE_OK) break;
 		CALL_SQLITE(bind_text(stmt, 1, course->id, -1, SQLITE_STATIC));
@@ -8540,7 +8539,7 @@ qboolean SC_DBApplyProjection(const sc_config_t *config, const char *revision, q
 		}
 	}
 	if (result == SQLITE_OK) {
-		result = sqlite3_prepare_v2(db, "INSERT INTO LocalSecretCourseMeta(key, value) VALUES('revision', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", -1, &stmt, NULL);
+		result = sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO LocalSecretCourseMeta(key, value) VALUES('revision', ?)", -1, &stmt, NULL);
 		if (result == SQLITE_OK) {
 			CALL_SQLITE(bind_text(stmt, 1, revision, -1, SQLITE_STATIC));
 			result = sqlite3_step(stmt) == SQLITE_DONE ? SQLITE_OK : SQLITE_ERROR;
