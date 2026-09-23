@@ -81,6 +81,7 @@ int SC_ParseConfigText(const char *text, sc_config_t *out, sc_validation_result_
 void SC_FreeConfig(sc_config_t *config);
 int SC_ConfigRequiresConfirmation(const sc_config_t *applied, const sc_config_t *proposed);
 int SC_CourseIdentityChanged(const sc_course_t *applied, const sc_course_t *proposed);
+int SC_CourseIdentityCanChange(int has_event_history);
 void SC_CollectTransitions(const sc_config_t *config, time_t previous, time_t now, sc_transition_set_t *out);
 int SC_IsConfiguredCourseActive(const sc_config_t *config, const char *course_name, time_t now);
 int SC_PlanDemoArchive(sc_demo_move_t *out, const char *player_and_file, const char *season_id, const char *course_id);

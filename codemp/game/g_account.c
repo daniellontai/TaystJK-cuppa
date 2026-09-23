@@ -8448,6 +8448,99 @@ qboolean SC_DBGetAppliedRevision(char revision[65])
 	return qtrue;
 }
 
+static qboolean SC_DBHasEventHistoryInDb(sqlite3 *db, const char *id)
+{
+	sqlite3_stmt *stmt;
+	int result;
+	qboolean has_history = qfalse;
+
+	if (!db || !id || !id[0]) return qfalse;
+	result = sqlite3_prepare_v2(db, "SELECT 1 FROM LocalSecretCourseRun WHERE secret_course_id = ? LIMIT 1", -1, &stmt, NULL);
+	if (result != SQLITE_OK) return qfalse;
+	CALL_SQLITE(bind_text(stmt, 1, id, -1, SQLITE_STATIC));
+	has_history = sqlite3_step(stmt) == SQLITE_ROW ? qtrue : qfalse;
+	CALL_SQLITE(finalize(stmt));
+	return has_history;
+}
+
+qboolean SC_DBHasEventHistory(const char *id)
+{
+	sqlite3 *db;
+	qboolean has_history;
+
+	if (!id || !id[0]) return qfalse;
+	CALL_SQLITE(open(LOCAL_DB_PATH, &db));
+	has_history = SC_DBHasEventHistoryInDb(db, id);
+	CALL_SQLITE(close(db));
+	return has_history;
+}
+
+qboolean SC_DBSnapshotLocalRuns(const char *id, const char *course_name)
+{
+	sqlite3 *db;
+	sqlite3_stmt *stmt;
+	int result;
+
+	if (!id || !id[0] || !course_name || !course_name[0]) return qfalse;
+	CALL_SQLITE(open(LOCAL_DB_PATH, &db));
+	if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK) {
+		CALL_SQLITE(close(db));
+		return qfalse;
+	}
+	result = sqlite3_prepare_v2(db,
+		"INSERT OR IGNORE INTO LocalSecretCourseRun (secret_course_id, username, style, duration_ms, topspeed, average, end_time) "
+		"SELECT ?, run.username, run.style, run.duration_ms, run.topspeed, run.average, run.end_time "
+		"FROM LocalRun run "
+		"WHERE run.coursename = ? AND run.invalid = 0 "
+		"AND run.duration_ms = (SELECT MIN(best.duration_ms) FROM LocalRun best "
+		"WHERE best.coursename = run.coursename AND best.username = run.username "
+		"AND best.style = run.style AND best.invalid = 0) "
+		"ORDER BY run.username, run.style, run.end_time",
+		-1, &stmt, NULL);
+	if (result == SQLITE_OK) {
+		CALL_SQLITE(bind_text(stmt, 1, id, -1, SQLITE_STATIC));
+		CALL_SQLITE(bind_text(stmt, 2, course_name, -1, SQLITE_STATIC));
+		result = sqlite3_step(stmt) == SQLITE_DONE ? SQLITE_OK : SQLITE_ERROR;
+		CALL_SQLITE(finalize(stmt));
+	}
+	if (result == SQLITE_OK) result = sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
+	if (result != SQLITE_OK) sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+	CALL_SQLITE(close(db));
+	return result == SQLITE_OK ? qtrue : qfalse;
+}
+
+qboolean SC_DBGetLifecycleRows(sc_course_t *out, int capacity, int *count)
+{
+	sqlite3 *db;
+	sqlite3_stmt *stmt;
+	int result;
+	int row_count = 0;
+
+	if (!out || capacity < 1 || !count) return qfalse;
+	*count = 0;
+	CALL_SQLITE(open(LOCAL_DB_PATH, &db));
+	result = sqlite3_prepare_v2(db, "SELECT id, course_name, type, season_id, starts_at, expires_at FROM LocalSecretCourse WHERE retired_at IS NULL ORDER BY starts_at, id", -1, &stmt, NULL);
+	if (result != SQLITE_OK) { CALL_SQLITE(close(db)); return qfalse; }
+	while ((result = sqlite3_step(stmt)) == SQLITE_ROW) {
+		const unsigned char *season_id;
+		if (row_count >= capacity) { CALL_SQLITE(finalize(stmt)); CALL_SQLITE(close(db)); return qfalse; }
+		memset(&out[row_count], 0, sizeof(out[row_count]));
+		Q_strncpyz(out[row_count].id, (const char *)sqlite3_column_text(stmt, 0), sizeof(out[row_count].id));
+		Q_strncpyz(out[row_count].course_name, (const char *)sqlite3_column_text(stmt, 1), sizeof(out[row_count].course_name));
+		out[row_count].type = (sc_course_type_t)sqlite3_column_int(stmt, 2);
+		season_id = sqlite3_column_text(stmt, 3);
+		if (season_id) Q_strncpyz(out[row_count].season_id, (const char *)season_id, sizeof(out[row_count].season_id));
+		out[row_count].starts_at = (time_t)sqlite3_column_int64(stmt, 4);
+		out[row_count].expires_at = sqlite3_column_type(stmt, 5) == SQLITE_NULL ? 0 : (time_t)sqlite3_column_int64(stmt, 5);
+		row_count++;
+	}
+	CALL_SQLITE(finalize(stmt));
+	CALL_SQLITE(close(db));
+	if (result != SQLITE_DONE) return qfalse;
+	*count = row_count;
+	return qtrue;
+}
+
 qboolean SC_DBPlanProjection(const sc_config_t *config, sc_projection_plan_t *plan)
 {
 	sqlite3 *db;
@@ -8463,6 +8556,7 @@ qboolean SC_DBPlanProjection(const sc_config_t *config, sc_projection_plan_t *pl
 	while ((result = sqlite3_step(stmt)) == SQLITE_ROW) {
 		const char *id = (const char *)sqlite3_column_text(stmt, 0);
 		const char *course_name = (const char *)sqlite3_column_text(stmt, 1);
+		int has_event_history = SC_DBHasEventHistoryInDb(db, id);
 		int found = -1;
 		for (index = 0; index < config->num_courses; index++)
 			if (!strcmp(id, config->courses[index].id)) { found = index; break; }
@@ -8470,9 +8564,10 @@ qboolean SC_DBPlanProjection(const sc_config_t *config, sc_projection_plan_t *pl
 			if (sqlite3_column_type(stmt, 3) == SQLITE_NULL) plan->retirements++;
 		} else if (strcmp(course_name, config->courses[found].course_name) ||
 			sqlite3_column_int(stmt, 2) != config->courses[found].type) {
-			plan->changes++;
+			if (SC_CourseIdentityCanChange(has_event_history)) plan->corrections++;
+			else plan->changes++;
 		} else if (sqlite3_column_type(stmt, 3) != SQLITE_NULL) {
-			plan->retirements++;
+			if (has_event_history) plan->changes++;
 		}
 	}
 	CALL_SQLITE(finalize(stmt));
@@ -8500,34 +8595,48 @@ qboolean SC_DBApplyProjection(const sc_config_t *config, const char *revision, q
 	int result = SQLITE_OK;
 
 	if (!config || !revision || !SC_DBPlanProjection(config, &plan) || plan.changes ||
-		((plan.retirements > 0) && !allow_destructive)) return qfalse;
+		((plan.retirements > 0 || plan.corrections > 0) && !allow_destructive)) return qfalse;
 	time(&now);
 	CALL_SQLITE(open(LOCAL_DB_PATH, &db));
 	if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK) { CALL_SQLITE(close(db)); return qfalse; }
 	for (index = 0; index < config->num_courses && result == SQLITE_OK; index++) {
 		const sc_course_t *course = &config->courses[index];
 		result = sqlite3_prepare_v2(db,
-			"INSERT OR REPLACE INTO LocalSecretCourse(id, course_name, type, season_id, starts_at, expires_at, applied_revision, retired_at) "
-			"VALUES (?, ?, ?, ?, ?, ?, ?, NULL)",
+			"UPDATE LocalSecretCourse SET course_name = ?, type = ?, season_id = ?, starts_at = ?, expires_at = ?, applied_revision = ?, retired_at = NULL WHERE id = ?",
 			-1, &stmt, NULL);
 		if (result != SQLITE_OK) break;
-		CALL_SQLITE(bind_text(stmt, 1, course->id, -1, SQLITE_STATIC));
-		CALL_SQLITE(bind_text(stmt, 2, course->course_name, -1, SQLITE_STATIC));
-		CALL_SQLITE(bind_int(stmt, 3, course->type));
+		CALL_SQLITE(bind_text(stmt, 1, course->course_name, -1, SQLITE_STATIC));
+		CALL_SQLITE(bind_int(stmt, 2, course->type));
 		if (course->type == SC_COURSE_TYPE_CUP) {
-			CALL_SQLITE(bind_text(stmt, 4, course->season_id, -1, SQLITE_STATIC));
+			CALL_SQLITE(bind_text(stmt, 3, course->season_id, -1, SQLITE_STATIC));
 		} else {
-			CALL_SQLITE(bind_null(stmt, 4));
+			CALL_SQLITE(bind_null(stmt, 3));
 		}
-		CALL_SQLITE(bind_int64(stmt, 5, (sqlite3_int64)course->starts_at));
+		CALL_SQLITE(bind_int64(stmt, 4, (sqlite3_int64)course->starts_at));
 		if (course->type == SC_COURSE_TYPE_CUP) {
-			CALL_SQLITE(bind_int64(stmt, 6, (sqlite3_int64)course->expires_at));
+			CALL_SQLITE(bind_int64(stmt, 5, (sqlite3_int64)course->expires_at));
 		} else {
-			CALL_SQLITE(bind_null(stmt, 6));
+			CALL_SQLITE(bind_null(stmt, 5));
 		}
-		CALL_SQLITE(bind_text(stmt, 7, revision, -1, SQLITE_STATIC));
+		CALL_SQLITE(bind_text(stmt, 6, revision, -1, SQLITE_STATIC));
+		CALL_SQLITE(bind_text(stmt, 7, course->id, -1, SQLITE_STATIC));
 		result = sqlite3_step(stmt) == SQLITE_DONE ? SQLITE_OK : SQLITE_ERROR;
 		CALL_SQLITE(finalize(stmt));
+		if (result == SQLITE_OK && sqlite3_changes(db) == 0) {
+			result = sqlite3_prepare_v2(db,
+				"INSERT INTO LocalSecretCourse(id, course_name, type, season_id, starts_at, expires_at, applied_revision, retired_at) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)",
+				-1, &stmt, NULL);
+			if (result != SQLITE_OK) break;
+			CALL_SQLITE(bind_text(stmt, 1, course->id, -1, SQLITE_STATIC));
+			CALL_SQLITE(bind_text(stmt, 2, course->course_name, -1, SQLITE_STATIC));
+			CALL_SQLITE(bind_int(stmt, 3, course->type));
+			if (course->type == SC_COURSE_TYPE_CUP) CALL_SQLITE(bind_text(stmt, 4, course->season_id, -1, SQLITE_STATIC)); else CALL_SQLITE(bind_null(stmt, 4));
+			CALL_SQLITE(bind_int64(stmt, 5, (sqlite3_int64)course->starts_at));
+			if (course->type == SC_COURSE_TYPE_CUP) CALL_SQLITE(bind_int64(stmt, 6, (sqlite3_int64)course->expires_at)); else CALL_SQLITE(bind_null(stmt, 6));
+			CALL_SQLITE(bind_text(stmt, 7, revision, -1, SQLITE_STATIC));
+			result = sqlite3_step(stmt) == SQLITE_DONE ? SQLITE_OK : SQLITE_ERROR;
+			CALL_SQLITE(finalize(stmt));
+		}
 	}
 	if (result == SQLITE_OK && plan.retirements) {
 		result = sqlite3_prepare_v2(db, "UPDATE LocalSecretCourse SET retired_at = ? WHERE retired_at IS NULL AND id NOT IN (SELECT id FROM LocalSecretCourse WHERE applied_revision = ? AND retired_at IS NULL)", -1, &stmt, NULL);

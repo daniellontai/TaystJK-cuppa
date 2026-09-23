@@ -228,6 +228,11 @@ int SC_CourseIdentityChanged(const sc_course_t *applied, const sc_course_t *prop
 		applied->type != proposed->type;
 }
 
+int SC_CourseIdentityCanChange(int has_event_history)
+{
+	return !has_event_history;
+}
+
 int SC_ConfigRequiresConfirmation(const sc_config_t *applied, const sc_config_t *proposed)
 {
 	int applied_index;

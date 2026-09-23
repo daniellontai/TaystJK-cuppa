@@ -6,6 +6,7 @@
 typedef struct {
 	int additions;
 	int retirements;
+	int corrections;
 	int changes;
 } sc_projection_plan_t;
 
@@ -17,6 +18,9 @@ void SC_ReconcileSchedule(time_t now);
 void SC_WriteStaticExports(void);
 
 qboolean SC_DBGetAppliedRevision(char revision[65]);
+qboolean SC_DBHasEventHistory(const char *id);
+qboolean SC_DBSnapshotLocalRuns(const char *id, const char *course_name);
+qboolean SC_DBGetLifecycleRows(sc_course_t *out, int capacity, int *count);
 qboolean SC_DBPlanProjection(const sc_config_t *config, sc_projection_plan_t *plan);
 qboolean SC_DBApplyProjection(const sc_config_t *config, const char *revision, qboolean allow_destructive);
 
