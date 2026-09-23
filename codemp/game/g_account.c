@@ -2093,6 +2093,7 @@ void G_AddRaceTime(char *username, char *message, int duration_ms, int style, in
 
 	CALL_SQLITE(open(LOCAL_DB_PATH, &db));
 	SC_RecordActiveCourseRun(db, username, coursename, style, duration_ms, topspeed, average, rawtime);
+	if (SC_IsTimeSecret(coursename)) SC_WriteStaticExports();
 
 	sql = "SELECT MIN(duration_ms), season_rank FROM LocalRun WHERE username = ? AND coursename = ? AND style = ? AND season = ? "
 		"UNION ALL SELECT MIN(duration_ms), rank FROM LocalRun WHERE username = ? AND coursename = ? AND style = ? AND invalid = 0";
@@ -7495,6 +7496,26 @@ void Cmd_ACWhois_f( gentity_t *ent ) { //why does this crash sometimes..? condit
 	//DebugWriteToDB("Cmd_ACWhois_f");
 }
 
+static void SC_EnsureLocalSecretCourseColumn(sqlite3 *db, const char *column, const char *definition)
+{
+	sqlite3_stmt *stmt;
+	int result;
+	qboolean found = qfalse;
+	char sql[160];
+
+	result = sqlite3_prepare_v2(db, "PRAGMA table_info(LocalSecretCourse)", -1, &stmt, NULL);
+	if (result != SQLITE_OK) return;
+	while (sqlite3_step(stmt) == SQLITE_ROW) {
+		const char *name = (const char *)sqlite3_column_text(stmt, 1);
+		if (name && !Q_stricmp(name, column)) { found = qtrue; break; }
+	}
+	CALL_SQLITE(finalize(stmt));
+	if (found) return;
+	Com_sprintf(sql, sizeof(sql), "ALTER TABLE LocalSecretCourse ADD COLUMN %s %s", column, definition);
+	if (sqlite3_exec(db, sql, NULL, NULL, NULL) != SQLITE_OK)
+		trap->Print("ERROR: Could not add Secret Course lifecycle column %s.\n", column);
+}
+
 void InitGameAccountStuff( void ) { //Called every mapload , move the create table stuff to something that gets called every srvr start.. eh?
 	sqlite3 * db;
     char * sql;
@@ -7575,12 +7596,15 @@ void InitGameAccountStuff( void ) { //Called every mapload , move the create tab
 
 	/* Configuration-owned Secret Course projection. LocalSecretCourses remains
 	 * temporarily for legacy active-course migration during rollout. */
-	sql = "CREATE TABLE IF NOT EXISTS LocalSecretCourse(id VARCHAR(64) PRIMARY KEY, course_name VARCHAR(40) NOT NULL UNIQUE, type UNSIGNED TINYINT NOT NULL, season_id VARCHAR(32), starts_at INTEGER NOT NULL, expires_at INTEGER, applied_revision VARCHAR(64) NOT NULL, retired_at INTEGER)";
+	sql = "CREATE TABLE IF NOT EXISTS LocalSecretCourse(id VARCHAR(64) PRIMARY KEY, course_name VARCHAR(40) NOT NULL UNIQUE, type UNSIGNED TINYINT NOT NULL, season_id VARCHAR(32), starts_at INTEGER NOT NULL, expires_at INTEGER, applied_revision VARCHAR(64) NOT NULL, retired_at INTEGER, activated_at INTEGER, finalized_at INTEGER, archive_completed_at INTEGER)";
 	CALL_SQLITE(prepare_v2(db, sql, strlen(sql) + 1, &stmt, NULL));
 	s = sqlite3_step(stmt);
 	if (s != SQLITE_DONE)
 		G_ErrorPrint("ERROR: SQL Create Failed (InitGameAccountStuff LocalSecretCourse)", s);
 	CALL_SQLITE(finalize(stmt));
+	SC_EnsureLocalSecretCourseColumn(db, "activated_at", "INTEGER");
+	SC_EnsureLocalSecretCourseColumn(db, "finalized_at", "INTEGER");
+	SC_EnsureLocalSecretCourseColumn(db, "archive_completed_at", "INTEGER");
 
 	sql = "CREATE TABLE IF NOT EXISTS LocalSecretCourseMeta(key TEXT PRIMARY KEY, value TEXT NOT NULL)";
 	CALL_SQLITE(prepare_v2(db, sql, strlen(sql) + 1, &stmt, NULL));
@@ -8030,18 +8054,21 @@ static qboolean SC_CopyDemoFile(const char *sourcePath, const char *destPath) {
 }
 
 // Archive demos for an expired secret course
-static void SC_ArchiveExpiredCourseDemos(const char *coursename) {
-    char cleanedCourseName[40];
+qboolean SC_ArchiveExpiredCourseDemos(const sc_course_t *course) {
+	char cleanedCourseName[40];
     char dirBuffer[16384];
     char fileBuffer[65536];
     char demoExt[16];
     int numDirs, numFiles, totalArchived = 0;
     char *dirname, *filename;
-    int i, j;
+	int i, j;
+	qboolean complete = qtrue;
+	const char *coursename;
 
-    if (!coursename || !coursename[0]) {
-        return;
-    }
+	if (!course || course->type != SC_COURSE_TYPE_CUP || !course->course_name[0]) {
+		return qfalse;
+	}
+	coursename = course->course_name;
 
     // Clean the coursename for filename matching (same process as demo recording)
     Q_strncpyz(cleanedCourseName, coursename, sizeof(cleanedCourseName));
@@ -8056,9 +8083,9 @@ static void SC_ArchiveExpiredCourseDemos(const char *coursename) {
     // Get list of user directories in demos/races/secret/
     numDirs = trap->FS_GetFileList("demos/races/secret", "/", dirBuffer, sizeof(dirBuffer));
 
-    if (numDirs == 0) {
-        trap->Print("SC_Archive: No user directories found in demos/races/secret/\n");
-        return;
+	if (numDirs == 0) {
+		trap->Print("SC_Archive: No user directories found in demos/races/secret/\n");
+		return qtrue;
     }
 
     trap->Print("SC_Archive: Found %d user directories\n", numDirs);
@@ -8074,9 +8101,7 @@ static void SC_ArchiveExpiredCourseDemos(const char *coursename) {
 
         // Get list of demo files in this user's directory
         char userDemoPath[MAX_QPATH];
-        char userExpiredPath[256];
-        Com_sprintf(userDemoPath, sizeof(userDemoPath), "demos/races/secret/%s", dirname);
-        Com_sprintf(userExpiredPath, sizeof(userExpiredPath), "demos/races/expired_secret/%s", dirname);
+		Com_sprintf(userDemoPath, sizeof(userDemoPath), "demos/races/secret/%s", dirname);
 
         numFiles = trap->FS_GetFileList(userDemoPath, demoExt, fileBuffer, sizeof(fileBuffer));
 
@@ -8095,22 +8120,14 @@ static void SC_ArchiveExpiredCourseDemos(const char *coursename) {
 
                 // Note: FS_GetFileList returns filenames WITH extension when extension filter is used
                 Com_sprintf(sourcePath, sizeof(sourcePath), "%s/%s", userDemoPath, filename);
-                Com_sprintf(destPath, sizeof(destPath), "demos/races/expired_secret/%s/%s", dirname, filename);
-
-                // Copy the file
-                if (SC_CopyDemoFile(sourcePath, destPath)) {
-                    trap->Print("SC_Archive: Copied %s to expired_secret/%s/%s\n", filename, dirname, filename);
-                    totalArchived++;
-
-                    // TODO: once 100% works, enable file deletion from /secret
-                    /*
-                    fileHandle_t deleteHandle;
-                    if (trap->FS_Open(sourcePath, &deleteHandle, FS_WRITE)) {
-                        trap->FS_Close(deleteHandle);
-                        trap->Print("SC_Archive: Moved (deleted original) %s\n", filename);
-                    }
-                    */
-                }
+				if (!SC_BuildArchivePath(destPath, sizeof(destPath), course->season_id, course->id, dirname, filename)) {
+					complete = qfalse;
+				} else if (SC_CopyDemoFile(sourcePath, destPath)) {
+					trap->Print("SC_Archive: Copied %s to expired_secret/%s/%s\n", filename, dirname, filename);
+					totalArchived++;
+				} else {
+					complete = qfalse;
+				}
             }
 
             filename += strlen(filename) + 1; // Move to next filename
@@ -8119,7 +8136,8 @@ static void SC_ArchiveExpiredCourseDemos(const char *coursename) {
         dirname += strlen(dirname) + 1; // Move to next directory name
     }
 
-    trap->Print("SC_Archive: Completed archival for %s (%d demos archived)\n", coursename, totalArchived);
+	trap->Print("SC_Archive: Completed archival for %s (%d demos archived)\n", coursename, totalArchived);
+	return complete;
 }
 
 void SC_CleanupSecretCourses(void) {
@@ -8475,18 +8493,12 @@ qboolean SC_DBHasEventHistory(const char *id)
 	return has_history;
 }
 
-qboolean SC_DBSnapshotLocalRuns(const char *id, const char *course_name)
+static int SC_DBSnapshotLocalRunsInDb(sqlite3 *db, const char *id, const char *course_name)
 {
-	sqlite3 *db;
 	sqlite3_stmt *stmt;
 	int result;
 
-	if (!id || !id[0] || !course_name || !course_name[0]) return qfalse;
-	CALL_SQLITE(open(LOCAL_DB_PATH, &db));
-	if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK) {
-		CALL_SQLITE(close(db));
-		return qfalse;
-	}
+	if (!db || !id || !id[0] || !course_name || !course_name[0]) return SQLITE_ERROR;
 	result = sqlite3_prepare_v2(db,
 		"INSERT OR IGNORE INTO LocalSecretCourseRun (secret_course_id, username, style, duration_ms, topspeed, average, end_time) "
 		"SELECT ?, run.username, run.style, run.duration_ms, run.topspeed, run.average, run.end_time "
@@ -8503,10 +8515,123 @@ qboolean SC_DBSnapshotLocalRuns(const char *id, const char *course_name)
 		result = sqlite3_step(stmt) == SQLITE_DONE ? SQLITE_OK : SQLITE_ERROR;
 		CALL_SQLITE(finalize(stmt));
 	}
+	return result;
+}
+
+qboolean SC_DBSnapshotLocalRuns(const char *id, const char *course_name)
+{
+	sqlite3 *db;
+	int result;
+
+	CALL_SQLITE(open(LOCAL_DB_PATH, &db));
+	if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK) { CALL_SQLITE(close(db)); return qfalse; }
+	result = SC_DBSnapshotLocalRunsInDb(db, id, course_name);
 	if (result == SQLITE_OK) result = sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
 	if (result != SQLITE_OK) sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
 	CALL_SQLITE(close(db));
 	return result == SQLITE_OK ? qtrue : qfalse;
+}
+
+qboolean SC_DBActivateCourse(const sc_course_t *course, time_t now)
+{
+	sqlite3 *db;
+	sqlite3_stmt *stmt;
+	int result;
+
+	if (!course || (course->type != SC_COURSE_TYPE_CUP && course->type != SC_COURSE_TYPE_PERMANENT)) return qfalse;
+	CALL_SQLITE(open(LOCAL_DB_PATH, &db));
+	if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK) { CALL_SQLITE(close(db)); return qfalse; }
+	result = sqlite3_prepare_v2(db, "SELECT activated_at FROM LocalSecretCourse WHERE id = ? AND retired_at IS NULL", -1, &stmt, NULL);
+	if (result == SQLITE_OK) {
+		CALL_SQLITE(bind_text(stmt, 1, course->id, -1, SQLITE_STATIC));
+		result = sqlite3_step(stmt);
+		if (result == SQLITE_ROW && sqlite3_column_type(stmt, 0) != SQLITE_NULL) result = SQLITE_ABORT;
+		else if (result == SQLITE_ROW) result = SQLITE_OK;
+		else result = SQLITE_ERROR;
+		CALL_SQLITE(finalize(stmt));
+	}
+	if (result == SQLITE_OK) result = SC_DBSnapshotLocalRunsInDb(db, course->id, course->course_name);
+	if (result == SQLITE_OK) {
+		result = sqlite3_prepare_v2(db, "UPDATE LocalSecretCourse SET activated_at = ? WHERE id = ? AND activated_at IS NULL", -1, &stmt, NULL);
+		if (result == SQLITE_OK) {
+			CALL_SQLITE(bind_int64(stmt, 1, (sqlite3_int64)now));
+			CALL_SQLITE(bind_text(stmt, 2, course->id, -1, SQLITE_STATIC));
+			result = sqlite3_step(stmt) == SQLITE_DONE && sqlite3_changes(db) == 1 ? SQLITE_OK : SQLITE_ERROR;
+			CALL_SQLITE(finalize(stmt));
+		}
+	}
+	if (result == SQLITE_OK) result = sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
+	if (result != SQLITE_OK) sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+	CALL_SQLITE(close(db));
+	return result == SQLITE_OK ? qtrue : qfalse;
+}
+
+qboolean SC_DBClaimExpiredCourse(const char *id, time_t now)
+{
+	sqlite3 *db;
+	sqlite3_stmt *stmt;
+	int result;
+	qboolean claimed = qfalse;
+
+	if (!id || !id[0]) return qfalse;
+	CALL_SQLITE(open(LOCAL_DB_PATH, &db));
+	result = sqlite3_prepare_v2(db, "UPDATE LocalSecretCourse SET finalized_at = ? WHERE id = ? AND type = ? AND retired_at IS NULL AND expires_at <= ? AND finalized_at IS NULL", -1, &stmt, NULL);
+	if (result == SQLITE_OK) {
+		CALL_SQLITE(bind_int64(stmt, 1, (sqlite3_int64)now));
+		CALL_SQLITE(bind_text(stmt, 2, id, -1, SQLITE_STATIC));
+		CALL_SQLITE(bind_int(stmt, 3, SC_COURSE_TYPE_CUP));
+		CALL_SQLITE(bind_int64(stmt, 4, (sqlite3_int64)now));
+		claimed = sqlite3_step(stmt) == SQLITE_DONE && sqlite3_changes(db) == 1 ? qtrue : qfalse;
+		CALL_SQLITE(finalize(stmt));
+	}
+	CALL_SQLITE(close(db));
+	return claimed;
+}
+
+qboolean SC_DBMarkArchiveComplete(const char *id, time_t now)
+{
+	sqlite3 *db;
+	sqlite3_stmt *stmt;
+	int result;
+
+	if (!id || !id[0]) return qfalse;
+	CALL_SQLITE(open(LOCAL_DB_PATH, &db));
+	result = sqlite3_prepare_v2(db, "UPDATE LocalSecretCourse SET archive_completed_at = ? WHERE id = ? AND finalized_at IS NOT NULL AND archive_completed_at IS NULL", -1, &stmt, NULL);
+	if (result == SQLITE_OK) {
+		CALL_SQLITE(bind_int64(stmt, 1, (sqlite3_int64)now));
+		CALL_SQLITE(bind_text(stmt, 2, id, -1, SQLITE_STATIC));
+		result = sqlite3_step(stmt) == SQLITE_DONE ? SQLITE_OK : SQLITE_ERROR;
+		CALL_SQLITE(finalize(stmt));
+	}
+	CALL_SQLITE(close(db));
+	return result == SQLITE_OK ? qtrue : qfalse;
+}
+
+void SC_DBLogExpiredCourseById(const char *id)
+{
+	sqlite3 *db;
+	sqlite3_stmt *stmt;
+	int result;
+	int rank = 0;
+
+	if (!id || !id[0]) return;
+	CALL_SQLITE(open(LOCAL_DB_PATH, &db));
+	result = sqlite3_prepare_v2(db, "SELECT username, duration_ms FROM LocalSecretCourseRun WHERE secret_course_id = ? AND style = ? ORDER BY duration_ms, username", -1, &stmt, NULL);
+	if (result == SQLITE_OK) {
+		CALL_SQLITE(bind_text(stmt, 1, id, -1, SQLITE_STATIC));
+		CALL_SQLITE(bind_int(stmt, 2, MV_JKA));
+		trap->Print("--SCLOG-START-- FINAL_STANDINGS: %s\n", id);
+		while (sqlite3_step(stmt) == SQLITE_ROW) {
+			const char *username = (const char *)sqlite3_column_text(stmt, 0);
+			int duration = sqlite3_column_int(stmt, 1);
+			rank++;
+			trap->Print("--SCLOG-- %d. %s %dms\n", rank, username ? username : "unknown", duration);
+			trap->SendServerCommand(-1, va("print \"^3Secret Course final standings:^7 %d. %s - %dms\\n\"", rank, username ? username : "unknown", duration));
+		}
+		trap->Print("--SCLOG-END-- FINAL_STANDINGS: %s\n", id);
+		CALL_SQLITE(finalize(stmt));
+	}
+	CALL_SQLITE(close(db));
 }
 
 qboolean SC_DBGetLifecycleRows(sc_course_t *out, int capacity, int *count)
@@ -8519,7 +8644,7 @@ qboolean SC_DBGetLifecycleRows(sc_course_t *out, int capacity, int *count)
 	if (!out || capacity < 1 || !count) return qfalse;
 	*count = 0;
 	CALL_SQLITE(open(LOCAL_DB_PATH, &db));
-	result = sqlite3_prepare_v2(db, "SELECT id, course_name, type, season_id, starts_at, expires_at FROM LocalSecretCourse WHERE retired_at IS NULL ORDER BY starts_at, id", -1, &stmt, NULL);
+	result = sqlite3_prepare_v2(db, "SELECT id, course_name, type, season_id, starts_at, expires_at, activated_at, finalized_at, archive_completed_at FROM LocalSecretCourse WHERE retired_at IS NULL ORDER BY starts_at, id", -1, &stmt, NULL);
 	if (result != SQLITE_OK) { CALL_SQLITE(close(db)); return qfalse; }
 	while ((result = sqlite3_step(stmt)) == SQLITE_ROW) {
 		const unsigned char *season_id;
@@ -8532,6 +8657,9 @@ qboolean SC_DBGetLifecycleRows(sc_course_t *out, int capacity, int *count)
 		if (season_id) Q_strncpyz(out[row_count].season_id, (const char *)season_id, sizeof(out[row_count].season_id));
 		out[row_count].starts_at = (time_t)sqlite3_column_int64(stmt, 4);
 		out[row_count].expires_at = sqlite3_column_type(stmt, 5) == SQLITE_NULL ? 0 : (time_t)sqlite3_column_int64(stmt, 5);
+		out[row_count].activated_at = sqlite3_column_type(stmt, 6) == SQLITE_NULL ? 0 : (time_t)sqlite3_column_int64(stmt, 6);
+		out[row_count].finalized_at = sqlite3_column_type(stmt, 7) == SQLITE_NULL ? 0 : (time_t)sqlite3_column_int64(stmt, 7);
+		out[row_count].archive_completed_at = sqlite3_column_type(stmt, 8) == SQLITE_NULL ? 0 : (time_t)sqlite3_column_int64(stmt, 8);
 		row_count++;
 	}
 	CALL_SQLITE(finalize(stmt));
@@ -8630,9 +8758,17 @@ qboolean SC_DBApplyProjection(const sc_config_t *config, const char *revision, q
 			CALL_SQLITE(bind_text(stmt, 1, course->id, -1, SQLITE_STATIC));
 			CALL_SQLITE(bind_text(stmt, 2, course->course_name, -1, SQLITE_STATIC));
 			CALL_SQLITE(bind_int(stmt, 3, course->type));
-			if (course->type == SC_COURSE_TYPE_CUP) CALL_SQLITE(bind_text(stmt, 4, course->season_id, -1, SQLITE_STATIC)); else CALL_SQLITE(bind_null(stmt, 4));
+			if (course->type == SC_COURSE_TYPE_CUP) {
+				CALL_SQLITE(bind_text(stmt, 4, course->season_id, -1, SQLITE_STATIC));
+			} else {
+				CALL_SQLITE(bind_null(stmt, 4));
+			}
 			CALL_SQLITE(bind_int64(stmt, 5, (sqlite3_int64)course->starts_at));
-			if (course->type == SC_COURSE_TYPE_CUP) CALL_SQLITE(bind_int64(stmt, 6, (sqlite3_int64)course->expires_at)); else CALL_SQLITE(bind_null(stmt, 6));
+			if (course->type == SC_COURSE_TYPE_CUP) {
+				CALL_SQLITE(bind_int64(stmt, 6, (sqlite3_int64)course->expires_at));
+			} else {
+				CALL_SQLITE(bind_null(stmt, 6));
+			}
 			CALL_SQLITE(bind_text(stmt, 7, revision, -1, SQLITE_STATIC));
 			result = sqlite3_step(stmt) == SQLITE_DONE ? SQLITE_OK : SQLITE_ERROR;
 			CALL_SQLITE(finalize(stmt));

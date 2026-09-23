@@ -33,6 +33,9 @@ typedef struct {
 	char season_id[SC_SEASON_ID_MAX + 1];
 	time_t starts_at;
 	time_t expires_at;
+	time_t activated_at;
+	time_t finalized_at;
+	time_t archive_completed_at;
 } sc_course_t;
 
 typedef struct {
@@ -82,6 +85,7 @@ void SC_FreeConfig(sc_config_t *config);
 int SC_ConfigRequiresConfirmation(const sc_config_t *applied, const sc_config_t *proposed);
 int SC_CourseIdentityChanged(const sc_course_t *applied, const sc_course_t *proposed);
 int SC_CourseIdentityCanChange(int has_event_history);
+time_t SC_NextConfiguredTransition(const sc_config_t *config, time_t now);
 void SC_CollectTransitions(const sc_config_t *config, time_t previous, time_t now, sc_transition_set_t *out);
 int SC_IsConfiguredCourseActive(const sc_config_t *config, const char *course_name, time_t now);
 int SC_PlanDemoArchive(sc_demo_move_t *out, const char *player_and_file, const char *season_id, const char *course_id);

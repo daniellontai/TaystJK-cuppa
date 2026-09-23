@@ -2133,6 +2133,7 @@ void SC_CleanupSecretCourses(void);
 void SC_LoadSecretCourses(void);
 qboolean SC_IsTimeSecret(const char *coursename);
 void SC_ReconcileSchedule(time_t now);
+time_t SC_GetNextTransitionTime(void);
 void SC_NotifyConfigRevisionAfterAdminLogin(gentity_t *ent);
 void SC_WriteStaticExports(void);
 void SC_AddSecretCourse(const char *coursename, time_t secret_until);

@@ -233,6 +233,21 @@ int SC_CourseIdentityCanChange(int has_event_history)
 	return !has_event_history;
 }
 
+time_t SC_NextConfiguredTransition(const sc_config_t *config, time_t now)
+{
+	time_t next = 0;
+	int index;
+
+	if (!config) return 0;
+	for (index = 0; index < config->num_courses; index++) {
+		const sc_course_t *course = &config->courses[index];
+		if (course->starts_at > now && (!next || course->starts_at < next)) next = course->starts_at;
+		if (course->type == SC_COURSE_TYPE_CUP && course->expires_at > now &&
+			(!next || course->expires_at < next)) next = course->expires_at;
+	}
+	return next;
+}
+
 int SC_ConfigRequiresConfirmation(const sc_config_t *applied, const sc_config_t *proposed)
 {
 	int applied_index;

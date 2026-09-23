@@ -3599,10 +3599,8 @@ void G_RunFrame( int levelTime ) {
 		}
 	}
 
-	static int lastSecretCleanup = 0;
-	if (level.time - lastSecretCleanup > 1 * 60 * 1000) { // x mins
-		SC_CleanupSecretCourses();
-		lastSecretCleanup = level.time;
+	if (SC_GetNextTransitionTime() && time(NULL) >= SC_GetNextTransitionTime()) {
+		SC_ReconcileSchedule(time(NULL));
 	}
 
 	if (level.gametype == GT_SIEGE &&

@@ -124,13 +124,61 @@ void SC_NotifyConfigRevisionAfterAdminLogin(gentity_t *ent)
 	trap->Print("Secret Courses cfg revision mismatch for full admin %s.\n", ent->client->pers.userName);
 }
 
+static time_t sc_next_transition_time;
+static time_t sc_archive_retry_time;
+static qboolean sc_cache_loaded;
+
+time_t SC_GetNextTransitionTime(void)
+{
+	return sc_next_transition_time;
+}
+
 void SC_ReconcileSchedule(time_t now)
 {
-	static time_t last_reconcile;
+	sc_course_t courses[SC_MAX_COURSES];
+	sc_config_t config;
+	int count;
+	int index;
+	qboolean refresh_cache = sc_cache_loaded ? qfalse : qtrue;
+	qboolean refresh_exports = qfalse;
 
-	if (now < last_reconcile) last_reconcile = 0;
-	SC_LoadSecretCourses();
-	last_reconcile = now;
+	if (!SC_DBGetLifecycleRows(courses, SC_MAX_COURSES, &count)) return;
+	memset(&config, 0, sizeof(config));
+	for (index = 0; index < count; index++) {
+		sc_course_t *course = &courses[index];
+		sc_course_state_t state = SC_ResolveCourseState(course, now);
+		config.courses[config.num_courses++] = *course;
+		if (state == SC_COURSE_STATE_ACTIVE && !course->activated_at) {
+			if (SC_DBActivateCourse(course, now)) {
+				refresh_cache = qtrue;
+				refresh_exports = qtrue;
+			}
+		} else if (state == SC_COURSE_STATE_EXPIRED && course->type == SC_COURSE_TYPE_CUP) {
+			qboolean claimed = SC_DBClaimExpiredCourse(course->id, now);
+			if (claimed) {
+				SC_DBLogExpiredCourseById(course->id);
+				refresh_cache = qtrue;
+				refresh_exports = qtrue;
+			}
+			if ((claimed || !course->archive_completed_at) && (!sc_archive_retry_time || now >= sc_archive_retry_time)) {
+				if (SC_ArchiveExpiredCourseDemos(course)) {
+					SC_DBMarkArchiveComplete(course->id, now);
+					sc_archive_retry_time = 0;
+					refresh_exports = qtrue;
+				} else {
+					sc_archive_retry_time = now + 60;
+				}
+			}
+		}
+	}
+	if (refresh_cache) {
+		SC_LoadSecretCourses();
+		sc_cache_loaded = qtrue;
+	}
+	if (refresh_exports) SC_WriteStaticExports();
+	sc_next_transition_time = SC_NextConfiguredTransition(&config, now);
+	if (sc_archive_retry_time && (!sc_next_transition_time || sc_archive_retry_time < sc_next_transition_time))
+		sc_next_transition_time = sc_archive_retry_time;
 }
 
 static void SC_WriteStaticFile(const char *path, const char *text)
