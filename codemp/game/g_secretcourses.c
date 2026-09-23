@@ -54,15 +54,15 @@ void SC_ValidateConfig_f(gentity_t *ent)
 		return;
 	}
 	if (!SC_ReadAndValidateConfig(&config, revision, &error)) {
-		trap->SendServerCommand(ent - g_entities, va("print \"Secret Courses cfg invalid%s%s\\n\"", error.line ? " at line " : "", error.line ? va("%d", error.line) : ""));
+		trap->SendServerCommand(ent - g_entities, va("print \"Secret Courses cfg invalid%s%s\n\"", error.line ? " at line " : "", error.line ? va("%d", error.line) : ""));
 		return;
 	}
 	if (!SC_DBPlanProjection(&config, &plan)) {
-		trap->SendServerCommand(ent - g_entities, "print \"Could not read Secret Course projection.\\n\"");
+		trap->SendServerCommand(ent - g_entities, "print \"Could not read Secret Course projection.\n\"");
 		return;
 	}
 	SC_DBGetAppliedRevision(applied);
-	trap->SendServerCommand(ent - g_entities, va("print \"Secret Courses cfg valid (%d courses, revision %s): %d additions, %d retirements, %d identity changes; applied revision %s.\\n\"", config.num_courses, revision, plan.additions, plan.retirements, plan.changes, applied[0] ? applied : "none"));
+	trap->SendServerCommand(ent - g_entities, va("print \"Secret Courses cfg valid (%d courses, revision %s): %d additions, %d retirements, %d identity changes; applied revision %s.\n\"", config.num_courses, revision, plan.additions, plan.retirements, plan.changes, applied[0] ? applied : "none"));
 }
 
 void SC_ApplyConfig_f(gentity_t *ent)
@@ -80,7 +80,7 @@ void SC_ApplyConfig_f(gentity_t *ent)
 		return;
 	}
 	if (!SC_ReadAndValidateConfig(&config, revision, &error) || !SC_DBPlanProjection(&config, &projection)) {
-		trap->SendServerCommand(ent - g_entities, "print \"Secret Courses cfg is invalid or its projection cannot be read.\\n\"");
+		trap->SendServerCommand(ent - g_entities, "print \"Secret Courses cfg is invalid or its projection cannot be read.\n\"");
 		return;
 	}
 	time(&now);
@@ -89,18 +89,22 @@ void SC_ApplyConfig_f(gentity_t *ent)
 		confirming = !Q_stricmp(token, "confirm");
 		trap->Argv(2, token, sizeof(token));
 	}
-	if (projection.retirements || projection.changes) {
+	if (projection.changes) {
+		trap->SendServerCommand(ent - g_entities, "print \"Secret Course IDs cannot change course name or type. Create a new ID instead.\n\"");
+		return;
+	}
+	if (projection.retirements) {
 		if (!confirming || !SC_CanConfirmApply(token, revision, now)) {
 			SC_RememberApplyPlan(&plan, revision, 1, now);
-			trap->SendServerCommand(ent - g_entities, va("print \"Destructive Secret Course plan: %d retirements, %d identity changes. Confirm within %d seconds: /sc_applycfg confirm %s\\n\"", projection.retirements, projection.changes, SC_APPLY_PLAN_TTL, plan.token));
+			trap->SendServerCommand(ent - g_entities, va("print \"Destructive Secret Course plan: %d retirements. Confirm within %d seconds: /sc_applycfg confirm %s\n\"", projection.retirements, SC_APPLY_PLAN_TTL, plan.token));
 			return;
 		}
 	}
 	if (!SC_DBApplyProjection(&config, revision, confirming)) {
-		trap->SendServerCommand(ent - g_entities, "print \"Secret Courses projection was not applied. Revalidate and retry.\\n\"");
+		trap->SendServerCommand(ent - g_entities, "print \"Secret Courses projection was not applied. Revalidate and retry.\n\"");
 		return;
 	}
-	trap->SendServerCommand(ent - g_entities, va("print \"Secret Courses cfg revision %s applied.\\n\"", revision));
+	trap->SendServerCommand(ent - g_entities, va("print \"Secret Courses cfg revision %s applied.\n\"", revision));
 	SC_ReconcileSchedule(now);
 	SC_WriteStaticExports();
 }
@@ -116,8 +120,8 @@ void SC_NotifyConfigRevisionAfterAdminLogin(gentity_t *ent)
 		!SC_ReadAndValidateConfig(&config, revision, &error) || !SC_DBGetAppliedRevision(applied) || !Q_stricmp(applied, revision)) {
 		return;
 	}
-	trap->SendServerCommand(ent - g_entities, "print \"Secret Courses cfg differs from the applied projection; run /sc_validatecfg then /sc_applycfg.\\n\"");
-	trap->Print("Secret Courses cfg revision mismatch for full admin %s.\\n", ent->client->pers.userName);
+	trap->SendServerCommand(ent - g_entities, "print \"Secret Courses cfg differs from the applied projection; run /sc_validatecfg then /sc_applycfg.\n\"");
+	trap->Print("Secret Courses cfg revision mismatch for full admin %s.\n", ent->client->pers.userName);
 }
 
 void SC_ReconcileSchedule(time_t now)

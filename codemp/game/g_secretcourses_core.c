@@ -381,7 +381,7 @@ void SC_RememberApplyPlan(sc_apply_plan_t *plan, const char *revision, int destr
 	if (!plan || !revision) return;
 	memset(plan, 0, sizeof(*plan));
 	hash = SC_HashText(revision) ^ (unsigned int)now;
-	snprintf(plan->token, sizeof(plan->token), "%08x%08x", hash, hash ^ 0xa5a5a5a5u);
+	snprintf(plan->token, sizeof(plan->token), "%06x", hash & 0xffffffu);
 	SC_CopyToken(plan->revision, sizeof(plan->revision), revision);
 	plan->expires_at = now + SC_APPLY_PLAN_TTL;
 	plan->destructive = destructive != 0;
