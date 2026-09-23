@@ -62,7 +62,7 @@ void SC_ValidateConfig_f(gentity_t *ent)
 		return;
 	}
 	SC_DBGetAppliedRevision(applied);
-	trap->SendServerCommand(ent - g_entities, va("print \"Secret Courses cfg valid (%d courses, revision %s): %d additions, %d retirements, %d correctable identity changes, %d blocked identity changes; applied revision %s.\n\"", config.num_courses, revision, plan.additions, plan.retirements, plan.corrections, plan.changes, applied[0] ? applied : "none"));
+	trap->SendServerCommand(ent - g_entities, va("print \"Secret Courses cfg valid (%d courses, revision %s): %d additions, %d retirements, %d correctable identity changes, %d blocked identity changes, %d schedule conflicts; applied revision %s.\n\"", config.num_courses, revision, plan.additions, plan.retirements, plan.corrections, plan.changes, plan.schedule_conflicts, applied[0] ? applied : "none"));
 }
 
 void SC_ApplyConfig_f(gentity_t *ent)
@@ -93,6 +93,10 @@ void SC_ApplyConfig_f(gentity_t *ent)
 		trap->SendServerCommand(ent - g_entities, "print \"Secret Course IDs cannot change course name or type. Create a new ID instead.\n\"");
 		return;
 	}
+	if (projection.schedule_conflicts) {
+		trap->SendServerCommand(ent - g_entities, "print \"Secret Course schedules for the same course name may not overlap.\n\"");
+		return;
+	}
 	if (projection.retirements || projection.corrections) {
 		if (!confirming || !SC_CanConfirmApply(token, revision, now)) {
 			SC_RememberApplyPlan(&plan, revision, 1, now);
@@ -105,6 +109,7 @@ void SC_ApplyConfig_f(gentity_t *ent)
 		return;
 	}
 	trap->SendServerCommand(ent - g_entities, va("print \"Secret Courses cfg revision %s applied.\n\"", revision));
+	SC_LoadSecretCourses();
 	SC_ReconcileSchedule(now);
 	SC_WriteStaticExports();
 }

@@ -253,6 +253,15 @@ int SC_ShouldNotifyAfterFullAdminLogin(int gained_full_admin, int revision_misma
 	return gained_full_admin && revision_mismatch;
 }
 
+int SC_CourseSchedulesOverlap(const sc_course_t *first, const sc_course_t *second)
+{
+	if (!first || !second || strcmp(first->course_name, second->course_name)) return 0;
+	if (first->type == SC_COURSE_TYPE_PERMANENT && second->type == SC_COURSE_TYPE_PERMANENT) return 1;
+	if (first->type == SC_COURSE_TYPE_PERMANENT) return second->expires_at > first->starts_at;
+	if (second->type == SC_COURSE_TYPE_PERMANENT) return first->expires_at > second->starts_at;
+	return first->starts_at < second->expires_at && second->starts_at < first->expires_at;
+}
+
 int SC_ConfigRequiresConfirmation(const sc_config_t *applied, const sc_config_t *proposed)
 {
 	int applied_index;

@@ -8,6 +8,7 @@ typedef struct {
 	int retirements;
 	int corrections;
 	int changes;
+	int schedule_conflicts;
 } sc_projection_plan_t;
 
 qboolean SC_ReadAndValidateConfig(sc_config_t *config, char revision[65], sc_validation_result_t *error);

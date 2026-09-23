@@ -7515,6 +7515,27 @@ static void SC_EnsureLocalSecretCourseColumn(sqlite3 *db, const char *column, co
 		trap->Print("ERROR: Could not add Secret Course lifecycle column %s.\n", column);
 }
 
+static void SC_MigrateLocalSecretCourseNameConstraint(sqlite3 *db)
+{
+	sqlite3_stmt *stmt;
+	const char *schema = NULL;
+	int result;
+
+	result = sqlite3_prepare_v2(db, "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'LocalSecretCourse'", -1, &stmt, NULL);
+	if (result != SQLITE_OK) return;
+	if (sqlite3_step(stmt) == SQLITE_ROW) schema = (const char *)sqlite3_column_text(stmt, 0);
+	if (!schema || !strstr(schema, "course_name VARCHAR(40) NOT NULL UNIQUE")) { CALL_SQLITE(finalize(stmt)); return; }
+	CALL_SQLITE(finalize(stmt));
+	if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK) return;
+	result = sqlite3_exec(db,
+		"CREATE TABLE LocalSecretCourse_migrated(id VARCHAR(64) PRIMARY KEY, course_name VARCHAR(40) NOT NULL, type UNSIGNED TINYINT NOT NULL, season_id VARCHAR(32), starts_at INTEGER NOT NULL, expires_at INTEGER, applied_revision VARCHAR(64) NOT NULL, retired_at INTEGER, activated_at INTEGER, finalized_at INTEGER, archive_completed_at INTEGER);"
+		"INSERT INTO LocalSecretCourse_migrated SELECT id, course_name, type, season_id, starts_at, expires_at, applied_revision, retired_at, activated_at, finalized_at, archive_completed_at FROM LocalSecretCourse;"
+		"DROP TABLE LocalSecretCourse;"
+		"ALTER TABLE LocalSecretCourse_migrated RENAME TO LocalSecretCourse;",
+		NULL, NULL, NULL);
+	if (result == SQLITE_OK) sqlite3_exec(db, "COMMIT", NULL, NULL, NULL); else sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+}
+
 void InitGameAccountStuff( void ) { //Called every mapload , move the create table stuff to something that gets called every srvr start.. eh?
 	sqlite3 * db;
     char * sql;
@@ -7595,7 +7616,7 @@ void InitGameAccountStuff( void ) { //Called every mapload , move the create tab
 
 	/* Configuration-owned Secret Course projection. LocalSecretCourses remains
 	 * temporarily for legacy active-course migration during rollout. */
-	sql = "CREATE TABLE IF NOT EXISTS LocalSecretCourse(id VARCHAR(64) PRIMARY KEY, course_name VARCHAR(40) NOT NULL UNIQUE, type UNSIGNED TINYINT NOT NULL, season_id VARCHAR(32), starts_at INTEGER NOT NULL, expires_at INTEGER, applied_revision VARCHAR(64) NOT NULL, retired_at INTEGER, activated_at INTEGER, finalized_at INTEGER, archive_completed_at INTEGER)";
+	sql = "CREATE TABLE IF NOT EXISTS LocalSecretCourse(id VARCHAR(64) PRIMARY KEY, course_name VARCHAR(40) NOT NULL, type UNSIGNED TINYINT NOT NULL, season_id VARCHAR(32), starts_at INTEGER NOT NULL, expires_at INTEGER, applied_revision VARCHAR(64) NOT NULL, retired_at INTEGER, activated_at INTEGER, finalized_at INTEGER, archive_completed_at INTEGER)";
 	CALL_SQLITE(prepare_v2(db, sql, strlen(sql) + 1, &stmt, NULL));
 	s = sqlite3_step(stmt);
 	if (s != SQLITE_DONE)
@@ -7604,6 +7625,7 @@ void InitGameAccountStuff( void ) { //Called every mapload , move the create tab
 	SC_EnsureLocalSecretCourseColumn(db, "activated_at", "INTEGER");
 	SC_EnsureLocalSecretCourseColumn(db, "finalized_at", "INTEGER");
 	SC_EnsureLocalSecretCourseColumn(db, "archive_completed_at", "INTEGER");
+	SC_MigrateLocalSecretCourseNameConstraint(db);
 
 	sql = "CREATE TABLE IF NOT EXISTS LocalSecretCourseMeta(key TEXT PRIMARY KEY, value TEXT NOT NULL)";
 	CALL_SQLITE(prepare_v2(db, sql, strlen(sql) + 1, &stmt, NULL));
@@ -8700,6 +8722,13 @@ qboolean SC_DBPlanProjection(const sc_config_t *config, sc_projection_plan_t *pl
 	CALL_SQLITE(finalize(stmt));
 	if (result != SQLITE_DONE) { CALL_SQLITE(close(db)); return qfalse; }
 	for (index = 0; index < config->num_courses; index++) {
+		int other;
+		for (other = index + 1; other < config->num_courses; other++) {
+			if (SC_CourseSchedulesOverlap(&config->courses[index], &config->courses[other]))
+				plan->schedule_conflicts++;
+		}
+	}
+	for (index = 0; index < config->num_courses; index++) {
 		int exists = 0;
 		result = sqlite3_prepare_v2(db, "SELECT 1 FROM LocalSecretCourse WHERE id = ?", -1, &stmt, NULL);
 		if (result != SQLITE_OK) { CALL_SQLITE(close(db)); return qfalse; }
@@ -8721,7 +8750,7 @@ qboolean SC_DBApplyProjection(const sc_config_t *config, const char *revision, q
 	int index;
 	int result = SQLITE_OK;
 
-	if (!config || !revision || !SC_DBPlanProjection(config, &plan) || plan.changes ||
+	if (!config || !revision || !SC_DBPlanProjection(config, &plan) || plan.changes || plan.schedule_conflicts ||
 		((plan.retirements > 0 || plan.corrections > 0) && !allow_destructive)) return qfalse;
 	time(&now);
 	CALL_SQLITE(open(LOCAL_DB_PATH, &db));
