@@ -104,9 +104,11 @@ void SC_ApplyConfig_f(gentity_t *ent)
 	sc_validation_result_t error;
 	sc_projection_plan_t projection;
 	sc_apply_plan_t plan;
+	sc_course_t applied_courses[SC_MAX_COURSES];
 	char revision[65];
 	char token[32];
 	time_t now;
+	int applied_count;
 	qboolean confirming = qfalse;
 
 	if (!G_AdminAllowed(ent, JAPRO_ACCOUNTFLAG_A_GRANTADMIN, qfalse, qfalse, "sc_applycfg")) {
@@ -121,8 +123,28 @@ void SC_ApplyConfig_f(gentity_t *ent)
 		return;
 	}
 	time(&now);
+	if (projection.changes) {
+		trap->SendServerCommand(ent - g_entities, "print \"Finalized Secret Course IDs cannot change name, type, season, start, or expiry. Create a new ID instead.\n\"");
+		return;
+	}
+	if (projection.schedule_conflicts) {
+		trap->SendServerCommand(ent - g_entities, "print \"Secret Course schedules for the same course name may not overlap.\n\"");
+		return;
+	}
+	if (!SC_DBGetAppliedCourses(applied_courses, SC_MAX_COURSES, &applied_count)) {
+		trap->SendServerCommand(ent - g_entities, "print \"Could not read Secret Course projection.\n\"");
+		return;
+	}
 	for (int course_index = 0; course_index < config.num_courses; course_index++) {
-		if (!SC_CourseCanBeApplied(&config.courses[course_index], now)) {
+		int applied_index;
+		qboolean already_finalized = qfalse;
+		for (applied_index = 0; applied_index < applied_count; applied_index++) {
+			if (!strcmp(applied_courses[applied_index].id, config.courses[course_index].id) && applied_courses[applied_index].finalized_at) {
+				already_finalized = qtrue;
+				break;
+			}
+		}
+		if (!SC_CourseCanBeAppliedOrRetainFinalized(&config.courses[course_index], already_finalized, now)) {
 			trap->SendServerCommand(ent - g_entities, va("print \"Secret Course %s is already expired and cannot be applied.\n\"", config.courses[course_index].id));
 			return;
 		}
@@ -131,14 +153,6 @@ void SC_ApplyConfig_f(gentity_t *ent)
 		trap->Argv(1, token, sizeof(token));
 		confirming = !Q_stricmp(token, "confirm");
 		trap->Argv(2, token, sizeof(token));
-	}
-	if (projection.changes) {
-		trap->SendServerCommand(ent - g_entities, "print \"Secret Course IDs cannot change course name or type. Create a new ID instead.\n\"");
-		return;
-	}
-	if (projection.schedule_conflicts) {
-		trap->SendServerCommand(ent - g_entities, "print \"Secret Course schedules for the same course name may not overlap.\n\"");
-		return;
 	}
 	if (projection.retirements || projection.corrections) {
 		if (!confirming || !SC_CanConfirmApply(token, revision, now)) {
@@ -252,6 +266,7 @@ void SC_WriteStaticExports(void)
 	int index;
 	time_t now;
 	qboolean first = qtrue;
+	qboolean status_full = qfalse;
 
 	if (!SC_DBGetAppliedCourses(courses, SC_MAX_COURSES, &count) || !SC_DBGetAppliedRevision(revision) ||
 		!SC_JsonWriteEscapedString(escaped_revision, sizeof(escaped_revision), revision)) return;
@@ -278,10 +293,14 @@ void SC_WriteStaticExports(void)
 		if (written < 0 || (size_t)written >= sizeof(path)) continue;
 		if (!SC_DBRenderLeaderboardJson(leaderboard, sizeof(leaderboard), course, state, revision)) continue;
 		SC_WriteStaticFile(path, leaderboard);
+		if (status_full) continue;
 		written = Com_sprintf(status_path, sizeof(status_path), "/%s", path);
 		if (written < 0 || (size_t)written >= sizeof(status_path) ||
 			!SC_AppendStatusCourseJson(status_row, sizeof(status_row), course->id, course->course_name, kind, lifecycle, visibility, status_path)) continue;
-		if (used + (first ? 0 : 1) + (int)strlen(status_row) + 3 > (int)sizeof(status)) break;
+		if (!SC_StatusJsonHasRoom((size_t)used + (first ? 0 : 1), strlen(status_row), sizeof(status))) {
+			status_full = qtrue;
+			continue;
+		}
 		if (!first) status[used++] = ',';
 		Q_strncpyz(status + used, status_row, sizeof(status) - used);
 		used += strlen(status_row);

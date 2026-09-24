@@ -278,6 +278,11 @@ int SC_CourseCanBeApplied(const sc_course_t *course, time_t now)
 	return course && (course->type == SC_COURSE_TYPE_PERMANENT || course->expires_at > now);
 }
 
+int SC_CourseCanBeAppliedOrRetainFinalized(const sc_course_t *course, int already_finalized, time_t now)
+{
+	return already_finalized || SC_CourseCanBeApplied(course, now);
+}
+
 int SC_ConfigRequiresConfirmation(const sc_config_t *applied, const sc_config_t *proposed)
 {
 	int applied_index;
@@ -400,6 +405,11 @@ int SC_AppendStatusCourseJson(char *out, size_t out_size, const char *id, const 
 		!SC_JsonWriteEscapedString(escaped_path, sizeof(escaped_path), leaderboard_path)) return 0;
 	written = snprintf(out, out_size, "{\"id\":%s,\"course_name\":%s,\"type\":%s,\"lifecycle\":%s,\"demos_visibility\":%s,\"leaderboard_path\":%s}", escaped_id, escaped_name, escaped_type, escaped_lifecycle, escaped_visibility, escaped_path);
 	return written >= 0 && (size_t)written < out_size;
+}
+
+int SC_StatusJsonHasRoom(size_t used, size_t row_length, size_t capacity)
+{
+	return used + row_length + 3 <= capacity;
 }
 
 int SC_ShouldAttemptArchiveRetry(time_t retry_at, time_t now)
