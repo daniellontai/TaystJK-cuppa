@@ -24,6 +24,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 
 
 #include "g_local.h"
+#include "g_secretcourses.h"
 #include "g_ICARUScb.h"
 #include "g_nav.h"
 #include "bg_saga.h"
@@ -422,6 +423,7 @@ void G_InitGame( int levelTime, int randomSeed, int restart ) {
 	G_SpawnCapRoutesFromCFG();
 	G_SpawnCosmeticUnlocks();
 	InitGameAccountStuff();
+	SC_EnsureConfigTemplate();
 	SC_ReconcileSchedule(time(NULL));
 	SetGametypeFuncSolids();
 

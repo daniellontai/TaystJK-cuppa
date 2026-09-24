@@ -83,6 +83,17 @@ int SC_ValidatePathComponent(const char *component)
 	return 1;
 }
 
+int SC_ValidateExportPathIds(const sc_course_t *course)
+{
+	if (!course) {
+		return 0;
+	}
+	if (course->type == SC_COURSE_TYPE_CUP) {
+		return strlen(course->season_id) + strlen(course->id) <= 27;
+	}
+	return course->type == SC_COURSE_TYPE_PERMANENT && strlen(course->id) <= 22;
+}
+
 int SC_BuildArchivePath(char *out, size_t out_size, const char *season_id,
 	const char *course_id, const char *player, const char *filename)
 {
@@ -418,6 +429,7 @@ int SC_ParseConfigText(const char *text, sc_config_t *out, sc_validation_result_
 				course->type = SC_COURSE_TYPE_PERMANENT;
 				if (!SC_ParseUtcTimestamp(tokens[4], &course->starts_at)) { SC_SetValidationError(result, line_number, "invalid permanent schedule"); goto fail; }
 			} else { SC_SetValidationError(result, line_number, "invalid course type"); goto fail; }
+			if (!SC_ValidateExportPathIds(course)) { SC_SetValidationError(result, line_number, "course ID is too long for its public export path"); goto fail; }
 			out->num_courses++;
 		} else { SC_SetValidationError(result, line_number, "unknown directive"); goto fail; }
 next_line:

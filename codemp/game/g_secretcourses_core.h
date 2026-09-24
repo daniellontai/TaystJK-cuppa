@@ -77,6 +77,7 @@ typedef struct {
 int SC_ParseUtcTimestamp(const char *text, time_t *out);
 sc_course_state_t SC_ResolveCourseState(const sc_course_t *course, time_t now);
 int SC_ValidatePathComponent(const char *component);
+int SC_ValidateExportPathIds(const sc_course_t *course);
 int SC_BuildArchivePath(char *out, size_t out_size, const char *season_id,
 	const char *course_id, const char *player, const char *filename);
 int SC_JsonWriteEscapedString(char *out, size_t out_size, const char *value);

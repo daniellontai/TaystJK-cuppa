@@ -8751,22 +8751,33 @@ qboolean SC_DBPlanProjection(const sc_config_t *config, sc_projection_plan_t *pl
 	if (!config || !plan) return qfalse;
 	memset(plan, 0, sizeof(*plan));
 	CALL_SQLITE(open(LOCAL_DB_PATH, &db));
-	result = sqlite3_prepare_v2(db, "SELECT id, course_name, type, retired_at FROM LocalSecretCourse", -1, &stmt, NULL);
+	result = sqlite3_prepare_v2(db, "SELECT id, course_name, type, season_id, starts_at, expires_at, retired_at, finalized_at FROM LocalSecretCourse", -1, &stmt, NULL);
 	if (result != SQLITE_OK) { CALL_SQLITE(close(db)); return qfalse; }
 	while ((result = sqlite3_step(stmt)) == SQLITE_ROW) {
 		const char *id = (const char *)sqlite3_column_text(stmt, 0);
 		const char *course_name = (const char *)sqlite3_column_text(stmt, 1);
+		const char *season_id = (const char *)sqlite3_column_text(stmt, 3);
 		int has_event_history = SC_DBHasEventHistoryInDb(db, id);
+		int identity_or_schedule_changed;
 		int found = -1;
 		for (index = 0; index < config->num_courses; index++)
 			if (!strcmp(id, config->courses[index].id)) { found = index; break; }
 		if (found < 0) {
-			if (sqlite3_column_type(stmt, 3) == SQLITE_NULL) plan->retirements++;
+			if (sqlite3_column_type(stmt, 6) == SQLITE_NULL) plan->retirements++;
+			continue;
+		}
+		identity_or_schedule_changed = strcmp(course_name, config->courses[found].course_name) ||
+			sqlite3_column_int(stmt, 2) != config->courses[found].type ||
+			strcmp(season_id ? season_id : "", config->courses[found].season_id) ||
+			(time_t)sqlite3_column_int64(stmt, 4) != config->courses[found].starts_at ||
+			(sqlite3_column_type(stmt, 5) == SQLITE_NULL ? 0 : (time_t)sqlite3_column_int64(stmt, 5)) != config->courses[found].expires_at;
+		if (sqlite3_column_type(stmt, 7) != SQLITE_NULL) {
+			if (identity_or_schedule_changed || sqlite3_column_type(stmt, 6) != SQLITE_NULL) plan->changes++;
 		} else if (strcmp(course_name, config->courses[found].course_name) ||
 			sqlite3_column_int(stmt, 2) != config->courses[found].type) {
 			if (SC_CourseIdentityCanChange(has_event_history)) plan->corrections++;
 			else plan->changes++;
-		} else if (sqlite3_column_type(stmt, 3) != SQLITE_NULL) {
+		} else if (sqlite3_column_type(stmt, 6) != SQLITE_NULL) {
 			if (has_event_history) plan->changes++;
 		}
 	}
@@ -8809,7 +8820,7 @@ qboolean SC_DBApplyProjection(const sc_config_t *config, const char *revision, q
 	for (index = 0; index < config->num_courses && result == SQLITE_OK; index++) {
 		const sc_course_t *course = &config->courses[index];
 		result = sqlite3_prepare_v2(db,
-			"UPDATE LocalSecretCourse SET course_name = ?, type = ?, season_id = ?, starts_at = ?, expires_at = ?, applied_revision = ?, retired_at = NULL WHERE id = ?",
+			"UPDATE LocalSecretCourse SET course_name = ?, type = ?, season_id = ?, starts_at = ?, expires_at = ?, applied_revision = ?, retired_at = NULL, activated_at = CASE WHEN course_name <> ? OR type <> ? THEN NULL ELSE activated_at END, finalized_at = CASE WHEN course_name <> ? OR type <> ? THEN NULL ELSE finalized_at END, archive_completed_at = CASE WHEN course_name <> ? OR type <> ? THEN NULL ELSE archive_completed_at END WHERE id = ?",
 			-1, &stmt, NULL);
 		if (result != SQLITE_OK) break;
 		CALL_SQLITE(bind_text(stmt, 1, course->course_name, -1, SQLITE_STATIC));
@@ -8826,7 +8837,13 @@ qboolean SC_DBApplyProjection(const sc_config_t *config, const char *revision, q
 			CALL_SQLITE(bind_null(stmt, 5));
 		}
 		CALL_SQLITE(bind_text(stmt, 6, revision, -1, SQLITE_STATIC));
-		CALL_SQLITE(bind_text(stmt, 7, course->id, -1, SQLITE_STATIC));
+		CALL_SQLITE(bind_text(stmt, 7, course->course_name, -1, SQLITE_STATIC));
+		CALL_SQLITE(bind_int(stmt, 8, course->type));
+		CALL_SQLITE(bind_text(stmt, 9, course->course_name, -1, SQLITE_STATIC));
+		CALL_SQLITE(bind_int(stmt, 10, course->type));
+		CALL_SQLITE(bind_text(stmt, 11, course->course_name, -1, SQLITE_STATIC));
+		CALL_SQLITE(bind_int(stmt, 12, course->type));
+		CALL_SQLITE(bind_text(stmt, 13, course->id, -1, SQLITE_STATIC));
 		result = sqlite3_step(stmt) == SQLITE_DONE ? SQLITE_OK : SQLITE_ERROR;
 		CALL_SQLITE(finalize(stmt));
 		if (result == SQLITE_OK && sqlite3_changes(db) == 0) {

@@ -5,7 +5,7 @@
 
 int G_AdminAllowed(gentity_t *ent, unsigned int adminCmd, qboolean cheatAllowed, qboolean raceAllowed, char *cmdName);
 
-static void SC_EnsureConfigTemplate(void)
+void SC_EnsureConfigTemplate(void)
 {
 	static const char template_text[] =
 		"// Secret Courses configuration. Times are UTC: YYYY-MM-DDTHH:MM:SSZ.\n"
@@ -14,7 +14,15 @@ static void SC_EnsureConfigTemplate(void)
 		"// sc_season <season-id> <number> <starts-at> <expires-at>\n"
 		"// sc_course <course-id> \"<course-name>\" cup <season-id> <starts-at> <expires-at>\n"
 		"// sc_course <course-id> \"<course-name>\" permanent <starts-at>\n";
-	fileHandle_t file;
+	fileHandle_t file = 0;
+	int length = trap->FS_Open("secretcourses.cfg", &file, FS_READ);
+
+	if (file) {
+		trap->FS_Close(file);
+		if (length > 0) {
+			return;
+		}
+	}
 
 	if (trap->FS_Open("secretcourses.cfg", &file, FS_WRITE) >= 0 && file) {
 		trap->FS_Write(template_text, strlen(template_text), file);
@@ -22,7 +30,7 @@ static void SC_EnsureConfigTemplate(void)
 	}
 }
 
-static qboolean SC_ReadTextFile(char *text, size_t text_size)
+static qboolean SC_ReadTextFile(char *text, size_t text_size, sc_validation_result_t *error)
 {
 	fileHandle_t file;
 	int length = trap->FS_Open("secretcourses.cfg", &file, FS_READ);
@@ -36,10 +44,12 @@ static qboolean SC_ReadTextFile(char *text, size_t text_size)
 	}
 	if (!file || length <= 0 || (size_t)length >= text_size) {
 		if (file) trap->FS_Close(file);
+		if (error) Q_strncpyz(error->message, "could not read secretcourses.cfg after creating its template", sizeof(error->message));
 		return qfalse;
 	}
 	if (trap->FS_Read(text, length, file) != length) {
 		trap->FS_Close(file);
+		if (error) Q_strncpyz(error->message, "could not read secretcourses.cfg", sizeof(error->message));
 		return qfalse;
 	}
 	trap->FS_Close(file);
@@ -53,7 +63,8 @@ qboolean SC_ReadAndValidateConfig(sc_config_t *config, char revision[65], sc_val
 	unsigned int hash = 2166136261u;
 	const unsigned char *cursor;
 
-	if (!SC_ReadTextFile(text, sizeof(text)) || !SC_ParseConfigText(text, config, error)) {
+	if (error) memset(error, 0, sizeof(*error));
+	if (!SC_ReadTextFile(text, sizeof(text), error) || !SC_ParseConfigText(text, config, error)) {
 		return qfalse;
 	}
 	for (cursor = (const unsigned char *)text; *cursor; cursor++) {
