@@ -246,7 +246,7 @@ void SC_WriteStaticExports(void)
 		char leaderboard[2048];
 		char path[MAX_QPATH];
 		const char *kind = course->type == SC_COURSE_TYPE_CUP ? "cup" : "permanent";
-		if (!SC_RenderLeaderboardJson(leaderboard, sizeof(leaderboard), course, state, revision)) continue;
+		if (!SC_DBRenderLeaderboardJson(leaderboard, sizeof(leaderboard), course, state, revision)) continue;
 		if (course->type == SC_COURSE_TYPE_CUP)
 			Com_sprintf(path, sizeof(path), "secretcourses/cup/%s/%s/leaderboard.json", course->season_id, course->id);
 		else

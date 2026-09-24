@@ -353,6 +353,24 @@ int SC_RenderLeaderboardJson(char *out, size_t out_size, const sc_course_t *cour
 	return written >= 0 && (size_t)written < out_size;
 }
 
+int SC_RenderLeaderboardEntryJson(char *out, size_t out_size, const char *username, int style, int duration_ms, int topspeed, int average, int end_time)
+{
+	char escaped_username[SC_COURSE_NAME_MAX * 2 + 8];
+	char time_string[32];
+	int written;
+
+	if (!out || !out_size || !SC_JsonWriteEscapedString(escaped_username, sizeof(escaped_username), username)) return 0;
+	if (duration_ms > 60 * 60 * 1000) {
+		snprintf(time_string, sizeof(time_string), "%d:%02d:%02d.%03d", duration_ms / (60 * 60 * 1000), (duration_ms / (60 * 1000)) % 60, (duration_ms / 1000) % 60, duration_ms % 1000);
+	} else if (duration_ms > 60 * 1000) {
+		snprintf(time_string, sizeof(time_string), "%d:%02d.%03d", (duration_ms / (60 * 1000)) % 60, (duration_ms / 1000) % 60, duration_ms % 1000);
+	} else {
+		snprintf(time_string, sizeof(time_string), "%.3f", (float)duration_ms * 0.001f);
+	}
+	written = snprintf(out, out_size, "{\"username\":%s,\"style\":%d,\"time\":\"%s\",\"duration_ms\":%d,\"topspeed\":%d,\"average\":%d,\"end_time\":%d}", escaped_username, style, time_string, duration_ms, topspeed, average, end_time);
+	return written >= 0 && (size_t)written < out_size;
+}
+
 int SC_ParseConfigText(const char *text, sc_config_t *out, sc_validation_result_t *result)
 {
 	const char *line_start;

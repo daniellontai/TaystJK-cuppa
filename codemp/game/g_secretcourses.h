@@ -26,6 +26,7 @@ qboolean SC_DBGetLifecycleRows(sc_course_t *out, int capacity, int *count);
 qboolean SC_DBActivateCourse(const sc_course_t *course, time_t now);
 qboolean SC_DBClaimExpiredCourse(const char *id, time_t now);
 qboolean SC_DBMarkArchiveComplete(const char *id, time_t now);
+qboolean SC_DBRenderLeaderboardJson(char *out, size_t out_size, const sc_course_t *course, sc_course_state_t state, const char *revision);
 void SC_DBLogExpiredCourseById(const char *id);
 qboolean SC_ArchiveExpiredCourseDemos(const sc_course_t *course);
 qboolean SC_DBPlanProjection(const sc_config_t *config, sc_projection_plan_t *plan);
