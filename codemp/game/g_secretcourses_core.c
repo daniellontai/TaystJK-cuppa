@@ -402,6 +402,11 @@ int SC_AppendStatusCourseJson(char *out, size_t out_size, const char *id, const 
 	return written >= 0 && (size_t)written < out_size;
 }
 
+int SC_ShouldAttemptArchiveRetry(time_t retry_at, time_t now)
+{
+	return !retry_at || retry_at <= now;
+}
+
 int SC_ParseConfigText(const char *text, sc_config_t *out, sc_validation_result_t *result)
 {
 	const char *line_start;

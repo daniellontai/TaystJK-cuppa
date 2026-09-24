@@ -189,6 +189,8 @@ void SC_ReconcileSchedule(time_t now)
 	int index;
 	qboolean refresh_cache = sc_cache_loaded ? qfalse : qtrue;
 	qboolean refresh_exports = qfalse;
+	qboolean archive_retry_eligible = SC_ShouldAttemptArchiveRetry(sc_archive_retry_time, now) ? qtrue : qfalse;
+	qboolean archive_failed = qfalse;
 
 	if (!SC_DBGetLifecycleRows(courses, SC_MAX_COURSES, &count)) return;
 	memset(&config, 0, sizeof(config));
@@ -208,16 +210,17 @@ void SC_ReconcileSchedule(time_t now)
 				refresh_cache = qtrue;
 				refresh_exports = qtrue;
 			}
-			if ((claimed || !course->archive_completed_at) && (!sc_archive_retry_time || now >= sc_archive_retry_time)) {
-				if (SC_ArchiveExpiredCourseDemos(course)) {
-					SC_DBMarkArchiveComplete(course->id, now);
-					sc_archive_retry_time = 0;
+			if (!course->archive_completed_at && archive_retry_eligible) {
+				if (SC_ArchiveExpiredCourseDemos(course) && SC_DBMarkArchiveComplete(course->id, now)) {
 					refresh_exports = qtrue;
 				} else {
-					sc_archive_retry_time = now + 60;
+					archive_failed = qtrue;
 				}
 			}
 		}
+	}
+	if (archive_retry_eligible) {
+		sc_archive_retry_time = archive_failed ? now + 60 : 0;
 	}
 	if (refresh_cache) {
 		SC_LoadSecretCourses();

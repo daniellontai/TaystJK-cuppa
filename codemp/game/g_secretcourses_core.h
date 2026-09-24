@@ -96,6 +96,7 @@ int SC_PlanDemoArchive(sc_demo_move_t *out, const char *player_and_file, const c
 int SC_RenderLeaderboardJson(char *out, size_t out_size, const sc_course_t *course, sc_course_state_t state, const char *revision);
 int SC_RenderLeaderboardEntryJson(char *out, size_t out_size, const char *username, int style, int duration_ms, int topspeed, int average, int end_time);
 int SC_AppendStatusCourseJson(char *out, size_t out_size, const char *id, const char *course_name, const char *type, const char *lifecycle, const char *demos_visibility, const char *leaderboard_path);
+int SC_ShouldAttemptArchiveRetry(time_t retry_at, time_t now);
 void SC_RememberApplyPlan(sc_apply_plan_t *plan, const char *revision, int destructive, time_t now);
 int SC_CanConfirmApply(const char *token, const char *revision, time_t now);
 
