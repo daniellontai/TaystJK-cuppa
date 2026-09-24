@@ -5,15 +5,37 @@
 
 int G_AdminAllowed(gentity_t *ent, unsigned int adminCmd, qboolean cheatAllowed, qboolean raceAllowed, char *cmdName);
 
+static void SC_EnsureConfigTemplate(void)
+{
+	static const char template_text[] =
+		"// Secret Courses configuration. Times are UTC: YYYY-MM-DDTHH:MM:SSZ.\n"
+		"// Validate with /sc_validatecfg, then apply with /sc_applycfg.\n"
+		"secretcourses_version 1\n"
+		"// sc_season <season-id> <number> <starts-at> <expires-at>\n"
+		"// sc_course <course-id> \"<course-name>\" cup <season-id> <starts-at> <expires-at>\n"
+		"// sc_course <course-id> \"<course-name>\" permanent <starts-at>\n";
+	fileHandle_t file;
+
+	if (trap->FS_Open("secretcourses.cfg", &file, FS_WRITE) >= 0 && file) {
+		trap->FS_Write(template_text, strlen(template_text), file);
+		trap->FS_Close(file);
+	}
+}
+
 static qboolean SC_ReadTextFile(char *text, size_t text_size)
 {
 	fileHandle_t file;
 	int length = trap->FS_Open("secretcourses.cfg", &file, FS_READ);
 
-	if (!file || length <= 0 || (size_t)length >= text_size) {
+	if (!file || length <= 0) {
 		if (file) {
 			trap->FS_Close(file);
 		}
+		SC_EnsureConfigTemplate();
+		length = trap->FS_Open("secretcourses.cfg", &file, FS_READ);
+	}
+	if (!file || length <= 0 || (size_t)length >= text_size) {
+		if (file) trap->FS_Close(file);
 		return qfalse;
 	}
 	if (trap->FS_Read(text, length, file) != length) {
@@ -54,7 +76,7 @@ void SC_ValidateConfig_f(gentity_t *ent)
 		return;
 	}
 	if (!SC_ReadAndValidateConfig(&config, revision, &error)) {
-		trap->SendServerCommand(ent - g_entities, va("print \"Secret Courses cfg invalid%s%s\n\"", error.line ? " at line " : "", error.line ? va("%d", error.line) : ""));
+		trap->SendServerCommand(ent - g_entities, va("print \"Secret Courses cfg invalid%s%s%s%s.\n\"", error.line ? " at line " : "", error.line ? va("%d", error.line) : "", error.message[0] ? ": " : "", error.message));
 		return;
 	}
 	if (!SC_DBPlanProjection(&config, &plan)) {
@@ -79,11 +101,21 @@ void SC_ApplyConfig_f(gentity_t *ent)
 	if (!G_AdminAllowed(ent, JAPRO_ACCOUNTFLAG_A_GRANTADMIN, qfalse, qfalse, "sc_applycfg")) {
 		return;
 	}
-	if (!SC_ReadAndValidateConfig(&config, revision, &error) || !SC_DBPlanProjection(&config, &projection)) {
-		trap->SendServerCommand(ent - g_entities, "print \"Secret Courses cfg is invalid or its projection cannot be read.\n\"");
+	if (!SC_ReadAndValidateConfig(&config, revision, &error)) {
+		trap->SendServerCommand(ent - g_entities, va("print \"Secret Courses cfg invalid%s%s%s%s.\n\"", error.line ? " at line " : "", error.line ? va("%d", error.line) : "", error.message[0] ? ": " : "", error.message));
+		return;
+	}
+	if (!SC_DBPlanProjection(&config, &projection)) {
+		trap->SendServerCommand(ent - g_entities, "print \"Could not read Secret Course projection.\n\"");
 		return;
 	}
 	time(&now);
+	for (int course_index = 0; course_index < config.num_courses; course_index++) {
+		if (!SC_CourseCanBeApplied(&config.courses[course_index], now)) {
+			trap->SendServerCommand(ent - g_entities, va("print \"Secret Course %s is already expired and cannot be applied.\n\"", config.courses[course_index].id));
+			return;
+		}
+	}
 	if (trap->Argc() == 3) {
 		trap->Argv(1, token, sizeof(token));
 		confirming = !Q_stricmp(token, "confirm");

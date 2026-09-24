@@ -262,6 +262,11 @@ int SC_CourseSchedulesOverlap(const sc_course_t *first, const sc_course_t *secon
 	return first->starts_at < second->expires_at && second->starts_at < first->expires_at;
 }
 
+int SC_CourseCanBeApplied(const sc_course_t *course, time_t now)
+{
+	return course && (course->type == SC_COURSE_TYPE_PERMANENT || course->expires_at > now);
+}
+
 int SC_ConfigRequiresConfirmation(const sc_config_t *applied, const sc_config_t *proposed)
 {
 	int applied_index;

@@ -88,6 +88,7 @@ int SC_CourseIdentityCanChange(int has_event_history);
 time_t SC_NextConfiguredTransition(const sc_config_t *config, time_t now);
 int SC_ShouldNotifyAfterFullAdminLogin(int gained_full_admin, int revision_mismatch);
 int SC_CourseSchedulesOverlap(const sc_course_t *first, const sc_course_t *second);
+int SC_CourseCanBeApplied(const sc_course_t *course, time_t now);
 void SC_CollectTransitions(const sc_config_t *config, time_t previous, time_t now, sc_transition_set_t *out);
 int SC_IsConfiguredCourseActive(const sc_config_t *config, const char *course_name, time_t now);
 int SC_PlanDemoArchive(sc_demo_move_t *out, const char *player_and_file, const char *season_id, const char *course_id);
