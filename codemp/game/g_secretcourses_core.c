@@ -359,7 +359,7 @@ int SC_RenderLeaderboardJson(char *out, size_t out_size, const sc_course_t *cour
 	if (!out || !out_size || !course || !SC_JsonWriteEscapedString(id, sizeof(id), course->id) ||
 		!SC_JsonWriteEscapedString(name, sizeof(name), course->course_name) ||
 		!SC_JsonWriteEscapedString(rev, sizeof(rev), revision ? revision : "")) return 0;
-	visibility = state == SC_COURSE_STATE_EXPIRED && course->type == SC_COURSE_TYPE_CUP ? "public" : "private";
+	visibility = course->archive_completed_at ? "public" : "private";
 	written = snprintf(out, out_size, "{\"schema_version\":1,\"revision\":%s,\"course_id\":%s,\"course_name\":%s,\"demos_visibility\":\"%s\",\"entries\":[]}", rev, id, name, visibility);
 	return written >= 0 && (size_t)written < out_size;
 }
@@ -379,6 +379,26 @@ int SC_RenderLeaderboardEntryJson(char *out, size_t out_size, const char *userna
 		snprintf(time_string, sizeof(time_string), "%.3f", (float)duration_ms * 0.001f);
 	}
 	written = snprintf(out, out_size, "{\"username\":%s,\"style\":%d,\"time\":\"%s\",\"duration_ms\":%d,\"topspeed\":%d,\"average\":%d,\"end_time\":%d}", escaped_username, style, time_string, duration_ms, topspeed, average, end_time);
+	return written >= 0 && (size_t)written < out_size;
+}
+
+int SC_AppendStatusCourseJson(char *out, size_t out_size, const char *id, const char *course_name, const char *type, const char *lifecycle, const char *demos_visibility, const char *leaderboard_path)
+{
+	char escaped_id[SC_COURSE_ID_MAX * 2 + 8];
+	char escaped_name[SC_COURSE_NAME_MAX * 2 + 8];
+	char escaped_type[32];
+	char escaped_lifecycle[32];
+	char escaped_visibility[32];
+	char escaped_path[520];
+	int written;
+
+	if (!out || !out_size || !SC_JsonWriteEscapedString(escaped_id, sizeof(escaped_id), id) ||
+		!SC_JsonWriteEscapedString(escaped_name, sizeof(escaped_name), course_name) ||
+		!SC_JsonWriteEscapedString(escaped_type, sizeof(escaped_type), type) ||
+		!SC_JsonWriteEscapedString(escaped_lifecycle, sizeof(escaped_lifecycle), lifecycle) ||
+		!SC_JsonWriteEscapedString(escaped_visibility, sizeof(escaped_visibility), demos_visibility) ||
+		!SC_JsonWriteEscapedString(escaped_path, sizeof(escaped_path), leaderboard_path)) return 0;
+	written = snprintf(out, out_size, "{\"id\":%s,\"course_name\":%s,\"type\":%s,\"lifecycle\":%s,\"demos_visibility\":%s,\"leaderboard_path\":%s}", escaped_id, escaped_name, escaped_type, escaped_lifecycle, escaped_visibility, escaped_path);
 	return written >= 0 && (size_t)written < out_size;
 }
 

@@ -24,6 +24,7 @@ qboolean SC_DBGetAppliedRevision(char revision[65]);
 qboolean SC_DBHasEventHistory(const char *id);
 qboolean SC_DBSnapshotLocalRuns(const char *id, const char *course_name);
 qboolean SC_DBGetLifecycleRows(sc_course_t *out, int capacity, int *count);
+qboolean SC_DBGetAppliedCourses(sc_course_t *out, int capacity, int *count);
 qboolean SC_DBActivateCourse(const sc_course_t *course, time_t now);
 qboolean SC_DBClaimExpiredCourse(const char *id, time_t now);
 qboolean SC_DBMarkArchiveComplete(const char *id, time_t now);

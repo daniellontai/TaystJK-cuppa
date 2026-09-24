@@ -8683,7 +8683,7 @@ qboolean SC_DBRenderLeaderboardJson(char *out, size_t out_size, const sc_course_
 	qboolean first = qtrue;
 
 	if (!out || !out_size || !course || !SC_JsonWriteEscapedString(id, sizeof(id), course->id) || !SC_JsonWriteEscapedString(name, sizeof(name), course->course_name) || !SC_JsonWriteEscapedString(rev, sizeof(rev), revision ? revision : "")) return qfalse;
-	visibility = state == SC_COURSE_STATE_EXPIRED && course->type == SC_COURSE_TYPE_CUP ? "public" : "private";
+	visibility = course->archive_completed_at ? "public" : "private";
 	used = Com_sprintf(out, out_size, "{\"schema_version\":1,\"revision\":%s,\"course_id\":%s,\"course_name\":%s,\"demos_visibility\":\"%s\",\"entries\":[", rev, id, name, visibility);
 	if (used < 0 || (size_t)used >= out_size) return qfalse;
 	CALL_SQLITE(open(LOCAL_DB_PATH, &db));
@@ -8739,6 +8739,11 @@ qboolean SC_DBGetLifecycleRows(sc_course_t *out, int capacity, int *count)
 	if (result != SQLITE_DONE) return qfalse;
 	*count = row_count;
 	return qtrue;
+}
+
+qboolean SC_DBGetAppliedCourses(sc_course_t *out, int capacity, int *count)
+{
+	return SC_DBGetLifecycleRows(out, capacity, count);
 }
 
 qboolean SC_DBPlanProjection(const sc_config_t *config, sc_projection_plan_t *plan)

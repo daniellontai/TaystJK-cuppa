@@ -240,32 +240,50 @@ static void SC_WriteStaticFile(const char *path, const char *text)
 
 void SC_WriteStaticExports(void)
 {
-	sc_config_t config;
-	sc_validation_result_t error;
+	sc_course_t courses[SC_MAX_COURSES];
 	char revision[65];
+	char escaped_revision[136];
 	char status[16384];
+	int count;
 	int used;
 	int index;
 	time_t now;
+	qboolean first = qtrue;
 
-	if (!SC_ReadAndValidateConfig(&config, revision, &error)) return;
+	if (!SC_DBGetAppliedCourses(courses, SC_MAX_COURSES, &count) || !SC_DBGetAppliedRevision(revision) ||
+		!SC_JsonWriteEscapedString(escaped_revision, sizeof(escaped_revision), revision)) return;
 	time(&now);
-	used = Com_sprintf(status, sizeof(status), "{\"schema_version\":1,\"revision\":\"%s\",\"courses\":[", revision);
-	for (index = 0; index < config.num_courses; index++) {
-		const sc_course_t *course = &config.courses[index];
-		sc_course_state_t state = SC_ResolveCourseState(course, now);
+	used = Com_sprintf(status, sizeof(status), "{\"schema_version\":1,\"revision\":%s,\"courses\":[", escaped_revision);
+	if (used < 0 || (size_t)used >= sizeof(status)) return;
+	for (index = 0; index < count; index++) {
+		const sc_course_t *course = &courses[index];
+		sc_course_state_t state = course->finalized_at ? SC_COURSE_STATE_EXPIRED : SC_ResolveCourseState(course, now);
 		char leaderboard[2048];
-		char path[MAX_QPATH];
+		char path[256];
+		char status_row[1024];
+		char status_path[257];
 		const char *kind = course->type == SC_COURSE_TYPE_CUP ? "cup" : "permanent";
-		if (!SC_DBRenderLeaderboardJson(leaderboard, sizeof(leaderboard), course, state, revision)) continue;
+		const char *lifecycle = state == SC_COURSE_STATE_ACTIVE ? "active" : (state == SC_COURSE_STATE_EXPIRED ? "expired" : "scheduled");
+		const char *visibility = course->archive_completed_at ? "public" : "private";
+		int written;
+
+		if (!SC_ValidateExportPathIds(course)) continue;
 		if (course->type == SC_COURSE_TYPE_CUP)
-			Com_sprintf(path, sizeof(path), "secretcourses/cup/%s/%s/leaderboard.json", course->season_id, course->id);
+			written = Com_sprintf(path, sizeof(path), "secretcourses/cup/%s/%s/leaderboard.json", course->season_id, course->id);
 		else
-			Com_sprintf(path, sizeof(path), "secretcourses/permanent/%s/leaderboard.json", course->id);
+			written = Com_sprintf(path, sizeof(path), "secretcourses/permanent/%s/leaderboard.json", course->id);
+		if (written < 0 || (size_t)written >= sizeof(path)) continue;
+		if (!SC_DBRenderLeaderboardJson(leaderboard, sizeof(leaderboard), course, state, revision)) continue;
 		SC_WriteStaticFile(path, leaderboard);
-		used += Com_sprintf(status + used, sizeof(status) - used, "%s{\"id\":\"%s\",\"course_name\":\"%s\",\"type\":\"%s\",\"lifecycle\":\"%s\",\"demos_visibility\":\"%s\",\"leaderboard_path\":\"/%s\"}", index ? "," : "", course->id, course->course_name, kind, state == SC_COURSE_STATE_ACTIVE ? "active" : (state == SC_COURSE_STATE_EXPIRED ? "expired" : "scheduled"), state == SC_COURSE_STATE_EXPIRED && course->type == SC_COURSE_TYPE_CUP ? "public" : "private", path);
-		if (used >= (int)sizeof(status) - 256) break;
+		written = Com_sprintf(status_path, sizeof(status_path), "/%s", path);
+		if (written < 0 || (size_t)written >= sizeof(status_path) ||
+			!SC_AppendStatusCourseJson(status_row, sizeof(status_row), course->id, course->course_name, kind, lifecycle, visibility, status_path)) continue;
+		if (used + (first ? 0 : 1) + (int)strlen(status_row) + 3 > (int)sizeof(status)) break;
+		if (!first) status[used++] = ',';
+		Q_strncpyz(status + used, status_row, sizeof(status) - used);
+		used += strlen(status_row);
+		first = qfalse;
 	}
-	Q_strcat(status, sizeof(status), "]}");
+	Q_strncpyz(status + used, "]}", sizeof(status) - used);
 	SC_WriteStaticFile("secretcourses/secretcourses-status.json", status);
 }
