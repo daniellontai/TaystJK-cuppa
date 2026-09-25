@@ -239,6 +239,28 @@ int SC_CourseIdentityChanged(const sc_course_t *applied, const sc_course_t *prop
 		applied->type != proposed->type;
 }
 
+int SC_DescribeCourseDifferences(char *out, size_t out_size, const sc_course_t *applied, const sc_course_t *proposed)
+{
+	const char *fields[5];
+	int field_count = 0;
+	int index;
+	size_t used = 0;
+
+	if (!out || !out_size || !applied || !proposed) return 0;
+	if (strcmp(applied->course_name, proposed->course_name)) fields[field_count++] = "name";
+	if (applied->type != proposed->type) fields[field_count++] = "type";
+	if (strcmp(applied->season_id, proposed->season_id)) fields[field_count++] = "season";
+	if (applied->starts_at != proposed->starts_at) fields[field_count++] = "start";
+	if (applied->expires_at != proposed->expires_at) fields[field_count++] = "expiry";
+	out[0] = '\0';
+	for (index = 0; index < field_count; index++) {
+		int written = snprintf(out + used, out_size - used, "%s%s", index ? ", " : "", fields[index]);
+		if (written < 0 || (size_t)written >= out_size - used) return 0;
+		used += (size_t)written;
+	}
+	return 1;
+}
+
 int SC_CourseIdentityCanChange(int has_event_history)
 {
 	return !has_event_history;

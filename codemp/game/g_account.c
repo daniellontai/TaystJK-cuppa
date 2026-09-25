@@ -8746,6 +8746,29 @@ qboolean SC_DBGetAppliedCourses(sc_course_t *out, int capacity, int *count)
 	return SC_DBGetLifecycleRows(out, capacity, count);
 }
 
+static void SC_AddProjectionCourseDetail(sc_projection_course_detail_t *details, int *count, const sc_course_t *course, const char *fields, const char *reason)
+{
+	sc_projection_course_detail_t *detail;
+
+	if (!details || !count || !course || *count >= SC_MAX_COURSES) return;
+	detail = &details[(*count)++];
+	memset(detail, 0, sizeof(*detail));
+	detail->course = *course;
+	Q_strncpyz(detail->fields, fields ? fields : "", sizeof(detail->fields));
+	Q_strncpyz(detail->reason, reason ? reason : "", sizeof(detail->reason));
+}
+
+static void SC_AddProjectionScheduleConflict(sc_projection_plan_t *plan, const sc_course_t *first, const sc_course_t *second)
+{
+	sc_projection_schedule_conflict_t *detail;
+
+	if (!plan || !first || !second || plan->num_schedule_conflict_details >= SC_MAX_PROJECTION_CONFLICTS) return;
+	detail = &plan->schedule_conflict_details[plan->num_schedule_conflict_details++];
+	Q_strncpyz(detail->first_id, first->id, sizeof(detail->first_id));
+	Q_strncpyz(detail->second_id, second->id, sizeof(detail->second_id));
+	Q_strncpyz(detail->course_name, first->course_name, sizeof(detail->course_name));
+}
+
 qboolean SC_DBPlanProjection(const sc_config_t *config, sc_projection_plan_t *plan)
 {
 	sqlite3 *db;
@@ -8756,19 +8779,35 @@ qboolean SC_DBPlanProjection(const sc_config_t *config, sc_projection_plan_t *pl
 	if (!config || !plan) return qfalse;
 	memset(plan, 0, sizeof(*plan));
 	CALL_SQLITE(open(LOCAL_DB_PATH, &db));
-	result = sqlite3_prepare_v2(db, "SELECT id, course_name, type, season_id, starts_at, expires_at, retired_at, finalized_at FROM LocalSecretCourse", -1, &stmt, NULL);
+	result = sqlite3_prepare_v2(db, "SELECT id, course_name, type, season_id, starts_at, expires_at, retired_at, activated_at, finalized_at, archive_completed_at FROM LocalSecretCourse", -1, &stmt, NULL);
 	if (result != SQLITE_OK) { CALL_SQLITE(close(db)); return qfalse; }
 	while ((result = sqlite3_step(stmt)) == SQLITE_ROW) {
 		const char *id = (const char *)sqlite3_column_text(stmt, 0);
 		const char *course_name = (const char *)sqlite3_column_text(stmt, 1);
 		const char *season_id = (const char *)sqlite3_column_text(stmt, 3);
+		sc_course_t applied;
 		int has_event_history = SC_DBHasEventHistoryInDb(db, id);
 		int identity_or_schedule_changed;
 		int found = -1;
+		char fields[96];
+
+		memset(&applied, 0, sizeof(applied));
+		Q_strncpyz(applied.id, id, sizeof(applied.id));
+		Q_strncpyz(applied.course_name, course_name, sizeof(applied.course_name));
+		applied.type = (sc_course_type_t)sqlite3_column_int(stmt, 2);
+		if (season_id) Q_strncpyz(applied.season_id, season_id, sizeof(applied.season_id));
+		applied.starts_at = (time_t)sqlite3_column_int64(stmt, 4);
+		applied.expires_at = sqlite3_column_type(stmt, 5) == SQLITE_NULL ? 0 : (time_t)sqlite3_column_int64(stmt, 5);
+		applied.activated_at = sqlite3_column_type(stmt, 7) == SQLITE_NULL ? 0 : (time_t)sqlite3_column_int64(stmt, 7);
+		applied.finalized_at = sqlite3_column_type(stmt, 8) == SQLITE_NULL ? 0 : (time_t)sqlite3_column_int64(stmt, 8);
+		applied.archive_completed_at = sqlite3_column_type(stmt, 9) == SQLITE_NULL ? 0 : (time_t)sqlite3_column_int64(stmt, 9);
 		for (index = 0; index < config->num_courses; index++)
 			if (!strcmp(id, config->courses[index].id)) { found = index; break; }
 		if (found < 0) {
-			if (sqlite3_column_type(stmt, 6) == SQLITE_NULL) plan->retirements++;
+			if (sqlite3_column_type(stmt, 6) == SQLITE_NULL) {
+				plan->retirements++;
+				SC_AddProjectionCourseDetail(plan->retirement_details, &plan->num_retirement_details, &applied, "", applied.archive_completed_at ? "omitted from cfg; archive complete" : (applied.finalized_at ? "omitted from cfg; finalized" : "omitted from cfg"));
+			}
 			continue;
 		}
 		identity_or_schedule_changed = strcmp(course_name, config->courses[found].course_name) ||
@@ -8776,14 +8815,32 @@ qboolean SC_DBPlanProjection(const sc_config_t *config, sc_projection_plan_t *pl
 			strcmp(season_id ? season_id : "", config->courses[found].season_id) ||
 			(time_t)sqlite3_column_int64(stmt, 4) != config->courses[found].starts_at ||
 			(sqlite3_column_type(stmt, 5) == SQLITE_NULL ? 0 : (time_t)sqlite3_column_int64(stmt, 5)) != config->courses[found].expires_at;
-		if (sqlite3_column_type(stmt, 7) != SQLITE_NULL) {
+		if (!SC_DescribeCourseDifferences(fields, sizeof(fields), &applied, &config->courses[found])) { CALL_SQLITE(finalize(stmt)); CALL_SQLITE(close(db)); return qfalse; }
+		if (sqlite3_column_type(stmt, 8) != SQLITE_NULL) {
 			if (identity_or_schedule_changed || sqlite3_column_type(stmt, 6) != SQLITE_NULL) plan->changes++;
+			if (identity_or_schedule_changed || sqlite3_column_type(stmt, 6) != SQLITE_NULL) SC_AddProjectionCourseDetail(plan->blocked_details, &plan->num_blocked_details, &config->courses[found], fields, sqlite3_column_type(stmt, 6) != SQLITE_NULL ? "retired finalized ID" : "finalized ID");
 		} else if (strcmp(course_name, config->courses[found].course_name) ||
 			sqlite3_column_int(stmt, 2) != config->courses[found].type) {
-			if (SC_CourseIdentityCanChange(has_event_history)) plan->corrections++;
-			else plan->changes++;
+			if (SC_CourseIdentityCanChange(has_event_history)) {
+				plan->corrections++;
+				SC_AddProjectionCourseDetail(plan->correction_details, &plan->num_correction_details, &config->courses[found], fields, "no history; lifecycle reset");
+			} else {
+				plan->changes++;
+				SC_AddProjectionCourseDetail(plan->blocked_details, &plan->num_blocked_details, &config->courses[found], fields, "event history");
+			}
 		} else if (sqlite3_column_type(stmt, 6) != SQLITE_NULL) {
-			if (has_event_history) plan->changes++;
+			if (has_event_history) {
+				plan->changes++;
+				SC_AddProjectionCourseDetail(plan->blocked_details, &plan->num_blocked_details, &config->courses[found], "reactivation", "retired ID with event history");
+			} else {
+				plan->reactivations++;
+				SC_AddProjectionCourseDetail(plan->reactivation_details, &plan->num_reactivation_details, &config->courses[found], "reactivation", "no history");
+			}
+		} else if (fields[0]) {
+			plan->updates++;
+			SC_AddProjectionCourseDetail(plan->update_details, &plan->num_update_details, &config->courses[found], fields, "applied configuration update");
+		} else {
+			plan->unchanged++;
 		}
 	}
 	CALL_SQLITE(finalize(stmt));
@@ -8791,8 +8848,10 @@ qboolean SC_DBPlanProjection(const sc_config_t *config, sc_projection_plan_t *pl
 	for (index = 0; index < config->num_courses; index++) {
 		int other;
 		for (other = index + 1; other < config->num_courses; other++) {
-			if (SC_CourseSchedulesOverlap(&config->courses[index], &config->courses[other]))
+			if (SC_CourseSchedulesOverlap(&config->courses[index], &config->courses[other])) {
 				plan->schedule_conflicts++;
+				SC_AddProjectionScheduleConflict(plan, &config->courses[index], &config->courses[other]);
+			}
 		}
 	}
 	for (index = 0; index < config->num_courses; index++) {
@@ -8802,7 +8861,10 @@ qboolean SC_DBPlanProjection(const sc_config_t *config, sc_projection_plan_t *pl
 		CALL_SQLITE(bind_text(stmt, 1, config->courses[index].id, -1, SQLITE_STATIC));
 		exists = sqlite3_step(stmt) == SQLITE_ROW;
 		CALL_SQLITE(finalize(stmt));
-		if (!exists) plan->additions++;
+		if (!exists) {
+			plan->additions++;
+			SC_AddProjectionCourseDetail(plan->addition_details, &plan->num_addition_details, &config->courses[index], "", "new ID");
+		}
 	}
 	CALL_SQLITE(close(db));
 	return qtrue;

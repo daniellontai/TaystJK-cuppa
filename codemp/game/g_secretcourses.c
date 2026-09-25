@@ -75,6 +75,66 @@ qboolean SC_ReadAndValidateConfig(sc_config_t *config, char revision[65], sc_val
 	return qtrue;
 }
 
+static const char *SC_CourseTypeName(sc_course_type_t type)
+{
+	return type == SC_COURSE_TYPE_CUP ? "cup" : "permanent";
+}
+
+static void SC_PrintProjectionDetail(gentity_t *ent, const char *prefix, const sc_projection_course_detail_t *detail)
+{
+	char id[SC_COURSE_ID_MAX + 1];
+	char season[SC_SEASON_ID_MAX + 1];
+
+	if (!ent || !prefix || !detail) return;
+	Q_strncpyz(id, detail->course.id, sizeof(id));
+	Q_strncpyz(season, detail->course.season_id, sizeof(season));
+	Q_strstrip(id, "\n\r\"\\", NULL);
+	Q_strstrip(season, "\n\r\"\\", NULL);
+	trap->SendServerCommand(ent - g_entities, va("print \"  %s %s — %s%s%s%s%s%s%s%s.\\n\"", prefix, id, SC_CourseTypeName(detail->course.type), season[0] ? ", season " : "", season[0] ? season : "", detail->fields[0] ? ", fields: " : "", detail->fields[0] ? detail->fields : "", detail->reason[0] ? ", reason: " : "", detail->reason[0] ? detail->reason : ""));
+}
+
+static void SC_PrintProjectionCategory(gentity_t *ent, const char *name, const char *prefix, int count, const sc_projection_course_detail_t *details)
+{
+	int index;
+
+	trap->SendServerCommand(ent - g_entities, va("print \"%s (%d):\\n\"", name, count));
+	if (!count) {
+		trap->SendServerCommand(ent - g_entities, "print \"  none.\\n\"");
+		return;
+	}
+	for (index = 0; index < count && index < SC_MAX_COURSES; index++) SC_PrintProjectionDetail(ent, prefix, &details[index]);
+}
+
+static void SC_PrintProjectionPlan(gentity_t *ent, const sc_config_t *config, const sc_projection_plan_t *plan, const char *revision, const char *applied_revision)
+{
+	int index;
+
+	if (!ent || !config || !plan) return;
+	trap->SendServerCommand(ent - g_entities, va("print \"Secret Courses cfg valid (proposed %s; applied %s).\\n\"", revision ? revision : "unknown", applied_revision && applied_revision[0] ? applied_revision : "none"));
+	trap->SendServerCommand(ent - g_entities, va("print \"seasons defined (%d):\\n\"", config->num_seasons));
+	for (index = 0; index < config->num_seasons; index++) {
+		const sc_season_t *season = &config->seasons[index];
+		trap->SendServerCommand(ent - g_entities, va("print \"  * %s — number %d, start %lld, expiry %lld.\\n\"", season->id, season->number, (long long)season->starts_at, (long long)season->expires_at));
+	}
+	SC_PrintProjectionCategory(ent, "additions", "+", plan->num_addition_details, plan->addition_details);
+	SC_PrintProjectionCategory(ent, "retirements", "-", plan->num_retirement_details, plan->retirement_details);
+	SC_PrintProjectionCategory(ent, "permitted corrections", "~", plan->num_correction_details, plan->correction_details);
+	SC_PrintProjectionCategory(ent, "permitted updates", "~", plan->num_update_details, plan->update_details);
+	SC_PrintProjectionCategory(ent, "reactivations", "~", plan->num_reactivation_details, plan->reactivation_details);
+	SC_PrintProjectionCategory(ent, "blocked changes", "!", plan->num_blocked_details, plan->blocked_details);
+	trap->SendServerCommand(ent - g_entities, va("print \"schedule conflicts (%d):\\n\"", plan->schedule_conflicts));
+	if (!plan->schedule_conflicts) {
+		trap->SendServerCommand(ent - g_entities, "print \"  none.\\n\"");
+	} else {
+		for (index = 0; index < plan->num_schedule_conflict_details; index++) {
+			const sc_projection_schedule_conflict_t *conflict = &plan->schedule_conflict_details[index];
+			trap->SendServerCommand(ent - g_entities, va("print \"  ! %s and %s overlap for %s.\\n\"", conflict->first_id, conflict->second_id, conflict->course_name));
+		}
+	}
+	trap->SendServerCommand(ent - g_entities, va("print \"unchanged applied courses: %d.\\n\"", plan->unchanged));
+	trap->SendServerCommand(ent - g_entities, "print \"Note: seasons are cfg-only; course season assignments are reported as course fields.\\n\"");
+}
+
 void SC_ValidateConfig_f(gentity_t *ent)
 {
 	sc_config_t config;
@@ -95,7 +155,7 @@ void SC_ValidateConfig_f(gentity_t *ent)
 		return;
 	}
 	SC_DBGetAppliedRevision(applied);
-	trap->SendServerCommand(ent - g_entities, va("print \"Secret Courses cfg valid (%d courses, revision %s): %d additions, %d retirements, %d correctable identity changes, %d blocked identity changes, %d schedule conflicts; applied revision %s.\n\"", config.num_courses, revision, plan.additions, plan.retirements, plan.corrections, plan.changes, plan.schedule_conflicts, applied[0] ? applied : "none"));
+	SC_PrintProjectionPlan(ent, &config, &plan, revision, applied);
 }
 
 void SC_ApplyConfig_f(gentity_t *ent)
@@ -106,6 +166,7 @@ void SC_ApplyConfig_f(gentity_t *ent)
 	sc_apply_plan_t plan;
 	sc_course_t applied_courses[SC_MAX_COURSES];
 	char revision[65];
+	char applied_revision[65] = { 0 };
 	char token[32];
 	time_t now;
 	int applied_count;
@@ -122,6 +183,8 @@ void SC_ApplyConfig_f(gentity_t *ent)
 		trap->SendServerCommand(ent - g_entities, "print \"Could not read Secret Course projection.\n\"");
 		return;
 	}
+	SC_DBGetAppliedRevision(applied_revision);
+	SC_PrintProjectionPlan(ent, &config, &projection, revision, applied_revision);
 	time(&now);
 	if (projection.changes) {
 		trap->SendServerCommand(ent - g_entities, "print \"Finalized Secret Course IDs cannot change name, type, season, start, or expiry. Create a new ID instead.\n\"");
