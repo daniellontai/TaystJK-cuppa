@@ -117,7 +117,7 @@ static void SC_PrintProjectionDetail(sc_projection_report_t *report, const char 
 	Q_strncpyz(season, detail->course.season_id, sizeof(season));
 	Q_strstrip(id, "\n\r\"\\", NULL);
 	Q_strstrip(season, "\n\r\"\\", NULL);
-	Com_sprintf(line, sizeof(line), "  %s %s — %s%s%s%s%s%s%s%s.", prefix, id, SC_CourseTypeName(detail->course.type), season[0] ? ", season " : "", season[0] ? season : "", detail->fields[0] ? ", fields: " : "", detail->fields[0] ? detail->fields : "", detail->reason[0] ? ", reason: " : "", detail->reason[0] ? detail->reason : "");
+	Com_sprintf(line, sizeof(line), "  %s %s - %s%s%s%s%s%s%s.", prefix, id, SC_CourseTypeName(detail->course.type), season[0] ? ", season " : "", season[0] ? season : "", detail->fields[0] ? ", fields: " : "", detail->fields[0] ? detail->fields : "", detail->reason[0] ? ", reason: " : "", detail->reason[0] ? detail->reason : "");
 	SC_AppendProjectionReportLine(report, line);
 }
 
@@ -153,7 +153,7 @@ static void SC_PrintProjectionPlan(gentity_t *ent, const sc_config_t *config, co
 		char season_id[SC_SEASON_ID_MAX + 1];
 		Q_strncpyz(season_id, season->id, sizeof(season_id));
 		Q_strstrip(season_id, "\n\r\"\\", NULL);
-		Com_sprintf(line, sizeof(line), "  * %s — number %d, start %lld, expiry %lld.", season_id, season->number, (long long)season->starts_at, (long long)season->expires_at);
+		Com_sprintf(line, sizeof(line), "  * %s - number %d, start %lld, expiry %lld.", season_id, season->number, (long long)season->starts_at, (long long)season->expires_at);
 		SC_AppendProjectionReportLine(&report, line);
 	}
 	SC_PrintProjectionCategory(&report, "additions", "+", plan->num_addition_details, plan->addition_details);
