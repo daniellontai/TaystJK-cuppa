@@ -215,11 +215,11 @@ static sc_season_t *SC_FindSeason(sc_config_t *config, const char *id)
 	return NULL;
 }
 
-static int SC_HasCourseIdentity(const sc_config_t *config, const char *id, const char *name)
+static int SC_HasCourseId(const sc_config_t *config, const char *id)
 {
 	int index;
 	for (index = 0; index < config->num_courses; index++) {
-		if (!strcmp(config->courses[index].id, id) || !strcmp(config->courses[index].course_name, name)) return 1;
+		if (!strcmp(config->courses[index].id, id)) return 1;
 	}
 	return 0;
 }
@@ -259,6 +259,11 @@ int SC_DescribeCourseDifferences(char *out, size_t out_size, const sc_course_t *
 		used += (size_t)written;
 	}
 	return 1;
+}
+
+int SC_ReportLineFits(size_t used, size_t line_length, size_t capacity)
+{
+	return used + line_length + 1 <= capacity;
 }
 
 int SC_CourseIdentityCanChange(int has_event_history)
@@ -475,7 +480,7 @@ int SC_ParseConfigText(const char *text, sc_config_t *out, sc_validation_result_
 		} else if (!strcmp(tokens[0], "sc_course")) {
 			sc_course_t *course;
 			if (count != 5 && count != 7) { SC_SetValidationError(result, line_number, "invalid course fields"); goto fail; }
-			if (out->num_courses == SC_MAX_COURSES || SC_HasCourseIdentity(out, tokens[1], tokens[2]) || !SC_ValidatePathComponent(tokens[1])) { SC_SetValidationError(result, line_number, "duplicate or unsafe course"); goto fail; }
+			if (out->num_courses == SC_MAX_COURSES || SC_HasCourseId(out, tokens[1]) || !SC_ValidatePathComponent(tokens[1])) { SC_SetValidationError(result, line_number, "duplicate or unsafe course"); goto fail; }
 			course = &out->courses[out->num_courses];
 			if (!SC_CopyToken(course->id, sizeof(course->id), tokens[1]) || !SC_CopyToken(course->course_name, sizeof(course->course_name), tokens[2])) { SC_SetValidationError(result, line_number, "course field is too long"); goto fail; }
 			if (!strcmp(tokens[3], "cup") && count == 7) {

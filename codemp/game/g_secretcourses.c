@@ -80,59 +80,107 @@ static const char *SC_CourseTypeName(sc_course_type_t type)
 	return type == SC_COURSE_TYPE_CUP ? "cup" : "permanent";
 }
 
-static void SC_PrintProjectionDetail(gentity_t *ent, const char *prefix, const sc_projection_course_detail_t *detail)
+typedef struct {
+	gentity_t *ent;
+	char text[900];
+} sc_projection_report_t;
+
+static void SC_FlushProjectionReport(sc_projection_report_t *report)
+{
+	if (!report || !report->ent || !report->text[0]) return;
+	trap->SendServerCommand(report->ent - g_entities, va("print \"%s\"", report->text));
+	report->text[0] = '\0';
+}
+
+static void SC_AppendProjectionReportLine(sc_projection_report_t *report, const char *line)
+{
+	size_t used;
+	size_t line_length;
+
+	if (!report || !line) return;
+	used = strlen(report->text);
+	line_length = strlen(line);
+	if (!SC_ReportLineFits(used, line_length, sizeof(report->text))) SC_FlushProjectionReport(report);
+	if (!SC_ReportLineFits(strlen(report->text), line_length, sizeof(report->text))) return;
+	Q_strcat(report->text, sizeof(report->text), line);
+	Q_strcat(report->text, sizeof(report->text), "\n");
+}
+
+static void SC_PrintProjectionDetail(sc_projection_report_t *report, const char *prefix, const sc_projection_course_detail_t *detail)
 {
 	char id[SC_COURSE_ID_MAX + 1];
 	char season[SC_SEASON_ID_MAX + 1];
+	char line[384];
 
-	if (!ent || !prefix || !detail) return;
+	if (!report || !prefix || !detail) return;
 	Q_strncpyz(id, detail->course.id, sizeof(id));
 	Q_strncpyz(season, detail->course.season_id, sizeof(season));
 	Q_strstrip(id, "\n\r\"\\", NULL);
 	Q_strstrip(season, "\n\r\"\\", NULL);
-	trap->SendServerCommand(ent - g_entities, va("print \"  %s %s — %s%s%s%s%s%s%s%s.\\n\"", prefix, id, SC_CourseTypeName(detail->course.type), season[0] ? ", season " : "", season[0] ? season : "", detail->fields[0] ? ", fields: " : "", detail->fields[0] ? detail->fields : "", detail->reason[0] ? ", reason: " : "", detail->reason[0] ? detail->reason : ""));
+	Com_sprintf(line, sizeof(line), "  %s %s — %s%s%s%s%s%s%s%s.", prefix, id, SC_CourseTypeName(detail->course.type), season[0] ? ", season " : "", season[0] ? season : "", detail->fields[0] ? ", fields: " : "", detail->fields[0] ? detail->fields : "", detail->reason[0] ? ", reason: " : "", detail->reason[0] ? detail->reason : "");
+	SC_AppendProjectionReportLine(report, line);
 }
 
-static void SC_PrintProjectionCategory(gentity_t *ent, const char *name, const char *prefix, int count, const sc_projection_course_detail_t *details)
+static void SC_PrintProjectionCategory(sc_projection_report_t *report, const char *name, const char *prefix, int count, const sc_projection_course_detail_t *details)
 {
 	int index;
+	char line[96];
 
-	trap->SendServerCommand(ent - g_entities, va("print \"%s (%d):\\n\"", name, count));
+	Com_sprintf(line, sizeof(line), "%s (%d):", name, count);
+	SC_AppendProjectionReportLine(report, line);
 	if (!count) {
-		trap->SendServerCommand(ent - g_entities, "print \"  none.\\n\"");
+		SC_AppendProjectionReportLine(report, "  none.");
 		return;
 	}
-	for (index = 0; index < count && index < SC_MAX_COURSES; index++) SC_PrintProjectionDetail(ent, prefix, &details[index]);
+	for (index = 0; index < count && index < SC_MAX_COURSES; index++) SC_PrintProjectionDetail(report, prefix, &details[index]);
 }
 
 static void SC_PrintProjectionPlan(gentity_t *ent, const sc_config_t *config, const sc_projection_plan_t *plan, const char *revision, const char *applied_revision)
 {
 	int index;
+	char line[256];
+	sc_projection_report_t report;
 
 	if (!ent || !config || !plan) return;
-	trap->SendServerCommand(ent - g_entities, va("print \"Secret Courses cfg valid (proposed %s; applied %s).\\n\"", revision ? revision : "unknown", applied_revision && applied_revision[0] ? applied_revision : "none"));
-	trap->SendServerCommand(ent - g_entities, va("print \"seasons defined (%d):\\n\"", config->num_seasons));
+	memset(&report, 0, sizeof(report));
+	report.ent = ent;
+	Com_sprintf(line, sizeof(line), "Secret Courses cfg valid (proposed %s; applied %s).", revision ? revision : "unknown", applied_revision && applied_revision[0] ? applied_revision : "none");
+	SC_AppendProjectionReportLine(&report, line);
+	Com_sprintf(line, sizeof(line), "seasons defined (%d):", config->num_seasons);
+	SC_AppendProjectionReportLine(&report, line);
 	for (index = 0; index < config->num_seasons; index++) {
 		const sc_season_t *season = &config->seasons[index];
-		trap->SendServerCommand(ent - g_entities, va("print \"  * %s — number %d, start %lld, expiry %lld.\\n\"", season->id, season->number, (long long)season->starts_at, (long long)season->expires_at));
+		char season_id[SC_SEASON_ID_MAX + 1];
+		Q_strncpyz(season_id, season->id, sizeof(season_id));
+		Q_strstrip(season_id, "\n\r\"\\", NULL);
+		Com_sprintf(line, sizeof(line), "  * %s — number %d, start %lld, expiry %lld.", season_id, season->number, (long long)season->starts_at, (long long)season->expires_at);
+		SC_AppendProjectionReportLine(&report, line);
 	}
-	SC_PrintProjectionCategory(ent, "additions", "+", plan->num_addition_details, plan->addition_details);
-	SC_PrintProjectionCategory(ent, "retirements", "-", plan->num_retirement_details, plan->retirement_details);
-	SC_PrintProjectionCategory(ent, "permitted corrections", "~", plan->num_correction_details, plan->correction_details);
-	SC_PrintProjectionCategory(ent, "permitted updates", "~", plan->num_update_details, plan->update_details);
-	SC_PrintProjectionCategory(ent, "reactivations", "~", plan->num_reactivation_details, plan->reactivation_details);
-	SC_PrintProjectionCategory(ent, "blocked changes", "!", plan->num_blocked_details, plan->blocked_details);
-	trap->SendServerCommand(ent - g_entities, va("print \"schedule conflicts (%d):\\n\"", plan->schedule_conflicts));
+	SC_PrintProjectionCategory(&report, "additions", "+", plan->num_addition_details, plan->addition_details);
+	SC_PrintProjectionCategory(&report, "retirements", "-", plan->num_retirement_details, plan->retirement_details);
+	SC_PrintProjectionCategory(&report, "permitted corrections", "~", plan->num_correction_details, plan->correction_details);
+	SC_PrintProjectionCategory(&report, "permitted updates", "~", plan->num_update_details, plan->update_details);
+	SC_PrintProjectionCategory(&report, "reactivations", "~", plan->num_reactivation_details, plan->reactivation_details);
+	SC_PrintProjectionCategory(&report, "blocked changes", "!", plan->num_blocked_details, plan->blocked_details);
+	Com_sprintf(line, sizeof(line), "schedule conflicts (%d):", plan->schedule_conflicts);
+	SC_AppendProjectionReportLine(&report, line);
 	if (!plan->schedule_conflicts) {
-		trap->SendServerCommand(ent - g_entities, "print \"  none.\\n\"");
+		SC_AppendProjectionReportLine(&report, "  none.");
 	} else {
 		for (index = 0; index < plan->num_schedule_conflict_details; index++) {
 			const sc_projection_schedule_conflict_t *conflict = &plan->schedule_conflict_details[index];
-			trap->SendServerCommand(ent - g_entities, va("print \"  ! %s and %s overlap for %s.\\n\"", conflict->first_id, conflict->second_id, conflict->course_name));
+			Com_sprintf(line, sizeof(line), "  ! %s and %s overlap.", conflict->first_id, conflict->second_id);
+			SC_AppendProjectionReportLine(&report, line);
+		}
+		if (plan->schedule_conflicts > plan->num_schedule_conflict_details) {
+			Com_sprintf(line, sizeof(line), "  ... %d additional conflicts not listed.", plan->schedule_conflicts - plan->num_schedule_conflict_details);
+			SC_AppendProjectionReportLine(&report, line);
 		}
 	}
-	trap->SendServerCommand(ent - g_entities, va("print \"unchanged applied courses: %d.\\n\"", plan->unchanged));
-	trap->SendServerCommand(ent - g_entities, "print \"Note: seasons are cfg-only; course season assignments are reported as course fields.\\n\"");
+	Com_sprintf(line, sizeof(line), "unchanged applied courses: %d.", plan->unchanged);
+	SC_AppendProjectionReportLine(&report, line);
+	SC_AppendProjectionReportLine(&report, "Note: seasons are cfg-only; course season assignments are reported as course fields.");
+	SC_FlushProjectionReport(&report);
 }
 
 void SC_ValidateConfig_f(gentity_t *ent)

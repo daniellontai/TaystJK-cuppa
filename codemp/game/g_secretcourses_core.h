@@ -86,6 +86,7 @@ void SC_FreeConfig(sc_config_t *config);
 int SC_ConfigRequiresConfirmation(const sc_config_t *applied, const sc_config_t *proposed);
 int SC_CourseIdentityChanged(const sc_course_t *applied, const sc_course_t *proposed);
 int SC_DescribeCourseDifferences(char *out, size_t out_size, const sc_course_t *applied, const sc_course_t *proposed);
+int SC_ReportLineFits(size_t used, size_t line_length, size_t capacity);
 int SC_CourseIdentityCanChange(int has_event_history);
 time_t SC_NextConfiguredTransition(const sc_config_t *config, time_t now);
 int SC_ShouldNotifyAfterFullAdminLogin(int gained_full_admin, int revision_mismatch);

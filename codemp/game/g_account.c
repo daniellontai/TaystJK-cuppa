@@ -8819,6 +8819,7 @@ qboolean SC_DBPlanProjection(const sc_config_t *config, sc_projection_plan_t *pl
 		if (sqlite3_column_type(stmt, 8) != SQLITE_NULL) {
 			if (identity_or_schedule_changed || sqlite3_column_type(stmt, 6) != SQLITE_NULL) plan->changes++;
 			if (identity_or_schedule_changed || sqlite3_column_type(stmt, 6) != SQLITE_NULL) SC_AddProjectionCourseDetail(plan->blocked_details, &plan->num_blocked_details, &config->courses[found], fields, sqlite3_column_type(stmt, 6) != SQLITE_NULL ? "retired finalized ID" : "finalized ID");
+			else plan->unchanged++;
 		} else if (strcmp(course_name, config->courses[found].course_name) ||
 			sqlite3_column_int(stmt, 2) != config->courses[found].type) {
 			if (SC_CourseIdentityCanChange(has_event_history)) {
