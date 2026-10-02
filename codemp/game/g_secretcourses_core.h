@@ -11,6 +11,8 @@ extern "C" {
 #define SC_COURSE_ID_MAX 63
 #define SC_COURSE_NAME_MAX 39
 #define SC_SEASON_ID_MAX 31
+#define SC_SEASON_NAME_MAX 63
+#define SC_CFG_TEXT_MAX 65535
 #define SC_MAX_SEASONS 16
 #define SC_MAX_COURSES 64
 #define SC_APPLY_PLAN_TTL 60
@@ -40,7 +42,7 @@ typedef struct {
 
 typedef struct {
 	char id[SC_SEASON_ID_MAX + 1];
-	int number;
+	char name[SC_SEASON_NAME_MAX + 1];
 	time_t starts_at;
 	time_t expires_at;
 } sc_season_t;
@@ -58,12 +60,34 @@ typedef struct {
 } sc_validation_result_t;
 
 typedef struct {
+	char revision[65];
+	unsigned int raw_hash;
+	int raw_length;
+	char raw_text[SC_CFG_TEXT_MAX + 1];
+} sc_cfg_snapshot_t;
+
+typedef enum {
+	SC_CFG_SNAPSHOT_DB_ERROR = -2,
+	SC_CFG_SNAPSHOT_INVALID = -1,
+	SC_CFG_SNAPSHOT_MISSING = 0,
+	SC_CFG_SNAPSHOT_OK = 1
+} sc_cfg_snapshot_result_t;
+
+typedef struct {
 	char token[17];
 	char revision[65];
 	time_t expires_at;
 	int destructive;
 	int valid;
 } sc_apply_plan_t;
+
+typedef struct {
+	char token[17];
+	char revision[65];
+	int owner_client_num;
+	time_t expires_at;
+	int valid;
+} sc_restore_plan_t;
 
 typedef struct {
 	int num_expired_cup_courses;
@@ -81,6 +105,9 @@ int SC_ValidateExportPathIds(const sc_course_t *course);
 int SC_BuildArchivePath(char *out, size_t out_size, const char *season_id,
 	const char *course_id, const char *player, const char *filename);
 int SC_JsonWriteEscapedString(char *out, size_t out_size, const char *value);
+int SC_EscapeConsoleText(char *out, size_t out_size, const char *value);
+int SC_CaptureCfgSnapshot(sc_cfg_snapshot_t *snapshot, const char *revision, const char *raw_text);
+int SC_VerifyCfgSnapshot(const sc_cfg_snapshot_t *snapshot);
 int SC_ParseConfigText(const char *text, sc_config_t *out, sc_validation_result_t *result);
 void SC_FreeConfig(sc_config_t *config);
 int SC_ConfigRequiresConfirmation(const sc_config_t *applied, const sc_config_t *proposed);
@@ -103,6 +130,8 @@ int SC_StatusJsonHasRoom(size_t used, size_t row_length, size_t capacity);
 int SC_ShouldAttemptArchiveRetry(time_t retry_at, time_t now);
 void SC_RememberApplyPlan(sc_apply_plan_t *plan, const char *revision, int destructive, time_t now);
 int SC_CanConfirmApply(const char *token, const char *revision, time_t now);
+void SC_RememberRestorePlan(sc_restore_plan_t *plan, const char *revision, int owner_client_num, time_t now);
+int SC_CanConfirmRestore(const sc_restore_plan_t *plan, const char *token, const char *revision, int owner_client_num, time_t now);
 
 #ifdef __cplusplus
 }

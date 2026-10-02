@@ -5,6 +5,7 @@
 #include <ctype.h>
 
 static sc_apply_plan_t sc_last_apply_plan;
+static unsigned int sc_restore_token_serial;
 
 static unsigned int SC_HashText(const char *text)
 {
@@ -14,6 +15,25 @@ static unsigned int SC_HashText(const char *text)
 		hash *= 16777619u;
 	}
 	return hash;
+}
+
+int SC_CaptureCfgSnapshot(sc_cfg_snapshot_t *snapshot, const char *revision, const char *raw_text)
+{
+	size_t length, revision_length;
+	if (!snapshot || !revision || !raw_text || !(length = strlen(raw_text)) || length > SC_CFG_TEXT_MAX || (revision_length = strlen(revision)) >= sizeof(snapshot->revision)) return 0;
+	memset(snapshot, 0, sizeof(*snapshot));
+	memcpy(snapshot->revision, revision, revision_length + 1);
+	memcpy(snapshot->raw_text, raw_text, length + 1);
+	snapshot->raw_length = (int)length;
+	snapshot->raw_hash = SC_HashText(raw_text);
+	return 1;
+}
+
+int SC_VerifyCfgSnapshot(const sc_cfg_snapshot_t *snapshot)
+{
+	if (!snapshot || snapshot->raw_length < 0 || snapshot->raw_length > SC_CFG_TEXT_MAX) return 0;
+	if ((int)strlen(snapshot->raw_text) != snapshot->raw_length) return 0;
+	return SC_HashText(snapshot->raw_text) == snapshot->raw_hash;
 }
 
 static int SC_IsLeapYear(int year)
@@ -165,7 +185,44 @@ static int SC_CopyToken(char *destination, size_t destination_size, const char *
 	return 1;
 }
 
-static int SC_TokenizeLine(const char *line, char tokens[][80], int max_tokens)
+int SC_EscapeConsoleText(char *out, size_t out_size, const char *value)
+{
+	size_t used = 0;
+	const unsigned char *cursor = (const unsigned char *)value;
+	if (!out || !out_size || !cursor) return 0;
+	while (*cursor) {
+		const char *replacement = NULL;
+		char hex[5];
+		size_t length;
+		switch (*cursor) {
+		case '\\': replacement = "\\\\"; break;
+		case '"': replacement = "\\\""; break;
+		case '\n': replacement = "\\n"; break;
+		case '\r': replacement = "\\r"; break;
+		case '\t': replacement = "\\t"; break;
+		default:
+			if (*cursor < 0x20 || *cursor > 0x7e) {
+				snprintf(hex, sizeof(hex), "\\x%02X", *cursor);
+				replacement = hex;
+			}
+			break;
+		}
+		if (replacement) {
+			length = strlen(replacement);
+			if (used + length >= out_size) return 0;
+			memcpy(out + used, replacement, length);
+			used += length;
+		} else {
+			if (used + 1 >= out_size) return 0;
+			out[used++] = (char)*cursor;
+		}
+		cursor++;
+	}
+	out[used] = '\0';
+	return 1;
+}
+
+static int SC_TokenizeLine(const char *line, char tokens[][80], int quoted_tokens[], int max_tokens)
 {
 	int count = 0;
 	const char *cursor = line;
@@ -187,6 +244,7 @@ static int SC_TokenizeLine(const char *line, char tokens[][80], int max_tokens)
 		if (quoted && *cursor != '"') return -1;
 		if (quoted) cursor++;
 		tokens[count][length] = '\0';
+		quoted_tokens[count] = quoted;
 		count++;
 	}
 	return count;
@@ -203,6 +261,17 @@ static int SC_ParseInteger(const char *text, int *out)
 		value = value * 10 + (*cursor++ - '0');
 	}
 	*out = value;
+	return 1;
+}
+
+static int SC_IsAsciiDisplayText(const char *text)
+{
+	const unsigned char *cursor = (const unsigned char *)text;
+	if (!cursor || !*cursor) return 0;
+	while (*cursor) {
+		if (*cursor < 0x20 || *cursor > 0x7e) return 0;
+		cursor++;
+	}
 	return 1;
 }
 
@@ -458,6 +527,7 @@ int SC_ParseConfigText(const char *text, sc_config_t *out, sc_validation_result_
 		const char *line_end = strchr(line_start, '\n');
 		char line[512];
 		char tokens[8][80];
+		int quoted_tokens[8];
 		size_t length = line_end ? (size_t)(line_end - line_start) : strlen(line_start);
 		int count;
 
@@ -465,17 +535,20 @@ int SC_ParseConfigText(const char *text, sc_config_t *out, sc_validation_result_
 		if (length >= sizeof(line)) { SC_SetValidationError(result, line_number, "line is too long"); goto fail; }
 		memcpy(line, line_start, length);
 		line[length] = '\0';
-		count = SC_TokenizeLine(line, tokens, 8);
+		count = SC_TokenizeLine(line, tokens, quoted_tokens, 8);
 		if (count < 0) { SC_SetValidationError(result, line_number, "invalid tokens"); goto fail; }
 		if (!count) goto next_line;
 		if (!strcmp(tokens[0], "secretcourses_version")) {
-			if (has_version || count != 2 || strcmp(tokens[1], "1")) { SC_SetValidationError(result, line_number, "unsupported version"); goto fail; }
+			if (has_version || count != 2) { SC_SetValidationError(result, line_number, "unsupported version"); goto fail; }
+			if (!strcmp(tokens[1], "1")) { SC_SetValidationError(result, line_number, "secretcourses_version 1 requires migration to version 2"); goto fail; }
+			if (strcmp(tokens[1], "2")) { SC_SetValidationError(result, line_number, "unsupported version"); goto fail; }
 			has_version = 1;
 		} else if (!strcmp(tokens[0], "sc_season")) {
 			sc_season_t *season;
-			if (count != 5 || out->num_seasons == SC_MAX_SEASONS || SC_FindSeason(out, tokens[1]) || !SC_ValidatePathComponent(tokens[1])) { SC_SetValidationError(result, line_number, "invalid season"); goto fail; }
+			int legacy_number;
+			if (count != 5 || !quoted_tokens[2] || !SC_IsAsciiDisplayText(tokens[2]) || SC_ParseInteger(tokens[2], &legacy_number) || out->num_seasons == SC_MAX_SEASONS || SC_FindSeason(out, tokens[1]) || !SC_ValidatePathComponent(tokens[1])) { SC_SetValidationError(result, line_number, "invalid season"); goto fail; }
 			season = &out->seasons[out->num_seasons];
-			if (!SC_CopyToken(season->id, sizeof(season->id), tokens[1]) || !SC_ParseInteger(tokens[2], &season->number) || !SC_ParseUtcTimestamp(tokens[3], &season->starts_at) || !SC_ParseUtcTimestamp(tokens[4], &season->expires_at) || season->starts_at >= season->expires_at) { SC_SetValidationError(result, line_number, "invalid season schedule"); goto fail; }
+			if (!SC_CopyToken(season->id, sizeof(season->id), tokens[1]) || !SC_CopyToken(season->name, sizeof(season->name), tokens[2]) || !SC_ParseUtcTimestamp(tokens[3], &season->starts_at) || !SC_ParseUtcTimestamp(tokens[4], &season->expires_at) || season->starts_at >= season->expires_at) { SC_SetValidationError(result, line_number, "invalid season schedule"); goto fail; }
 			out->num_seasons++;
 		} else if (!strcmp(tokens[0], "sc_course")) {
 			sc_course_t *course;
@@ -525,4 +598,23 @@ int SC_CanConfirmApply(const char *token, const char *revision, time_t now)
 	return sc_last_apply_plan.valid && sc_last_apply_plan.destructive && token && revision &&
 		now <= sc_last_apply_plan.expires_at && !strcmp(token, sc_last_apply_plan.token) &&
 		!strcmp(revision, sc_last_apply_plan.revision);
+}
+
+void SC_RememberRestorePlan(sc_restore_plan_t *plan, const char *revision, int owner_client_num, time_t now)
+{
+	unsigned int hash;
+	if (!plan || !revision) return;
+	memset(plan, 0, sizeof(*plan));
+	hash = SC_HashText(revision) ^ (unsigned int)now ^ ((unsigned int)owner_client_num * 2654435761u) ^ ++sc_restore_token_serial;
+	snprintf(plan->token, sizeof(plan->token), "%08x", hash);
+	SC_CopyToken(plan->revision, sizeof(plan->revision), revision);
+	plan->owner_client_num = owner_client_num;
+	plan->expires_at = now + SC_APPLY_PLAN_TTL;
+	plan->valid = 1;
+}
+
+int SC_CanConfirmRestore(const sc_restore_plan_t *plan, const char *token, const char *revision, int owner_client_num, time_t now)
+{
+	return plan && plan->valid && token && revision && now < plan->expires_at && owner_client_num == plan->owner_client_num &&
+		!strcmp(token, plan->token) && !strcmp(revision, plan->revision);
 }

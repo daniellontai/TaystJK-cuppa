@@ -7515,27 +7515,6 @@ static void SC_EnsureLocalSecretCourseColumn(sqlite3 *db, const char *column, co
 		trap->Print("ERROR: Could not add Secret Course lifecycle column %s.\n", column);
 }
 
-static void SC_MigrateLocalSecretCourseNameConstraint(sqlite3 *db)
-{
-	sqlite3_stmt *stmt;
-	const char *schema = NULL;
-	int result;
-
-	result = sqlite3_prepare_v2(db, "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'LocalSecretCourse'", -1, &stmt, NULL);
-	if (result != SQLITE_OK) return;
-	if (sqlite3_step(stmt) == SQLITE_ROW) schema = (const char *)sqlite3_column_text(stmt, 0);
-	if (!schema || !strstr(schema, "course_name VARCHAR(40) NOT NULL UNIQUE")) { CALL_SQLITE(finalize(stmt)); return; }
-	CALL_SQLITE(finalize(stmt));
-	if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK) return;
-	result = sqlite3_exec(db,
-		"CREATE TABLE LocalSecretCourse_migrated(id VARCHAR(64) PRIMARY KEY, course_name VARCHAR(40) NOT NULL, type UNSIGNED TINYINT NOT NULL, season_id VARCHAR(32), starts_at INTEGER NOT NULL, expires_at INTEGER, applied_revision VARCHAR(64) NOT NULL, retired_at INTEGER, activated_at INTEGER, finalized_at INTEGER, archive_completed_at INTEGER);"
-		"INSERT INTO LocalSecretCourse_migrated SELECT id, course_name, type, season_id, starts_at, expires_at, applied_revision, retired_at, activated_at, finalized_at, archive_completed_at FROM LocalSecretCourse;"
-		"DROP TABLE LocalSecretCourse;"
-		"ALTER TABLE LocalSecretCourse_migrated RENAME TO LocalSecretCourse;",
-		NULL, NULL, NULL);
-	if (result == SQLITE_OK) sqlite3_exec(db, "COMMIT", NULL, NULL, NULL); else sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
-}
-
 void InitGameAccountStuff( void ) { //Called every mapload , move the create table stuff to something that gets called every srvr start.. eh?
 	sqlite3 * db;
     char * sql;
@@ -7625,13 +7604,21 @@ void InitGameAccountStuff( void ) { //Called every mapload , move the create tab
 	SC_EnsureLocalSecretCourseColumn(db, "activated_at", "INTEGER");
 	SC_EnsureLocalSecretCourseColumn(db, "finalized_at", "INTEGER");
 	SC_EnsureLocalSecretCourseColumn(db, "archive_completed_at", "INTEGER");
-	SC_MigrateLocalSecretCourseNameConstraint(db);
+	/* The one-time LocalSecretCourse name-constraint migration has already run
+	 * on the only deployed server and is intentionally not replayed. */
 
 	sql = "CREATE TABLE IF NOT EXISTS LocalSecretCourseMeta(key TEXT PRIMARY KEY, value TEXT NOT NULL)";
 	CALL_SQLITE(prepare_v2(db, sql, strlen(sql) + 1, &stmt, NULL));
 	s = sqlite3_step(stmt);
 	if (s != SQLITE_DONE)
 		G_ErrorPrint("ERROR: SQL Create Failed (InitGameAccountStuff LocalSecretCourseMeta)", s);
+	CALL_SQLITE(finalize(stmt));
+
+	sql = "CREATE TABLE IF NOT EXISTS LocalSecretCourseCfgSnapshot(revision VARCHAR(64) PRIMARY KEY, raw_text BLOB NOT NULL, raw_length INTEGER NOT NULL, raw_hash INTEGER NOT NULL, created_at INTEGER NOT NULL)";
+	CALL_SQLITE(prepare_v2(db, sql, strlen(sql) + 1, &stmt, NULL));
+	s = sqlite3_step(stmt);
+	if (s != SQLITE_DONE)
+		G_ErrorPrint("ERROR: SQL Create Failed (InitGameAccountStuff LocalSecretCourseCfgSnapshot)", s);
 	CALL_SQLITE(finalize(stmt));
 
 	/* This table intentionally records Secret Course PBs separately from the
@@ -8487,6 +8474,50 @@ qboolean SC_DBGetAppliedRevision(char revision[65])
 	return qtrue;
 }
 
+sc_cfg_snapshot_result_t SC_DBLoadCfgSnapshot(const char *revision, sc_cfg_snapshot_t *out)
+{
+	sqlite3 *db;
+	sqlite3_stmt *stmt;
+	const void *raw_text;
+	int result;
+	int raw_length;
+	int raw_bytes;
+
+	if (!revision || !revision[0] || !out) return SC_CFG_SNAPSHOT_DB_ERROR;
+	memset(out, 0, sizeof(*out));
+	CALL_SQLITE(open(LOCAL_DB_PATH, &db));
+	result = sqlite3_prepare_v2(db, "SELECT raw_text, raw_length, raw_hash FROM LocalSecretCourseCfgSnapshot WHERE revision = ?", -1, &stmt, NULL);
+	if (result != SQLITE_OK) { CALL_SQLITE(close(db)); return SC_CFG_SNAPSHOT_DB_ERROR; }
+	CALL_SQLITE(bind_text(stmt, 1, revision, -1, SQLITE_STATIC));
+	result = sqlite3_step(stmt);
+	if (result == SQLITE_DONE) {
+		CALL_SQLITE(finalize(stmt));
+		CALL_SQLITE(close(db));
+		return SC_CFG_SNAPSHOT_MISSING;
+	}
+	if (result != SQLITE_ROW) {
+		CALL_SQLITE(finalize(stmt));
+		CALL_SQLITE(close(db));
+		return SC_CFG_SNAPSHOT_DB_ERROR;
+	}
+	raw_text = sqlite3_column_blob(stmt, 0);
+	raw_length = sqlite3_column_int(stmt, 1);
+	raw_bytes = sqlite3_column_bytes(stmt, 0);
+	if (!raw_text || raw_length <= 0 || raw_length > SC_CFG_TEXT_MAX || raw_bytes != raw_length) {
+		CALL_SQLITE(finalize(stmt));
+		CALL_SQLITE(close(db));
+		return SC_CFG_SNAPSHOT_INVALID;
+	}
+	Q_strncpyz(out->revision, revision, sizeof(out->revision));
+	memcpy(out->raw_text, raw_text, raw_length);
+	out->raw_text[raw_length] = '\0';
+	out->raw_length = raw_length;
+	out->raw_hash = (unsigned int)sqlite3_column_int64(stmt, 2);
+	CALL_SQLITE(finalize(stmt));
+	CALL_SQLITE(close(db));
+	return SC_VerifyCfgSnapshot(out) ? SC_CFG_SNAPSHOT_OK : SC_CFG_SNAPSHOT_INVALID;
+}
+
 static qboolean SC_DBHasEventHistoryInDb(sqlite3 *db, const char *id)
 {
 	sqlite3_stmt *stmt;
@@ -8871,20 +8902,22 @@ qboolean SC_DBPlanProjection(const sc_config_t *config, sc_projection_plan_t *pl
 	return qtrue;
 }
 
-qboolean SC_DBApplyProjection(const sc_config_t *config, const char *revision, qboolean allow_destructive)
+qboolean SC_DBApplyProjection(const sc_config_t *config, const char *revision, const char *raw_cfg_text, qboolean allow_destructive)
 {
 	sqlite3 *db;
 	sqlite3_stmt *stmt;
 	sc_projection_plan_t plan;
+	sc_cfg_snapshot_t snapshot;
 	time_t now;
 	int index;
 	int result = SQLITE_OK;
 
-	if (!config || !revision || !SC_DBPlanProjection(config, &plan) || plan.changes || plan.schedule_conflicts ||
+	if (!config || !revision || !SC_CaptureCfgSnapshot(&snapshot, revision, raw_cfg_text) || !SC_DBPlanProjection(config, &plan) || plan.changes || plan.schedule_conflicts ||
 		((plan.retirements > 0 || plan.corrections > 0) && !allow_destructive)) return qfalse;
 	time(&now);
 	CALL_SQLITE(open(LOCAL_DB_PATH, &db));
 	if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK) { CALL_SQLITE(close(db)); return qfalse; }
+	result = SQLITE_OK;
 	for (index = 0; index < config->num_courses && result == SQLITE_OK; index++) {
 		const sc_course_t *course = &config->courses[index];
 		result = sqlite3_prepare_v2(db,
@@ -8951,6 +8984,18 @@ qboolean SC_DBApplyProjection(const sc_config_t *config, const char *revision, q
 		result = sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO LocalSecretCourseMeta(key, value) VALUES('revision', ?)", -1, &stmt, NULL);
 		if (result == SQLITE_OK) {
 			CALL_SQLITE(bind_text(stmt, 1, revision, -1, SQLITE_STATIC));
+			result = sqlite3_step(stmt) == SQLITE_DONE ? SQLITE_OK : SQLITE_ERROR;
+			CALL_SQLITE(finalize(stmt));
+		}
+	}
+	if (result == SQLITE_OK) {
+		result = sqlite3_prepare_v2(db, "INSERT OR IGNORE INTO LocalSecretCourseCfgSnapshot(revision, raw_text, raw_length, raw_hash, created_at) VALUES (?, ?, ?, ?, ?)", -1, &stmt, NULL);
+		if (result == SQLITE_OK) {
+			CALL_SQLITE(bind_text(stmt, 1, snapshot.revision, -1, SQLITE_STATIC));
+			CALL_SQLITE(bind_blob(stmt, 2, snapshot.raw_text, snapshot.raw_length, SQLITE_STATIC));
+			CALL_SQLITE(bind_int(stmt, 3, snapshot.raw_length));
+			CALL_SQLITE(bind_int64(stmt, 4, (sqlite3_int64)snapshot.raw_hash));
+			CALL_SQLITE(bind_int64(stmt, 5, (sqlite3_int64)now));
 			result = sqlite3_step(stmt) == SQLITE_DONE ? SQLITE_OK : SQLITE_ERROR;
 			CALL_SQLITE(finalize(stmt));
 		}
@@ -9041,7 +9086,7 @@ void SC_Cmd_ListSecret_f(gentity_t *ent) {
     trap->SendServerCommand(ent - g_entities, va("print \"%s\n\"", msg));
 	for (i = 0; i < g_numSecretCourses; i++) {
 		if (g_secretCourses[i].permanent) {
-			trap->SendServerCommand(ent - g_entities, "print \"------------------------------\nPermanent secret courses — not part of the Secret Cup\n\"");
+			trap->SendServerCommand(ent - g_entities, "print \"------------------------------\nPermanent secret courses - not part of the Secret Cup\n\"");
 			break;
 		}
 	}

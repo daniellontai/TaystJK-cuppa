@@ -44,14 +44,17 @@ typedef struct {
 
 void SC_EnsureConfigTemplate(void);
 qboolean SC_ReadAndValidateConfig(sc_config_t *config, char revision[65], sc_validation_result_t *error);
+const char *SC_GetLastConfigText(void);
 void SC_ValidateConfig_f(gentity_t *ent);
 void SC_ApplyConfig_f(gentity_t *ent);
+void SC_RestoreConfig_f(gentity_t *ent);
 void SC_NotifyConfigRevisionAfterFullAdminLogin(gentity_t *ent);
 void SC_ReconcileSchedule(time_t now);
 time_t SC_GetNextTransitionTime(void);
 void SC_WriteStaticExports(void);
 
 qboolean SC_DBGetAppliedRevision(char revision[65]);
+sc_cfg_snapshot_result_t SC_DBLoadCfgSnapshot(const char *revision, sc_cfg_snapshot_t *out);
 qboolean SC_DBHasEventHistory(const char *id);
 qboolean SC_DBSnapshotLocalRuns(const char *id, const char *course_name);
 qboolean SC_DBGetLifecycleRows(sc_course_t *out, int capacity, int *count);
@@ -63,6 +66,6 @@ qboolean SC_DBRenderLeaderboardJson(char *out, size_t out_size, const sc_course_
 void SC_DBLogExpiredCourseById(const char *id);
 qboolean SC_ArchiveExpiredCourseDemos(const sc_course_t *course);
 qboolean SC_DBPlanProjection(const sc_config_t *config, sc_projection_plan_t *plan);
-qboolean SC_DBApplyProjection(const sc_config_t *config, const char *revision, qboolean allow_destructive);
+qboolean SC_DBApplyProjection(const sc_config_t *config, const char *revision, const char *raw_cfg_text, qboolean allow_destructive);
 
 #endif

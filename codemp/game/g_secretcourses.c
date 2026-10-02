@@ -3,6 +3,10 @@
 
 #include <string.h>
 
+static char sc_last_config_text[SC_CFG_TEXT_MAX + 1];
+static sc_restore_plan_t sc_last_restore_plan;
+static unsigned int sc_restore_backup_serial;
+
 int G_AdminAllowed(gentity_t *ent, unsigned int adminCmd, qboolean cheatAllowed, qboolean raceAllowed, char *cmdName);
 
 void SC_EnsureConfigTemplate(void)
@@ -10,8 +14,8 @@ void SC_EnsureConfigTemplate(void)
 	static const char template_text[] =
 		"// Secret Courses configuration. Times are UTC: YYYY-MM-DDTHH:MM:SSZ.\n"
 		"// Validate with /sc_validatecfg, then apply with /sc_applycfg.\n"
-		"secretcourses_version 1\n"
-		"// sc_season <season-id> <number> <starts-at> <expires-at>\n"
+		"secretcourses_version 2\n"
+		"// sc_season <season-id> \"<name>\" <starts-at> <expires-at>\n"
 		"// sc_course <course-id> \"<course-name>\" cup <season-id> <starts-at> <expires-at>\n"
 		"// sc_course <course-id> \"<course-name>\" permanent <starts-at>\n";
 	fileHandle_t file = 0;
@@ -53,18 +57,49 @@ static qboolean SC_ReadTextFile(char *text, size_t text_size, sc_validation_resu
 		return qfalse;
 	}
 	trap->FS_Close(file);
+	if (memchr(text, '\0', length)) {
+		if (error) Q_strncpyz(error->message, "secretcourses.cfg contains an embedded NUL byte", sizeof(error->message));
+		return qfalse;
+	}
 	text[length] = '\0';
+	return qtrue;
+}
+
+static qboolean SC_ReadExistingTextFile(char *text, size_t text_size, int *out_length)
+{
+	fileHandle_t file;
+	int length = trap->FS_Open("secretcourses.cfg", &file, FS_READ);
+	if (!file || length < 0 || (size_t)length >= text_size) {
+		if (file) trap->FS_Close(file);
+		return qfalse;
+	}
+	if (length && trap->FS_Read(text, length, file) != length) {
+		trap->FS_Close(file);
+		return qfalse;
+	}
+	trap->FS_Close(file);
+	text[length] = '\0';
+	*out_length = length;
+	return qtrue;
+}
+
+static qboolean SC_WriteRawTextFile(const char *path, const char *text, int length)
+{
+	fileHandle_t file;
+	if (!path || !text || length < 0 || trap->FS_Open(path, &file, FS_WRITE) < 0 || !file) return qfalse;
+	if (length) trap->FS_Write(text, length, file);
+	trap->FS_Close(file);
 	return qtrue;
 }
 
 qboolean SC_ReadAndValidateConfig(sc_config_t *config, char revision[65], sc_validation_result_t *error)
 {
-	static char text[65536];
+	char *text = sc_last_config_text;
 	unsigned int hash = 2166136261u;
 	const unsigned char *cursor;
 
 	if (error) memset(error, 0, sizeof(*error));
-	if (!SC_ReadTextFile(text, sizeof(text), error) || !SC_ParseConfigText(text, config, error)) {
+	if (!SC_ReadTextFile(text, SC_CFG_TEXT_MAX + 1, error) || !SC_ParseConfigText(text, config, error)) {
 		return qfalse;
 	}
 	for (cursor = (const unsigned char *)text; *cursor; cursor++) {
@@ -73,6 +108,11 @@ qboolean SC_ReadAndValidateConfig(sc_config_t *config, char revision[65], sc_val
 	}
 	Com_sprintf(revision, 65, "%08x", hash);
 	return qtrue;
+}
+
+const char *SC_GetLastConfigText(void)
+{
+	return sc_last_config_text;
 }
 
 static const char *SC_CourseTypeName(sc_course_type_t type)
@@ -106,22 +146,32 @@ static void SC_AppendProjectionReportLine(sc_projection_report_t *report, const 
 	Q_strcat(report->text, sizeof(report->text), "\n");
 }
 
-static void SC_PrintProjectionDetail(sc_projection_report_t *report, const char *prefix, const sc_projection_course_detail_t *detail)
+static const char *SC_SeasonDisplayName(const sc_config_t *config, const char *id)
+{
+	int index;
+	if (!config || !id || !id[0]) return "";
+	for (index = 0; index < config->num_seasons; index++)
+		if (!Q_stricmp(config->seasons[index].id, id)) return config->seasons[index].name;
+	return id;
+}
+
+static void SC_PrintProjectionDetail(sc_projection_report_t *report, const sc_config_t *config, const char *prefix, const sc_projection_course_detail_t *detail)
 {
 	char id[SC_COURSE_ID_MAX + 1];
-	char season[SC_SEASON_ID_MAX + 1];
+	char season[SC_SEASON_NAME_MAX * 4 + 1];
+	char course_name[SC_COURSE_NAME_MAX * 4 + 1];
 	char line[384];
 
 	if (!report || !prefix || !detail) return;
 	Q_strncpyz(id, detail->course.id, sizeof(id));
-	Q_strncpyz(season, detail->course.season_id, sizeof(season));
 	Q_strstrip(id, "\n\r\"\\", NULL);
-	Q_strstrip(season, "\n\r\"\\", NULL);
-	Com_sprintf(line, sizeof(line), "  %s %s - %s%s%s%s%s%s%s.", prefix, id, SC_CourseTypeName(detail->course.type), season[0] ? ", season " : "", season[0] ? season : "", detail->fields[0] ? ", fields: " : "", detail->fields[0] ? detail->fields : "", detail->reason[0] ? ", reason: " : "", detail->reason[0] ? detail->reason : "");
+	if (!SC_EscapeConsoleText(course_name, sizeof(course_name), detail->course.course_name)) return;
+	if (!SC_EscapeConsoleText(season, sizeof(season), SC_SeasonDisplayName(config, detail->course.season_id))) return;
+	Com_sprintf(line, sizeof(line), "  %s %s (%s) - %s%s%s%s%s%s.", prefix, id, course_name, SC_CourseTypeName(detail->course.type), season[0] ? ", season " : "", season[0] ? season : "", detail->fields[0] ? ", fields: " : "", detail->fields[0] ? detail->fields : "", detail->reason[0] ? ", reason: " : "", detail->reason[0] ? detail->reason : "");
 	SC_AppendProjectionReportLine(report, line);
 }
 
-static void SC_PrintProjectionCategory(sc_projection_report_t *report, const char *name, const char *prefix, int count, const sc_projection_course_detail_t *details)
+static void SC_PrintProjectionCategory(sc_projection_report_t *report, const sc_config_t *config, const char *name, const char *prefix, int count, const sc_projection_course_detail_t *details)
 {
 	int index;
 	char line[96];
@@ -132,7 +182,7 @@ static void SC_PrintProjectionCategory(sc_projection_report_t *report, const cha
 		SC_AppendProjectionReportLine(report, "  none.");
 		return;
 	}
-	for (index = 0; index < count && index < SC_MAX_COURSES; index++) SC_PrintProjectionDetail(report, prefix, &details[index]);
+	for (index = 0; index < count && index < SC_MAX_COURSES; index++) SC_PrintProjectionDetail(report, config, prefix, &details[index]);
 }
 
 static void SC_PrintProjectionPlan(gentity_t *ent, const sc_config_t *config, const sc_projection_plan_t *plan, const char *revision, const char *applied_revision)
@@ -151,17 +201,19 @@ static void SC_PrintProjectionPlan(gentity_t *ent, const sc_config_t *config, co
 	for (index = 0; index < config->num_seasons; index++) {
 		const sc_season_t *season = &config->seasons[index];
 		char season_id[SC_SEASON_ID_MAX + 1];
+		char season_name[SC_SEASON_NAME_MAX * 4 + 1];
 		Q_strncpyz(season_id, season->id, sizeof(season_id));
 		Q_strstrip(season_id, "\n\r\"\\", NULL);
-		Com_sprintf(line, sizeof(line), "  * %s - number %d, start %lld, expiry %lld.", season_id, season->number, (long long)season->starts_at, (long long)season->expires_at);
+		if (!SC_EscapeConsoleText(season_name, sizeof(season_name), season->name)) continue;
+		Com_sprintf(line, sizeof(line), "  * %s - %s, start %lld, expiry %lld.", season_id, season_name, (long long)season->starts_at, (long long)season->expires_at);
 		SC_AppendProjectionReportLine(&report, line);
 	}
-	SC_PrintProjectionCategory(&report, "additions", "+", plan->num_addition_details, plan->addition_details);
-	SC_PrintProjectionCategory(&report, "retirements", "-", plan->num_retirement_details, plan->retirement_details);
-	SC_PrintProjectionCategory(&report, "permitted corrections", "~", plan->num_correction_details, plan->correction_details);
-	SC_PrintProjectionCategory(&report, "permitted updates", "~", plan->num_update_details, plan->update_details);
-	SC_PrintProjectionCategory(&report, "reactivations", "~", plan->num_reactivation_details, plan->reactivation_details);
-	SC_PrintProjectionCategory(&report, "blocked changes", "!", plan->num_blocked_details, plan->blocked_details);
+	SC_PrintProjectionCategory(&report, config, "additions", "+", plan->num_addition_details, plan->addition_details);
+	SC_PrintProjectionCategory(&report, config, "retirements", "-", plan->num_retirement_details, plan->retirement_details);
+	SC_PrintProjectionCategory(&report, config, "permitted corrections", "~", plan->num_correction_details, plan->correction_details);
+	SC_PrintProjectionCategory(&report, config, "permitted updates", "~", plan->num_update_details, plan->update_details);
+	SC_PrintProjectionCategory(&report, config, "reactivations", "~", plan->num_reactivation_details, plan->reactivation_details);
+	SC_PrintProjectionCategory(&report, config, "blocked changes", "!", plan->num_blocked_details, plan->blocked_details);
 	Com_sprintf(line, sizeof(line), "schedule conflicts (%d):", plan->schedule_conflicts);
 	SC_AppendProjectionReportLine(&report, line);
 	if (!plan->schedule_conflicts) {
@@ -169,7 +221,9 @@ static void SC_PrintProjectionPlan(gentity_t *ent, const sc_config_t *config, co
 	} else {
 		for (index = 0; index < plan->num_schedule_conflict_details; index++) {
 			const sc_projection_schedule_conflict_t *conflict = &plan->schedule_conflict_details[index];
-			Com_sprintf(line, sizeof(line), "  ! %s and %s overlap.", conflict->first_id, conflict->second_id);
+			char course_name[SC_COURSE_NAME_MAX * 4 + 1];
+			if (!SC_EscapeConsoleText(course_name, sizeof(course_name), conflict->course_name)) continue;
+			Com_sprintf(line, sizeof(line), "  ! %s (%s) and %s (%s) overlap.", conflict->first_id, course_name, conflict->second_id, course_name);
 			SC_AppendProjectionReportLine(&report, line);
 		}
 		if (plan->schedule_conflicts > plan->num_schedule_conflict_details) {
@@ -224,7 +278,7 @@ void SC_ApplyConfig_f(gentity_t *ent)
 		return;
 	}
 	if (!SC_ReadAndValidateConfig(&config, revision, &error)) {
-		trap->SendServerCommand(ent - g_entities, va("print \"Secret Courses cfg invalid%s%s%s%s.\n\"", error.line ? " at line " : "", error.line ? va("%d", error.line) : "", error.message[0] ? ": " : "", error.message));
+		trap->SendServerCommand(ent - g_entities, "print \"Secret Courses cfg was not applied. Run /sc_validatecfg for details.\n\"");
 		return;
 	}
 	if (!SC_DBPlanProjection(&config, &projection)) {
@@ -232,7 +286,6 @@ void SC_ApplyConfig_f(gentity_t *ent)
 		return;
 	}
 	SC_DBGetAppliedRevision(applied_revision);
-	SC_PrintProjectionPlan(ent, &config, &projection, revision, applied_revision);
 	time(&now);
 	if (projection.changes) {
 		trap->SendServerCommand(ent - g_entities, "print \"Finalized Secret Course IDs cannot change name, type, season, start, or expiry. Create a new ID instead.\n\"");
@@ -272,14 +325,84 @@ void SC_ApplyConfig_f(gentity_t *ent)
 			return;
 		}
 	}
-	if (!SC_DBApplyProjection(&config, revision, confirming)) {
+	if (!SC_DBApplyProjection(&config, revision, SC_GetLastConfigText(), confirming)) {
 		trap->SendServerCommand(ent - g_entities, "print \"Secret Courses projection was not applied. Revalidate and retry.\n\"");
 		return;
 	}
-	trap->SendServerCommand(ent - g_entities, va("print \"Secret Courses cfg revision %s applied.\n\"", revision));
+	trap->SendServerCommand(ent - g_entities, va("print \"Secret Courses cfg revision %s applied (%d courses).\n\"", revision, config.num_courses));
 	SC_LoadSecretCourses();
 	SC_ReconcileSchedule(now);
 	SC_WriteStaticExports();
+}
+
+void SC_RestoreConfig_f(gentity_t *ent)
+{
+	char revision[65];
+	char token[32];
+	char backup_path[128];
+	char current_text[SC_CFG_TEXT_MAX + 1];
+	sc_cfg_snapshot_t snapshot;
+	sc_cfg_snapshot_result_t snapshot_result;
+	time_t now;
+	int owner_client_num;
+	int current_length;
+
+	if (!G_AdminAllowed(ent, JAPRO_ACCOUNTFLAG_A_GRANTADMIN, qfalse, qfalse, "sc_restorecfg")) return;
+	owner_client_num = (int)(ent - g_entities);
+	if (!SC_DBGetAppliedRevision(revision)) {
+		trap->SendServerCommand(owner_client_num, "print \"Secret Courses restore unavailable: could not read applied revision.\n\"");
+		return;
+	}
+	snapshot_result = SC_DBLoadCfgSnapshot(revision, &snapshot);
+	if (snapshot_result == SC_CFG_SNAPSHOT_MISSING) {
+		if (trap->Argc() != 1) sc_last_restore_plan.valid = 0;
+		trap->SendServerCommand(owner_client_num, va("print \"Secret Courses restore unavailable: applied revision %s has no saved cfg snapshot.\n\"", revision));
+		return;
+	}
+	if (snapshot_result != SC_CFG_SNAPSHOT_OK) {
+		if (trap->Argc() != 1) sc_last_restore_plan.valid = 0;
+		trap->SendServerCommand(owner_client_num, snapshot_result == SC_CFG_SNAPSHOT_DB_ERROR ? "print \"Secret Courses restore unavailable: could not read saved cfg snapshot.\n\"" : "print \"Secret Courses restore unavailable: saved cfg snapshot failed integrity checks.\n\"");
+		return;
+	}
+	time(&now);
+	if (trap->Argc() == 1) {
+		SC_RememberRestorePlan(&sc_last_restore_plan, revision, owner_client_num, now);
+		trap->SendServerCommand(owner_client_num, va("print \"Secret Courses restore will replace the editable cfg. Confirm: /sc_restorecfg confirm %s\n\"", sc_last_restore_plan.token));
+		return;
+	}
+	if (trap->Argc() != 3) {
+		sc_last_restore_plan.valid = 0;
+		trap->SendServerCommand(owner_client_num, "print \"Usage: /sc_restorecfg or /sc_restorecfg confirm <token>\n\"");
+		return;
+	}
+	trap->Argv(1, token, sizeof(token));
+	if (Q_stricmp(token, "confirm")) {
+		sc_last_restore_plan.valid = 0;
+		trap->SendServerCommand(owner_client_num, "print \"Usage: /sc_restorecfg confirm <token>\n\"");
+		return;
+	}
+	trap->Argv(2, token, sizeof(token));
+	if (!SC_CanConfirmRestore(&sc_last_restore_plan, token, revision, owner_client_num, now)) {
+		sc_last_restore_plan.valid = 0;
+		trap->SendServerCommand(owner_client_num, "print \"Secret Courses restore confirmation is invalid or expired.\n\"");
+		return;
+	}
+	sc_last_restore_plan.valid = 0;
+	snapshot_result = SC_DBLoadCfgSnapshot(revision, &snapshot);
+	if (snapshot_result != SC_CFG_SNAPSHOT_OK || !SC_ReadExistingTextFile(current_text, sizeof(current_text), &current_length)) {
+		trap->SendServerCommand(owner_client_num, "print \"Secret Courses restore failed before changing the editable cfg.\n\"");
+		return;
+	}
+	Com_sprintf(backup_path, sizeof(backup_path), "secretcourses.cfg.restore-%s-%lld-%u.bak", revision, (long long)now, ++sc_restore_backup_serial);
+	if (!SC_WriteRawTextFile(backup_path, current_text, current_length)) {
+		trap->SendServerCommand(owner_client_num, "print \"Secret Courses restore failed: could not create cfg backup.\n\"");
+		return;
+	}
+	if (!SC_WriteRawTextFile("secretcourses.cfg", snapshot.raw_text, snapshot.raw_length)) {
+		trap->SendServerCommand(owner_client_num, va("print \"Secret Courses restore interrupted; recover from %s or retry restore.\n\"", backup_path));
+		return;
+	}
+	trap->SendServerCommand(owner_client_num, va("print \"Secret Courses cfg restored from revision %s. Backup: %s\n\"", revision, backup_path));
 }
 
 void SC_NotifyConfigRevisionAfterFullAdminLogin(gentity_t *ent)
