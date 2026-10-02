@@ -5902,7 +5902,7 @@ void Cmd_Aminfo_f(gentity_t *ent)
 			Q_strcat(buf, sizeof(buf), "amTele ");
 		if (G_AdminAllowed(ent, JAPRO_ACCOUNTFLAG_A_GRANTADMIN, qfalse, qfalse, NULL)) {
 			Q_strcat(buf, sizeof(buf), "amGrantAdmin ");
-			Q_strcat(buf, sizeof(buf), "sc_validatecfg sc_applycfg ");
+			Q_strcat(buf, sizeof(buf), "sc_validatecfg sc_applycfg sc_restorecfg ");
 		}
 		if (G_AdminAllowed(ent, JAPRO_ACCOUNTFLAG_A_CHANGEMAP, qfalse, qfalse, NULL))
 			Q_strcat(buf, sizeof(buf), "amMap ");
@@ -9047,6 +9047,7 @@ void Cmd_InvalidateRace_f(gentity_t* ent);
 void Cmd_Haste_f(gentity_t* ent);
 void SC_ValidateConfig_f(gentity_t *ent);
 void SC_ApplyConfig_f(gentity_t *ent);
+void SC_RestoreConfig_f(gentity_t *ent);
 void SC_Cmd_ListSecret_f(gentity_t *ent);
 void Cmd_Unlocks_f(gentity_t *ent);
 
@@ -9185,6 +9186,7 @@ command_t commands[] = {
 	{ "sc",					SC_Cmd_ListSecret_f,		0 },
 	{ "sc_applycfg",		SC_ApplyConfig_f,		0 },
 	{ "sc_validatecfg",	SC_ValidateConfig_f,	0 },
+	{ "sc_restorecfg",	SC_RestoreConfig_f,		0 },
 
 	{ "login",				Cmd_ACLogin_f,				CMD_NOINTERMISSION },
 	{ "logout",				Cmd_ACLogout_f,				CMD_NOINTERMISSION },
