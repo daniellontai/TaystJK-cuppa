@@ -2119,6 +2119,8 @@ extern gameImport_t *trap;
 typedef struct secretCourse_s
 {
 	char coursename[40];
+	char season_id[32];
+	char season_name[64];
 	time_t secret_until;
 	qboolean permanent;
 } secretCourse_t;

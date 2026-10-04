@@ -194,7 +194,7 @@ static void SC_PrintProjectionPlan(gentity_t *ent, const sc_config_t *config, co
 	if (!ent || !config || !plan) return;
 	memset(&report, 0, sizeof(report));
 	report.ent = ent;
-	Com_sprintf(line, sizeof(line), "Secret Courses cfg valid (proposed %s; applied %s).", revision ? revision : "unknown", applied_revision && applied_revision[0] ? applied_revision : "none");
+	Com_sprintf(line, sizeof(line), "Secret Courses cfg ^2valid^7 (proposed %s; applied %s).", revision ? revision : "unknown", applied_revision && applied_revision[0] ? applied_revision : "none");
 	SC_AppendProjectionReportLine(&report, line);
 	Com_sprintf(line, sizeof(line), "seasons defined (%d):", config->num_seasons);
 	SC_AppendProjectionReportLine(&report, line);
@@ -202,10 +202,14 @@ static void SC_PrintProjectionPlan(gentity_t *ent, const sc_config_t *config, co
 		const sc_season_t *season = &config->seasons[index];
 		char season_id[SC_SEASON_ID_MAX + 1];
 		char season_name[SC_SEASON_NAME_MAX * 4 + 1];
+		char starts_at[32];
+		char expires_at[32];
 		Q_strncpyz(season_id, season->id, sizeof(season_id));
 		Q_strstrip(season_id, "\n\r\"\\", NULL);
 		if (!SC_EscapeConsoleText(season_name, sizeof(season_name), season->name)) continue;
-		Com_sprintf(line, sizeof(line), "  * %s - %s, start %lld, expiry %lld.", season_id, season_name, (long long)season->starts_at, (long long)season->expires_at);
+		if (!SC_FormatLocalTime(starts_at, sizeof(starts_at), season->starts_at)) Q_strncpyz(starts_at, "unknown", sizeof(starts_at));
+		if (!SC_FormatLocalTime(expires_at, sizeof(expires_at), season->expires_at)) Q_strncpyz(expires_at, "unknown", sizeof(expires_at));
+		Com_sprintf(line, sizeof(line), "  * %s - %s, start %s, expiry %s.", season_id, season_name, starts_at, expires_at);
 		SC_AppendProjectionReportLine(&report, line);
 	}
 	SC_PrintProjectionCategory(&report, config, "additions", "+", plan->num_addition_details, plan->addition_details);
@@ -233,7 +237,6 @@ static void SC_PrintProjectionPlan(gentity_t *ent, const sc_config_t *config, co
 	}
 	Com_sprintf(line, sizeof(line), "unchanged applied courses: %d.", plan->unchanged);
 	SC_AppendProjectionReportLine(&report, line);
-	SC_AppendProjectionReportLine(&report, "Note: seasons are cfg-only; course season assignments are reported as course fields.");
 	SC_FlushProjectionReport(&report);
 }
 
@@ -249,7 +252,7 @@ void SC_ValidateConfig_f(gentity_t *ent)
 		return;
 	}
 	if (!SC_ReadAndValidateConfig(&config, revision, &error)) {
-		trap->SendServerCommand(ent - g_entities, va("print \"Secret Courses cfg invalid%s%s%s%s.\n\"", error.line ? " at line " : "", error.line ? va("%d", error.line) : "", error.message[0] ? ": " : "", error.message));
+		trap->SendServerCommand(ent - g_entities, va("print \"Secret Courses cfg ^1invalid^7%s%s%s%s.\n\"", error.line ? " at line " : "", error.line ? va("%d", error.line) : "", error.message[0] ? ": " : "", error.message));
 		return;
 	}
 	if (!SC_DBPlanProjection(&config, &plan)) {
@@ -340,6 +343,7 @@ void SC_RestoreConfig_f(gentity_t *ent)
 	char revision[65];
 	char token[32];
 	char backup_path[128];
+	char backup_timestamp[32];
 	char current_text[SC_CFG_TEXT_MAX + 1];
 	sc_cfg_snapshot_t snapshot;
 	sc_cfg_snapshot_result_t snapshot_result;
@@ -393,7 +397,11 @@ void SC_RestoreConfig_f(gentity_t *ent)
 		trap->SendServerCommand(owner_client_num, "print \"Secret Courses restore failed before changing the editable cfg.\n\"");
 		return;
 	}
-	Com_sprintf(backup_path, sizeof(backup_path), "secretcourses.cfg.restore-%s-%lld-%u.bak", revision, (long long)now, ++sc_restore_backup_serial);
+	if (!SC_FormatIsoUtcFilenameTime(backup_timestamp, sizeof(backup_timestamp), now)) {
+		trap->SendServerCommand(owner_client_num, "print \"Secret Courses restore failed: could not format backup timestamp.\n\"");
+		return;
+	}
+	Com_sprintf(backup_path, sizeof(backup_path), "secretcourses.cfg.restore-%s-%s-%u.bak", revision, backup_timestamp, ++sc_restore_backup_serial);
 	if (!SC_WriteRawTextFile(backup_path, current_text, current_length)) {
 		trap->SendServerCommand(owner_client_num, "print \"Secret Courses restore failed: could not create cfg backup.\n\"");
 		return;

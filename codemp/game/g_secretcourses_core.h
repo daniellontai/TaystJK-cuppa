@@ -106,6 +106,11 @@ int SC_BuildArchivePath(char *out, size_t out_size, const char *season_id,
 	const char *course_id, const char *player, const char *filename);
 int SC_JsonWriteEscapedString(char *out, size_t out_size, const char *value);
 int SC_EscapeConsoleText(char *out, size_t out_size, const char *value);
+int SC_FormatCalendarTime(char *out, size_t out_size, const struct tm *calendar);
+int SC_FormatLocalTime(char *out, size_t out_size, time_t value);
+int SC_FormatIsoUtcFilenameTime(char *out, size_t out_size, time_t value);
+int SC_CopySeasonName(char *out, size_t out_size, const sc_config_t *config, const char *season_id);
+int SC_FormatExpiryHeading(char *out, size_t out_size, const char *course_name);
 int SC_CaptureCfgSnapshot(sc_cfg_snapshot_t *snapshot, const char *revision, const char *raw_text);
 int SC_VerifyCfgSnapshot(const sc_cfg_snapshot_t *snapshot);
 int SC_ParseConfigText(const char *text, sc_config_t *out, sc_validation_result_t *result);

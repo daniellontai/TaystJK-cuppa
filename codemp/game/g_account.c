@@ -8159,18 +8159,28 @@ void SC_LoadSecretCourses(void)
 	sqlite3 *db;
 	char *sql;
 	sqlite3_stmt *stmt;
+	sc_config_t applied_config;
+	sc_cfg_snapshot_t applied_snapshot;
+	sc_validation_result_t validation;
+	char applied_revision[65];
 	int s;
 	time_t currentTime;
+	qboolean has_applied_config = qfalse;
 
 	// Reset the array
 	g_numSecretCourses = 0;
 	memset(g_secretCourses, 0, sizeof(g_secretCourses));
 
 	time(&currentTime);
+	if (SC_DBGetAppliedRevision(applied_revision) &&
+		SC_DBLoadCfgSnapshot(applied_revision, &applied_snapshot) == SC_CFG_SNAPSHOT_OK &&
+		SC_ParseConfigText(applied_snapshot.raw_text, &applied_config, &validation)) {
+		has_applied_config = qtrue;
+	}
 
 	CALL_SQLITE(open(LOCAL_DB_PATH, &db));
 
-	sql = "SELECT course_name, expires_at, type FROM LocalSecretCourse WHERE retired_at IS NULL AND starts_at <= ? AND (type = 1 OR expires_at > ?) ORDER BY type ASC, expires_at ASC";
+	sql = "SELECT course_name, expires_at, type, season_id FROM LocalSecretCourse WHERE retired_at IS NULL AND starts_at <= ? AND (type = 1 OR expires_at > ?) ORDER BY type ASC, expires_at ASC";
 	CALL_SQLITE(prepare_v2(db, sql, strlen(sql) + 1, &stmt, NULL));
 	CALL_SQLITE(bind_int64(stmt, 1, (sqlite3_int64)currentTime));
 	CALL_SQLITE(bind_int64(stmt, 2, (sqlite3_int64)currentTime));
@@ -8180,11 +8190,18 @@ void SC_LoadSecretCourses(void)
 		s = sqlite3_step(stmt);
 		if (s == SQLITE_ROW)
 		{
+			const char *season_id = (const char *)sqlite3_column_text(stmt, 3);
 			Q_strncpyz(g_secretCourses[g_numSecretCourses].coursename,
 					   (const char *)sqlite3_column_text(stmt, 0),
 					   sizeof(g_secretCourses[g_numSecretCourses].coursename));
 			g_secretCourses[g_numSecretCourses].secret_until = (time_t)sqlite3_column_int64(stmt, 1);
 			g_secretCourses[g_numSecretCourses].permanent = sqlite3_column_int(stmt, 2) == SC_COURSE_TYPE_PERMANENT;
+			if (!g_secretCourses[g_numSecretCourses].permanent && season_id) {
+				Q_strncpyz(g_secretCourses[g_numSecretCourses].season_id, season_id, sizeof(g_secretCourses[g_numSecretCourses].season_id));
+				if (!has_applied_config || !SC_CopySeasonName(g_secretCourses[g_numSecretCourses].season_name, sizeof(g_secretCourses[g_numSecretCourses].season_name), &applied_config, season_id)) {
+					Q_strncpyz(g_secretCourses[g_numSecretCourses].season_name, season_id, sizeof(g_secretCourses[g_numSecretCourses].season_name));
+				}
+			}
 			g_numSecretCourses++;
 		}
 		else if (s == SQLITE_DONE)
@@ -8665,17 +8682,32 @@ void SC_DBLogExpiredCourseById(const char *id)
 	sqlite3_stmt *stmt;
 	int result;
 	int rank = 0;
+	char course_name[SC_COURSE_NAME_MAX + 1] = "Unknown course";
+	char heading[SC_COURSE_NAME_MAX * 4 + 64];
 	char message[1024];
 	int used;
 
 	if (!id || !id[0]) return;
 	CALL_SQLITE(open(LOCAL_DB_PATH, &db));
+	result = sqlite3_prepare_v2(db, "SELECT course_name FROM LocalSecretCourse WHERE id = ?", -1, &stmt, NULL);
+	if (result == SQLITE_OK) {
+		CALL_SQLITE(bind_text(stmt, 1, id, -1, SQLITE_STATIC));
+		if (sqlite3_step(stmt) == SQLITE_ROW) {
+			const char *value = (const char *)sqlite3_column_text(stmt, 0);
+			if (value) Q_strncpyz(course_name, value, sizeof(course_name));
+		}
+		CALL_SQLITE(finalize(stmt));
+	}
+	if (!SC_FormatExpiryHeading(heading, sizeof(heading), course_name)) {
+		CALL_SQLITE(close(db));
+		return;
+	}
 	result = sqlite3_prepare_v2(db, "SELECT username, duration_ms FROM LocalSecretCourseRun WHERE secret_course_id = ? AND style = ? ORDER BY duration_ms, username", -1, &stmt, NULL);
 	if (result == SQLITE_OK) {
 		CALL_SQLITE(bind_text(stmt, 1, id, -1, SQLITE_STATIC));
 		CALL_SQLITE(bind_int(stmt, 2, MV_JKA));
 		trap->Print("--SCLOG-START-- FINAL_STANDINGS: %s\n", id);
-		used = Com_sprintf(message, sizeof(message), "print \"^3Secret Course final standings:^7\n");
+		used = Com_sprintf(message, sizeof(message), "print \"^3%s:^7\n", heading);
 		while (sqlite3_step(stmt) == SQLITE_ROW) {
 			const char *username = (const char *)sqlite3_column_text(stmt, 0);
 			int duration = sqlite3_column_int(stmt, 1);
@@ -9006,99 +9038,92 @@ qboolean SC_DBApplyProjection(const sc_config_t *config, const char *revision, c
 }
 
 void SC_Cmd_ListSecret_f(gentity_t *ent) {
-    // Permission check
+    char msg[1024] = {0};
+    char timeStr[64];
+    char seen_seasons[MAX_SECRET_COURSES][32] = {{0}};
+    time_t currentTime;
+    int i, j, num_seen_seasons = 0;
+    int timeDiff, hoursLeft, minsLeft, secsLeft;
+    char hourStr[16], minStr[16], secStr[16];
+    char timeLeftStr[64];
+
     if (!G_AdminAllowed(ent, JAPRO_ACCOUNTFLAG_A_GRANTADMIN, qfalse, qtrue, "secretcourses")) {
         return;
     }
-
     if (g_numSecretCourses == 0) {
         trap->SendServerCommand(ent - g_entities, "print \"No secret courses currently active.\n\"");
         return;
     }
 
-	char msg[1024] = {0};
-    char timeStr[64];
-    time_t currentTime;
-    int i;
-
 	time(&currentTime);
-
-	int timeDiff, hoursLeft, minsLeft, secsLeft;
-	char hourStr[16], minStr[16], secStr[16];
-	char timeLeftStr[64];
-
-    trap->SendServerCommand(ent - g_entities, "print \"Active Secret Courses:\n    ^5Course Name                        Secret Until\n\"");
+    trap->SendServerCommand(ent - g_entities, "print \"Active Secret Courses:\n\"");
 
     for (i = 0; i < g_numSecretCourses; i++) {
+        char season_name[SC_SEASON_NAME_MAX * 4 + 1];
+        qboolean already_seen = qfalse;
+
 		if (g_secretCourses[i].permanent) continue;
-		struct tm *timeInfo = localtime(&g_secretCourses[i].secret_until);
-		strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", timeInfo);
-		if (i == 0 && g_secretCourses[i].secret_until - currentTime < 24*60*60) {
-			//23 hours 26 minutes left || 1 minute 36 seconds left || 59 seconds left
-			timeDiff = g_secretCourses[i].secret_until - currentTime;
-			hoursLeft = timeDiff/60/60;
-			minsLeft = (timeDiff - hoursLeft*60*60)/60;
-			secsLeft = timeDiff - (hoursLeft*60*60 + minsLeft*60);
-		
-			if (hoursLeft > 1) {
-				Q_strncpyz(hourStr, "hours", sizeof(hourStr));
-			}else {
-				Q_strncpyz(hourStr, "hour", sizeof(hourStr));
+		for (j = 0; j < num_seen_seasons; j++) {
+			if (!Q_stricmp(seen_seasons[j], g_secretCourses[i].season_id)) {
+				already_seen = qtrue;
+				break;
 			}
-			if (minsLeft > 1) {
-				Q_strncpyz(minStr, "minutes", sizeof(minStr));
-			}else {
-				Q_strncpyz(minStr, "minute", sizeof(minStr));
-			}
-			if (secsLeft > 1) {
-				Q_strncpyz(secStr, "seconds", sizeof(secStr));
-			}else {
-				Q_strncpyz(secStr, "second", sizeof(secStr));
-			}
-			
-			if (secsLeft < 0) {
-			    Q_strncpyz(timeLeftStr, "Any second now...", sizeof(timeLeftStr));
-			} else if (hoursLeft > 0 && minsLeft > 0) {
-				Com_sprintf(timeLeftStr, sizeof(timeLeftStr), "%d %s %d %s left", 
-						hoursLeft, hourStr, minsLeft, minStr);
-			} else if (hoursLeft > 0) {
-				Com_sprintf(timeLeftStr, sizeof(timeLeftStr), "%d %s left", hoursLeft, hourStr);
-			} else if (minsLeft > 0 && secsLeft > 0) {
-				Com_sprintf(timeLeftStr, sizeof(timeLeftStr), "%d %s %d %s left", 
-						minsLeft, minStr, secsLeft, secStr);
-			} else if (minsLeft > 0) {
-				Com_sprintf(timeLeftStr, sizeof(timeLeftStr), "%d %s left", minsLeft, minStr);
-			} else {
-				Com_sprintf(timeLeftStr, sizeof(timeLeftStr), "%d %s left", secsLeft, secStr);
-			}
-			
-			Q_strcat(timeStr, sizeof(timeStr), va(" - %s", timeLeftStr));
 		}
-	
-		char *tmpMsg = va("^3%-35s ^7%s\n", g_secretCourses[i].coursename, timeStr);
-		if (strlen(msg) + strlen(tmpMsg) >= sizeof(msg)) {
-			trap->SendServerCommand(ent - g_entities, va("print \"%s\"", msg));
-			msg[0] = '\0';
+		if (already_seen) continue;
+		Q_strncpyz(seen_seasons[num_seen_seasons++], g_secretCourses[i].season_id, sizeof(seen_seasons[0]));
+		if (!SC_EscapeConsoleText(season_name, sizeof(season_name), g_secretCourses[i].season_name[0] ? g_secretCourses[i].season_name : g_secretCourses[i].season_id)) continue;
+		trap->SendServerCommand(ent - g_entities, va("print \"\n^5%s^7\n    ^5Course Name                        Secret Until\n\"", season_name));
+		msg[0] = '\0';
+
+		for (j = 0; j < g_numSecretCourses; j++) {
+			char course_name[SC_COURSE_NAME_MAX * 4 + 1];
+			struct tm *timeInfo;
+			char *tmpMsg;
+
+			if (g_secretCourses[j].permanent || Q_stricmp(g_secretCourses[j].season_id, seen_seasons[num_seen_seasons - 1])) continue;
+			timeInfo = localtime(&g_secretCourses[j].secret_until);
+			if (!SC_FormatCalendarTime(timeStr, sizeof(timeStr), timeInfo)) Q_strncpyz(timeStr, "unknown", sizeof(timeStr));
+			if (j == 0 && g_secretCourses[j].secret_until - currentTime < 24*60*60) {
+				timeDiff = g_secretCourses[j].secret_until - currentTime;
+				hoursLeft = timeDiff/60/60;
+				minsLeft = (timeDiff - hoursLeft*60*60)/60;
+				secsLeft = timeDiff - (hoursLeft*60*60 + minsLeft*60);
+				Q_strncpyz(hourStr, hoursLeft == 1 ? "hour" : "hours", sizeof(hourStr));
+				Q_strncpyz(minStr, minsLeft == 1 ? "minute" : "minutes", sizeof(minStr));
+				Q_strncpyz(secStr, secsLeft == 1 ? "second" : "seconds", sizeof(secStr));
+				if (secsLeft < 0) Q_strncpyz(timeLeftStr, "Any second now...", sizeof(timeLeftStr));
+				else if (hoursLeft > 0 && minsLeft > 0) Com_sprintf(timeLeftStr, sizeof(timeLeftStr), "%d %s %d %s left", hoursLeft, hourStr, minsLeft, minStr);
+				else if (hoursLeft > 0) Com_sprintf(timeLeftStr, sizeof(timeLeftStr), "%d %s left", hoursLeft, hourStr);
+				else if (minsLeft > 0 && secsLeft > 0) Com_sprintf(timeLeftStr, sizeof(timeLeftStr), "%d %s %d %s left", minsLeft, minStr, secsLeft, secStr);
+				else if (minsLeft > 0) Com_sprintf(timeLeftStr, sizeof(timeLeftStr), "%d %s left", minsLeft, minStr);
+				else Com_sprintf(timeLeftStr, sizeof(timeLeftStr), "%d %s left", secsLeft, secStr);
+				Q_strcat(timeStr, sizeof(timeStr), va(" - %s", timeLeftStr));
+			}
+			if (!SC_EscapeConsoleText(course_name, sizeof(course_name), g_secretCourses[j].coursename)) continue;
+			tmpMsg = va("^3%-35s ^7%s\n", course_name, timeStr);
+			if (strlen(msg) + strlen(tmpMsg) >= sizeof(msg)) {
+				trap->SendServerCommand(ent - g_entities, va("print \"%s\"", msg));
+				msg[0] = '\0';
+			}
+			Q_strcat(msg, sizeof(msg), tmpMsg);
 		}
-		Q_strcat(msg, sizeof(msg), tmpMsg);
+		trap->SendServerCommand(ent - g_entities, va("print \"%s\"", msg));
 	}
-    
-    trap->SendServerCommand(ent - g_entities, va("print \"%s\n\"", msg));
+
 	for (i = 0; i < g_numSecretCourses; i++) {
 		if (g_secretCourses[i].permanent) {
-			trap->SendServerCommand(ent - g_entities, "print \"------------------------------\nPermanent secret courses - not part of the Secret Cup\n\"");
+			trap->SendServerCommand(ent - g_entities, "print \"------------------------------\n\nPermanent secret courses\n\"");
 			break;
 		}
 	}
 	for (i = 0; i < g_numSecretCourses; i++) {
-		if (g_secretCourses[i].permanent)
-			trap->SendServerCommand(ent - g_entities, va("print \"^3%s^7\n\"", g_secretCourses[i].coursename));
+		char course_name[SC_COURSE_NAME_MAX * 4 + 1];
+		if (g_secretCourses[i].permanent && SC_EscapeConsoleText(course_name, sizeof(course_name), g_secretCourses[i].coursename))
+			trap->SendServerCommand(ent - g_entities, va("print \"^3%s^7\n\"", course_name));
 	}
 
-	struct tm *serverTimeInfo = localtime(&currentTime);
-	strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", serverTimeInfo);
-
-	trap->SendServerCommand(ent - g_entities, va("print \"Current server time: %s\n\"", timeStr));
+	if (!SC_FormatCalendarTime(timeStr, sizeof(timeStr), localtime(&currentTime))) Q_strncpyz(timeStr, "unknown", sizeof(timeStr));
+	trap->SendServerCommand(ent - g_entities, va("print \"\nCurrent server time: %s\n\"", timeStr));
 }
 
 void SC_ConstructFullCourseName(char *fullCourseName, size_t bufferSize, const char *message) {

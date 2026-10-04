@@ -222,6 +222,44 @@ int SC_EscapeConsoleText(char *out, size_t out_size, const char *value)
 	return 1;
 }
 
+int SC_FormatCalendarTime(char *out, size_t out_size, const struct tm *calendar)
+{
+	return out && out_size && calendar && strftime(out, out_size, "%Y-%m-%d %H:%M:%S", calendar) > 0;
+}
+
+int SC_FormatLocalTime(char *out, size_t out_size, time_t value)
+{
+	struct tm *calendar = localtime(&value);
+	return SC_FormatCalendarTime(out, out_size, calendar);
+}
+
+int SC_FormatIsoUtcFilenameTime(char *out, size_t out_size, time_t value)
+{
+	struct tm *calendar = gmtime(&value);
+	return calendar && out && out_size && strftime(out, out_size, "%Y-%m-%dT%H-%M-%SZ", calendar) > 0;
+}
+
+int SC_CopySeasonName(char *out, size_t out_size, const sc_config_t *config, const char *season_id)
+{
+	int index;
+	if (!out || !out_size || !config || !season_id) return 0;
+	for (index = 0; index < config->num_seasons; index++) {
+		if (!strcmp(config->seasons[index].id, season_id)) {
+			return snprintf(out, out_size, "%s", config->seasons[index].name) >= 0 && strlen(config->seasons[index].name) < out_size;
+		}
+	}
+	return 0;
+}
+
+int SC_FormatExpiryHeading(char *out, size_t out_size, const char *course_name)
+{
+	char escaped[SC_COURSE_NAME_MAX * 4 + 1];
+	int written;
+	if (!SC_EscapeConsoleText(escaped, sizeof(escaped), course_name)) return 0;
+	written = snprintf(out, out_size, "%s expired, final standings", escaped);
+	return written >= 0 && (size_t)written < out_size;
+}
+
 static int SC_TokenizeLine(const char *line, char tokens[][80], int quoted_tokens[], int max_tokens)
 {
 	int count = 0;
@@ -553,7 +591,8 @@ int SC_ParseConfigText(const char *text, sc_config_t *out, sc_validation_result_
 		} else if (!strcmp(tokens[0], "sc_course")) {
 			sc_course_t *course;
 			if (count != 5 && count != 7) { SC_SetValidationError(result, line_number, "invalid course fields"); goto fail; }
-			if (out->num_courses == SC_MAX_COURSES || SC_HasCourseId(out, tokens[1]) || !SC_ValidatePathComponent(tokens[1])) { SC_SetValidationError(result, line_number, "duplicate or unsafe course"); goto fail; }
+			if (out->num_courses == SC_MAX_COURSES) { SC_SetValidationError(result, line_number, "too many courses (maximum 64)"); goto fail; }
+			if (SC_HasCourseId(out, tokens[1]) || !SC_ValidatePathComponent(tokens[1])) { SC_SetValidationError(result, line_number, "duplicate or unsafe course"); goto fail; }
 			course = &out->courses[out->num_courses];
 			if (!SC_CopyToken(course->id, sizeof(course->id), tokens[1]) || !SC_CopyToken(course->course_name, sizeof(course->course_name), tokens[2])) { SC_SetValidationError(result, line_number, "course field is too long"); goto fail; }
 			if (!strcmp(tokens[3], "cup") && count == 7) {

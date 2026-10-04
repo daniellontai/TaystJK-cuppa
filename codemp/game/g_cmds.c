@@ -5876,6 +5876,8 @@ void Cmd_Aminfo_f(gentity_t *ent)
 
 	Q_strncpyz(buf, "   ^3SecretCourse commands: ", sizeof(buf));
 	Q_strcat(buf, sizeof(buf), "secretCourses ");
+	if (G_AdminAllowed(ent, JAPRO_ACCOUNTFLAG_A_GRANTADMIN, qfalse, qfalse, NULL))
+		Q_strcat(buf, sizeof(buf), "sc_validatecfg sc_applycfg sc_restorecfg");
 	trap->SendServerCommand(ent-g_entities, va("print \"%s\n\"", buf));
 
 	Q_strncpyz(buf, "   ^3Admin commands: ", sizeof(buf));
@@ -5902,7 +5904,6 @@ void Cmd_Aminfo_f(gentity_t *ent)
 			Q_strcat(buf, sizeof(buf), "amTele ");
 		if (G_AdminAllowed(ent, JAPRO_ACCOUNTFLAG_A_GRANTADMIN, qfalse, qfalse, NULL)) {
 			Q_strcat(buf, sizeof(buf), "amGrantAdmin ");
-			Q_strcat(buf, sizeof(buf), "sc_validatecfg sc_applycfg sc_restorecfg ");
 		}
 		if (G_AdminAllowed(ent, JAPRO_ACCOUNTFLAG_A_CHANGEMAP, qfalse, qfalse, NULL))
 			Q_strcat(buf, sizeof(buf), "amMap ");
