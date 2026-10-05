@@ -8180,7 +8180,7 @@ void SC_LoadSecretCourses(void)
 
 	CALL_SQLITE(open(LOCAL_DB_PATH, &db));
 
-	sql = "SELECT course_name, expires_at, type, season_id FROM LocalSecretCourse WHERE retired_at IS NULL AND starts_at <= ? AND (type = 1 OR expires_at > ?) ORDER BY type ASC, expires_at ASC";
+	sql = "SELECT id, course_name, expires_at, type, season_id FROM LocalSecretCourse WHERE retired_at IS NULL AND starts_at <= ? AND (type = 1 OR expires_at > ?) ORDER BY type ASC, expires_at ASC";
 	CALL_SQLITE(prepare_v2(db, sql, strlen(sql) + 1, &stmt, NULL));
 	CALL_SQLITE(bind_int64(stmt, 1, (sqlite3_int64)currentTime));
 	CALL_SQLITE(bind_int64(stmt, 2, (sqlite3_int64)currentTime));
@@ -8190,12 +8190,15 @@ void SC_LoadSecretCourses(void)
 		s = sqlite3_step(stmt);
 		if (s == SQLITE_ROW)
 		{
-			const char *season_id = (const char *)sqlite3_column_text(stmt, 3);
-			Q_strncpyz(g_secretCourses[g_numSecretCourses].coursename,
+			const char *season_id = (const char *)sqlite3_column_text(stmt, 4);
+			Q_strncpyz(g_secretCourses[g_numSecretCourses].course_id,
 					   (const char *)sqlite3_column_text(stmt, 0),
+					   sizeof(g_secretCourses[g_numSecretCourses].course_id));
+			Q_strncpyz(g_secretCourses[g_numSecretCourses].coursename,
+					   (const char *)sqlite3_column_text(stmt, 1),
 					   sizeof(g_secretCourses[g_numSecretCourses].coursename));
-			g_secretCourses[g_numSecretCourses].secret_until = (time_t)sqlite3_column_int64(stmt, 1);
-			g_secretCourses[g_numSecretCourses].permanent = sqlite3_column_int(stmt, 2) == SC_COURSE_TYPE_PERMANENT;
+			g_secretCourses[g_numSecretCourses].secret_until = (time_t)sqlite3_column_int64(stmt, 2);
+			g_secretCourses[g_numSecretCourses].permanent = sqlite3_column_int(stmt, 3) == SC_COURSE_TYPE_PERMANENT;
 			if (!g_secretCourses[g_numSecretCourses].permanent && season_id) {
 				Q_strncpyz(g_secretCourses[g_numSecretCourses].season_id, season_id, sizeof(g_secretCourses[g_numSecretCourses].season_id));
 				if (!has_applied_config || !SC_CopySeasonName(g_secretCourses[g_numSecretCourses].season_name, sizeof(g_secretCourses[g_numSecretCourses].season_name), &applied_config, season_id)) {
@@ -9037,15 +9040,65 @@ qboolean SC_DBApplyProjection(const sc_config_t *config, const char *revision, c
 	return result == SQLITE_OK ? qtrue : qfalse;
 }
 
+static qboolean SC_LoadJkaPositions(const char *username, int positions[MAX_SECRET_COURSES])
+{
+	sqlite3 *db;
+	sqlite3_stmt *stmt;
+	char sql[512];
+	sc_jka_position_scan_t scan;
+	int active_count = 0;
+	int bind_index = 2;
+	int index;
+	int result;
+	int used;
+
+	if (!username || !username[0] || !positions) return qfalse;
+	SC_InitJkaPositionScan(&scan);
+	for (index = 0; index < MAX_SECRET_COURSES; index++) positions[index] = 0;
+	used = Com_sprintf(sql, sizeof(sql), "SELECT secret_course_id, username FROM LocalSecretCourseRun WHERE style = ? AND secret_course_id IN (");
+	for (index = 0; index < g_numSecretCourses; index++) {
+		if (g_secretCourses[index].permanent) continue;
+		used += Com_sprintf(sql + used, sizeof(sql) - used, "%s?", active_count ? ", " : "");
+		active_count++;
+	}
+	if (!active_count || used < 0 || used >= (int)sizeof(sql) || Com_sprintf(sql + used, sizeof(sql) - used, ") ORDER BY secret_course_id, duration_ms, username") < 0) return active_count == 0 ? qtrue : qfalse;
+	CALL_SQLITE(open(LOCAL_DB_PATH, &db));
+	result = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
+	if (result != SQLITE_OK) { CALL_SQLITE(close(db)); return qfalse; }
+	CALL_SQLITE(bind_int(stmt, 1, MV_JKA));
+	for (index = 0; index < g_numSecretCourses; index++) {
+		if (!g_secretCourses[index].permanent) {
+			CALL_SQLITE(bind_text(stmt, bind_index++, g_secretCourses[index].course_id, -1, SQLITE_STATIC));
+		}
+	}
+	while ((result = sqlite3_step(stmt)) == SQLITE_ROW) {
+		const char *course_id = (const char *)sqlite3_column_text(stmt, 0);
+		const char *row_username = (const char *)sqlite3_column_text(stmt, 1);
+		if (!course_id || !row_username) continue;
+		if (SC_ScanJkaPosition(&scan, username, course_id, row_username)) {
+			for (index = 0; index < g_numSecretCourses; index++) {
+				if (!strcmp(g_secretCourses[index].course_id, course_id)) {
+					positions[index] = scan.rank;
+					break;
+				}
+			}
+		}
+	}
+	CALL_SQLITE(finalize(stmt));
+	CALL_SQLITE(close(db));
+	return result == SQLITE_DONE ? qtrue : qfalse;
+}
+
 void SC_Cmd_ListSecret_f(gentity_t *ent) {
     char msg[1024] = {0};
     char timeStr[64];
     char seen_seasons[MAX_SECRET_COURSES][32] = {{0}};
     time_t currentTime;
     int i, j, num_seen_seasons = 0;
-    int timeDiff, hoursLeft, minsLeft, secsLeft;
-    char hourStr[16], minStr[16], secStr[16];
-    char timeLeftStr[64];
+	int positions[MAX_SECRET_COURSES];
+	char timeLeftStr[64];
+	qboolean logged_in;
+	qboolean positions_available = qfalse;
 
     if (!G_AdminAllowed(ent, JAPRO_ACCOUNTFLAG_A_GRANTADMIN, qfalse, qtrue, "secretcourses")) {
         return;
@@ -9056,10 +9109,13 @@ void SC_Cmd_ListSecret_f(gentity_t *ent) {
     }
 
 	time(&currentTime);
+	logged_in = ent->client->pers.userName[0] ? qtrue : qfalse;
+	if (logged_in) positions_available = SC_LoadJkaPositions(ent->client->pers.userName, positions);
     trap->SendServerCommand(ent - g_entities, "print \"Active Secret Courses:\n\"");
 
-    for (i = 0; i < g_numSecretCourses; i++) {
+	for (i = 0; i < g_numSecretCourses; i++) {
         char season_name[SC_SEASON_NAME_MAX * 4 + 1];
+		char header[128];
         qboolean already_seen = qfalse;
 
 		if (g_secretCourses[i].permanent) continue;
@@ -9072,11 +9128,13 @@ void SC_Cmd_ListSecret_f(gentity_t *ent) {
 		if (already_seen) continue;
 		Q_strncpyz(seen_seasons[num_seen_seasons++], g_secretCourses[i].season_id, sizeof(seen_seasons[0]));
 		if (!SC_EscapeConsoleText(season_name, sizeof(season_name), g_secretCourses[i].season_name[0] ? g_secretCourses[i].season_name : g_secretCourses[i].season_id)) continue;
-		trap->SendServerCommand(ent - g_entities, va("print \"\n^5%s^7\n    ^5Course Name                        Secret Until\n\"", season_name));
+		if (!SC_FormatCourseListHeader(header, sizeof(header), logged_in)) continue;
+		trap->SendServerCommand(ent - g_entities, va("print \"\n^5%s^7\n^5%s^7\n\"", season_name, header));
 		msg[0] = '\0';
 
 		for (j = 0; j < g_numSecretCourses; j++) {
 			char course_name[SC_COURSE_NAME_MAX * 4 + 1];
+			char position[32];
 			struct tm *timeInfo;
 			char *tmpMsg;
 
@@ -9084,23 +9142,11 @@ void SC_Cmd_ListSecret_f(gentity_t *ent) {
 			timeInfo = localtime(&g_secretCourses[j].secret_until);
 			if (!SC_FormatCalendarTime(timeStr, sizeof(timeStr), timeInfo)) Q_strncpyz(timeStr, "unknown", sizeof(timeStr));
 			if (j == 0 && g_secretCourses[j].secret_until - currentTime < 24*60*60) {
-				timeDiff = g_secretCourses[j].secret_until - currentTime;
-				hoursLeft = timeDiff/60/60;
-				minsLeft = (timeDiff - hoursLeft*60*60)/60;
-				secsLeft = timeDiff - (hoursLeft*60*60 + minsLeft*60);
-				Q_strncpyz(hourStr, hoursLeft == 1 ? "hour" : "hours", sizeof(hourStr));
-				Q_strncpyz(minStr, minsLeft == 1 ? "minute" : "minutes", sizeof(minStr));
-				Q_strncpyz(secStr, secsLeft == 1 ? "second" : "seconds", sizeof(secStr));
-				if (secsLeft < 0) Q_strncpyz(timeLeftStr, "Any second now...", sizeof(timeLeftStr));
-				else if (hoursLeft > 0 && minsLeft > 0) Com_sprintf(timeLeftStr, sizeof(timeLeftStr), "%d %s %d %s left", hoursLeft, hourStr, minsLeft, minStr);
-				else if (hoursLeft > 0) Com_sprintf(timeLeftStr, sizeof(timeLeftStr), "%d %s left", hoursLeft, hourStr);
-				else if (minsLeft > 0 && secsLeft > 0) Com_sprintf(timeLeftStr, sizeof(timeLeftStr), "%d %s %d %s left", minsLeft, minStr, secsLeft, secStr);
-				else if (minsLeft > 0) Com_sprintf(timeLeftStr, sizeof(timeLeftStr), "%d %s left", minsLeft, minStr);
-				else Com_sprintf(timeLeftStr, sizeof(timeLeftStr), "%d %s left", secsLeft, secStr);
-				Q_strcat(timeStr, sizeof(timeStr), va(" - %s", timeLeftStr));
+				if (SC_FormatCompactTimeLeft(timeLeftStr, sizeof(timeLeftStr), g_secretCourses[j].secret_until - currentTime)) Q_strcat(timeStr, sizeof(timeStr), va(" - %s", timeLeftStr));
 			}
 			if (!SC_EscapeConsoleText(course_name, sizeof(course_name), g_secretCourses[j].coursename)) continue;
-			tmpMsg = va("^3%-35s ^7%s\n", course_name, timeStr);
+			if (logged_in && !SC_FormatJkaPosition(position, sizeof(position), positions[j], positions_available)) continue;
+			tmpMsg = logged_in ? va("^3%-35s ^7%-38s %s\n", course_name, timeStr, position) : va("^3%-35s ^7%s\n", course_name, timeStr);
 			if (strlen(msg) + strlen(tmpMsg) >= sizeof(msg)) {
 				trap->SendServerCommand(ent - g_entities, va("print \"%s\"", msg));
 				msg[0] = '\0';

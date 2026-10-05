@@ -260,6 +260,65 @@ int SC_FormatExpiryHeading(char *out, size_t out_size, const char *course_name)
 	return written >= 0 && (size_t)written < out_size;
 }
 
+void SC_InitJkaPositionScan(sc_jka_position_scan_t *scan)
+{
+	if (scan) memset(scan, 0, sizeof(*scan));
+}
+
+int SC_ScanJkaPosition(sc_jka_position_scan_t *scan, const char *username, const char *course_id, const char *row_username)
+{
+	size_t length;
+	if (!scan || !username || !course_id || !row_username) return 0;
+	if (strcmp(scan->course_id, course_id)) {
+		length = strlen(course_id);
+		if (length >= sizeof(scan->course_id)) return 0;
+		memcpy(scan->course_id, course_id, length + 1);
+		scan->rank = 1;
+	} else {
+		scan->rank++;
+	}
+	return !strcmp(username, row_username) ? scan->rank : 0;
+}
+
+int SC_FormatJkaPosition(char *out, size_t out_size, int rank, int available)
+{
+	int written;
+	if (!out || !out_size) return 0;
+	if (!available) written = snprintf(out, out_size, "position unavailable");
+	else if (rank > 0) written = snprintf(out, out_size, "#%d", rank);
+	else written = snprintf(out, out_size, "unranked");
+	return written >= 0 && (size_t)written < out_size;
+}
+
+int SC_FormatCompactTimeLeft(char *out, size_t out_size, time_t seconds)
+{
+	long long hours, minutes, remainder;
+	int written;
+	if (!out || !out_size) return 0;
+	if (seconds < 0) written = snprintf(out, out_size, "Any second now...");
+	else {
+		hours = (long long)seconds / 3600;
+		minutes = ((long long)seconds - hours * 3600) / 60;
+		remainder = (long long)seconds - hours * 3600 - minutes * 60;
+		if (hours > 0 && minutes > 0) written = snprintf(out, out_size, "%lldh %lldm left", hours, minutes);
+		else if (hours > 0) written = snprintf(out, out_size, "%lldh left", hours);
+		else if (minutes > 0 && remainder > 0) written = snprintf(out, out_size, "%lldm %llds left", minutes, remainder);
+		else if (minutes > 0) written = snprintf(out, out_size, "%lldm left", minutes);
+		else written = snprintf(out, out_size, "%llds left", remainder);
+	}
+	return written >= 0 && (size_t)written < out_size;
+}
+
+int SC_FormatCourseListHeader(char *out, size_t out_size, int include_position)
+{
+	int written;
+	if (!out || !out_size) return 0;
+	written = include_position ?
+		snprintf(out, out_size, "%-35s %-38s %s", "Course Name", "Secret Until", "JKA position") :
+		snprintf(out, out_size, "%-35s %s", "Course Name", "Secret Until");
+	return written >= 0 && (size_t)written < out_size;
+}
+
 static int SC_TokenizeLine(const char *line, char tokens[][80], int quoted_tokens[], int max_tokens)
 {
 	int count = 0;

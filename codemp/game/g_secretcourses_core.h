@@ -94,6 +94,11 @@ typedef struct {
 } sc_transition_set_t;
 
 typedef struct {
+	char course_id[SC_COURSE_ID_MAX + 1];
+	int rank;
+} sc_jka_position_scan_t;
+
+typedef struct {
 	char source[256];
 	char destination[256];
 } sc_demo_move_t;
@@ -111,6 +116,11 @@ int SC_FormatLocalTime(char *out, size_t out_size, time_t value);
 int SC_FormatIsoUtcFilenameTime(char *out, size_t out_size, time_t value);
 int SC_CopySeasonName(char *out, size_t out_size, const sc_config_t *config, const char *season_id);
 int SC_FormatExpiryHeading(char *out, size_t out_size, const char *course_name);
+void SC_InitJkaPositionScan(sc_jka_position_scan_t *scan);
+int SC_ScanJkaPosition(sc_jka_position_scan_t *scan, const char *username, const char *course_id, const char *row_username);
+int SC_FormatJkaPosition(char *out, size_t out_size, int rank, int available);
+int SC_FormatCompactTimeLeft(char *out, size_t out_size, time_t seconds);
+int SC_FormatCourseListHeader(char *out, size_t out_size, int include_position);
 int SC_CaptureCfgSnapshot(sc_cfg_snapshot_t *snapshot, const char *revision, const char *raw_text);
 int SC_VerifyCfgSnapshot(const sc_cfg_snapshot_t *snapshot);
 int SC_ParseConfigText(const char *text, sc_config_t *out, sc_validation_result_t *result);
