@@ -140,7 +140,8 @@ int SC_IsConfiguredCourseActive(const sc_config_t *config, const char *course_na
 int SC_PlanDemoArchive(sc_demo_move_t *out, const char *player_and_file, const char *season_id, const char *course_id);
 int SC_RenderLeaderboardJson(char *out, size_t out_size, const sc_course_t *course, sc_course_state_t state, const char *revision);
 int SC_RenderLeaderboardEntryJson(char *out, size_t out_size, const char *username, int style, int duration_ms, int topspeed, int average, int end_time);
-int SC_AppendStatusCourseJson(char *out, size_t out_size, const char *id, const char *course_name, const char *type, const char *lifecycle, const char *demos_visibility, const char *leaderboard_path);
+int SC_AppendStatusSeasonJson(char *out, size_t out_size, const sc_season_t *season);
+int SC_AppendStatusCourseJson(char *out, size_t out_size, const sc_course_t *course, const char *lifecycle, const char *demos_visibility, const char *leaderboard_path);
 int SC_StatusJsonHasRoom(size_t used, size_t row_length, size_t capacity);
 int SC_ShouldAttemptArchiveRetry(time_t retry_at, time_t now);
 void SC_RememberApplyPlan(sc_apply_plan_t *plan, const char *revision, int destructive, time_t now);

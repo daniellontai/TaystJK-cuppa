@@ -580,23 +580,54 @@ int SC_RenderLeaderboardEntryJson(char *out, size_t out_size, const char *userna
 	return written >= 0 && (size_t)written < out_size;
 }
 
-int SC_AppendStatusCourseJson(char *out, size_t out_size, const char *id, const char *course_name, const char *type, const char *lifecycle, const char *demos_visibility, const char *leaderboard_path)
+int SC_AppendStatusSeasonJson(char *out, size_t out_size, const sc_season_t *season)
+{
+	char escaped_id[SC_SEASON_ID_MAX * 2 + 8];
+	char escaped_name[SC_SEASON_NAME_MAX * 2 + 8];
+	int written;
+
+	if (!out || !out_size || !season ||
+		!SC_JsonWriteEscapedString(escaped_id, sizeof(escaped_id), season->id) ||
+		!SC_JsonWriteEscapedString(escaped_name, sizeof(escaped_name), season->name)) return 0;
+	written = snprintf(out, out_size, "{\"id\":%s,\"name\":%s,\"starts_at\":%lld,\"expires_at\":%lld}",
+		escaped_id, escaped_name, (long long)season->starts_at, (long long)season->expires_at);
+	return written >= 0 && (size_t)written < out_size;
+}
+
+int SC_AppendStatusCourseJson(char *out, size_t out_size, const sc_course_t *course,
+	const char *lifecycle, const char *demos_visibility, const char *leaderboard_path)
 {
 	char escaped_id[SC_COURSE_ID_MAX * 2 + 8];
 	char escaped_name[SC_COURSE_NAME_MAX * 2 + 8];
 	char escaped_type[32];
+	char escaped_season[SC_SEASON_ID_MAX * 2 + 8];
 	char escaped_lifecycle[32];
 	char escaped_visibility[32];
 	char escaped_path[520];
+	char starts_at[32], expires_at[32], activated_at[32], finalized_at[32];
+	const char *season = "null";
 	int written;
 
-	if (!out || !out_size || !SC_JsonWriteEscapedString(escaped_id, sizeof(escaped_id), id) ||
-		!SC_JsonWriteEscapedString(escaped_name, sizeof(escaped_name), course_name) ||
-		!SC_JsonWriteEscapedString(escaped_type, sizeof(escaped_type), type) ||
+	if (!out || !out_size || !course ||
+		!SC_JsonWriteEscapedString(escaped_id, sizeof(escaped_id), course->id) ||
+		!SC_JsonWriteEscapedString(escaped_name, sizeof(escaped_name), course->course_name) ||
+		!SC_JsonWriteEscapedString(escaped_type, sizeof(escaped_type), course->type == SC_COURSE_TYPE_CUP ? "cup" : "permanent") ||
 		!SC_JsonWriteEscapedString(escaped_lifecycle, sizeof(escaped_lifecycle), lifecycle) ||
 		!SC_JsonWriteEscapedString(escaped_visibility, sizeof(escaped_visibility), demos_visibility) ||
 		!SC_JsonWriteEscapedString(escaped_path, sizeof(escaped_path), leaderboard_path)) return 0;
-	written = snprintf(out, out_size, "{\"id\":%s,\"course_name\":%s,\"type\":%s,\"lifecycle\":%s,\"demos_visibility\":%s,\"leaderboard_path\":%s}", escaped_id, escaped_name, escaped_type, escaped_lifecycle, escaped_visibility, escaped_path);
+	if (course->type == SC_COURSE_TYPE_CUP) {
+		if (!SC_JsonWriteEscapedString(escaped_season, sizeof(escaped_season), course->season_id)) return 0;
+		season = escaped_season;
+	}
+	snprintf(starts_at, sizeof(starts_at), "%lld", (long long)course->starts_at);
+	if (course->type == SC_COURSE_TYPE_CUP) snprintf(expires_at, sizeof(expires_at), "%lld", (long long)course->expires_at);
+	else snprintf(expires_at, sizeof(expires_at), "null");
+	if (course->activated_at) snprintf(activated_at, sizeof(activated_at), "%lld", (long long)course->activated_at);
+	else snprintf(activated_at, sizeof(activated_at), "null");
+	if (course->finalized_at) snprintf(finalized_at, sizeof(finalized_at), "%lld", (long long)course->finalized_at);
+	else snprintf(finalized_at, sizeof(finalized_at), "null");
+	written = snprintf(out, out_size, "{\"id\":%s,\"course_name\":%s,\"type\":%s,\"season_id\":%s,\"starts_at\":%s,\"expires_at\":%s,\"lifecycle\":%s,\"activated_at\":%s,\"finalized_at\":%s,\"demos_visibility\":%s,\"leaderboard_path\":%s}",
+		escaped_id, escaped_name, escaped_type, season, starts_at, expires_at, escaped_lifecycle, activated_at, finalized_at, escaped_visibility, escaped_path);
 	return written >= 0 && (size_t)written < out_size;
 }
 

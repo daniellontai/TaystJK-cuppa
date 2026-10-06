@@ -500,9 +500,12 @@ static void SC_WriteStaticFile(const char *path, const char *text)
 void SC_WriteStaticExports(void)
 {
 	sc_course_t courses[SC_MAX_COURSES];
+	sc_config_t config;
+	sc_cfg_snapshot_t snapshot;
+	sc_validation_result_t validation;
 	char revision[65];
 	char escaped_revision[136];
-	char status[16384];
+	static char status[65536];
 	int count;
 	int used;
 	int index;
@@ -511,10 +514,37 @@ void SC_WriteStaticExports(void)
 	qboolean status_full = qfalse;
 
 	if (!SC_DBGetAppliedCourses(courses, SC_MAX_COURSES, &count) || !SC_DBGetAppliedRevision(revision) ||
+		SC_DBLoadCfgSnapshot(revision, &snapshot) != SC_CFG_SNAPSHOT_OK ||
+		!SC_ParseConfigText(snapshot.raw_text, &config, &validation) ||
 		!SC_JsonWriteEscapedString(escaped_revision, sizeof(escaped_revision), revision)) return;
 	time(&now);
-	used = Com_sprintf(status, sizeof(status), "{\"schema_version\":1,\"revision\":%s,\"courses\":[", escaped_revision);
+	used = Com_sprintf(status, sizeof(status), "{\"schema_version\":2,\"revision\":%s,\"seasons\":[", escaped_revision);
 	if (used < 0 || (size_t)used >= sizeof(status)) return;
+	for (index = 0; index < config.num_seasons; index++) {
+		char status_row[512];
+		int row_length;
+
+		if (!SC_AppendStatusSeasonJson(status_row, sizeof(status_row), &config.seasons[index])) continue;
+		row_length = strlen(status_row);
+		if ((size_t)used + (first ? 0 : 1) + (size_t)row_length + strlen("],\"courses\":[]}") >= sizeof(status)) {
+			status_full = qtrue;
+			break;
+		}
+		if (!first) status[used++] = ',';
+		Q_strncpyz(status + used, status_row, sizeof(status) - used);
+		used += row_length;
+		first = qfalse;
+	}
+	if (status_full) {
+		trap->Print("Secret Courses status export exceeded capacity while writing seasons.\n");
+		return;
+	}
+	{
+		int written = Com_sprintf(status + used, sizeof(status) - used, "],\"courses\":[");
+		if (written < 0 || (size_t)written >= sizeof(status) - (size_t)used) return;
+		used += written;
+	}
+	first = qtrue;
 	for (index = 0; index < count; index++) {
 		const sc_course_t *course = &courses[index];
 		sc_course_state_t state = course->finalized_at ? SC_COURSE_STATE_EXPIRED : SC_ResolveCourseState(course, now);
@@ -522,7 +552,6 @@ void SC_WriteStaticExports(void)
 		char path[256];
 		char status_row[1024];
 		char status_path[257];
-		const char *kind = course->type == SC_COURSE_TYPE_CUP ? "cup" : "permanent";
 		const char *lifecycle = state == SC_COURSE_STATE_ACTIVE ? "active" : (state == SC_COURSE_STATE_EXPIRED ? "expired" : "scheduled");
 		const char *visibility = course->archive_completed_at ? "public" : "private";
 		int written;
@@ -538,7 +567,7 @@ void SC_WriteStaticExports(void)
 		if (status_full) continue;
 		written = Com_sprintf(status_path, sizeof(status_path), "/%s", path);
 		if (written < 0 || (size_t)written >= sizeof(status_path) ||
-			!SC_AppendStatusCourseJson(status_row, sizeof(status_row), course->id, course->course_name, kind, lifecycle, visibility, status_path)) continue;
+			!SC_AppendStatusCourseJson(status_row, sizeof(status_row), course, lifecycle, visibility, status_path)) continue;
 		if (!SC_StatusJsonHasRoom((size_t)used + (first ? 0 : 1), strlen(status_row), sizeof(status))) {
 			status_full = qtrue;
 			continue;
