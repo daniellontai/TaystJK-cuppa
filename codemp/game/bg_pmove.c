@@ -3736,7 +3736,7 @@ static qboolean PM_CheckJump( void )
 	if ( pm->ps->pm_flags & PMF_JUMP_HELD )
 	{
 		// clear upmove so cmdscale doesn't lower running speed - LODA FIXME - no idea what this does lol
-		if (moveStyle != MV_QW && moveStyle != MV_CPM && moveStyle != MV_Q3 && moveStyle != MV_PJK && moveStyle != MV_WSW && moveStyle != MV_RJQ3 && moveStyle != MV_RJCPM && moveStyle != MV_JETPACK && moveStyle != MV_SLICK && moveStyle != MV_BOTCPM)
+		if (moveStyle != MV_QW && moveStyle != MV_CPM && moveStyle != MV_Q3 && moveStyle != MV_PJK && moveStyle != MV_WSW && moveStyle != MV_RJQ3 && moveStyle != MV_RJCPM && moveStyle != MV_JETPACK && moveStyle != MV_SLICK && moveStyle != MV_BOTCPM && moveStyle != MV_SURF)
 		{
 			pm->cmd.upmove = 0;
 			return qfalse;
