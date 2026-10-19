@@ -153,6 +153,7 @@ int SC_EndLeaderboardJson(sc_json_stream_t *stream);
 int SC_RenderLeaderboardEntryJson(char *out, size_t out_size, const char *username, int style, int duration_ms, int topspeed, int average, int end_time);
 int SC_AppendStatusSeasonJson(char *out, size_t out_size, const sc_season_t *season);
 int SC_AppendStatusCourseJson(char *out, size_t out_size, const sc_course_t *course, const char *lifecycle, const char *demos_visibility, const char *leaderboard_path);
+int SC_AppendStatusJsonRow(char *out, size_t capacity, size_t *used, int *first, const char *row);
 int SC_StatusJsonHasRoom(size_t used, size_t row_length, size_t capacity);
 int SC_ShouldAttemptArchiveRetry(time_t retry_at, time_t now);
 void SC_RememberApplyPlan(sc_apply_plan_t *plan, const char *revision, int destructive, time_t now);

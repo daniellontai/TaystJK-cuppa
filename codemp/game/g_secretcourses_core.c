@@ -660,6 +660,22 @@ int SC_AppendStatusCourseJson(char *out, size_t out_size, const sc_course_t *cou
 	return written >= 0 && (size_t)written < out_size;
 }
 
+int SC_AppendStatusJsonRow(char *out, size_t capacity, size_t *used, int *first, const char *row)
+{
+	size_t row_length;
+	size_t required;
+
+	if (!out || !capacity || !used || !first || !row || *used >= capacity) return 0;
+	row_length = strlen(row);
+	required = *used + (*first ? 0 : 1) + row_length;
+	if (required >= capacity) return 0;
+	if (!*first) out[(*used)++] = ',';
+	memcpy(out + *used, row, row_length + 1);
+	*used += row_length;
+	*first = 0;
+	return 1;
+}
+
 int SC_StatusJsonHasRoom(size_t used, size_t row_length, size_t capacity)
 {
 	return used + row_length + 3 <= capacity;
