@@ -430,10 +430,18 @@ BOOST_AUTO_TEST_CASE(secret_course_streamed_leaderboard_preserves_256_entries)
 	BOOST_CHECK_GT(sink.text.size(), 2048u);
 	BOOST_CHECK_EQUAL(sink.text.front(), '{');
 	BOOST_CHECK_EQUAL(sink.text.back(), '}');
+	{
+		std::string::size_type previous = 0;
 	for (index = 0; index < 256; index++) {
 		char expected[32];
+		std::string::size_type found;
 		std::snprintf(expected, sizeof(expected), "\"username\":\"player%03d\"", index);
-		BOOST_CHECK_EQUAL(sink.text.find(expected), sink.text.rfind(expected));
+		found = sink.text.find(expected);
+		BOOST_REQUIRE(found != std::string::npos);
+		BOOST_CHECK_EQUAL(found, sink.text.rfind(expected));
+		if (index) BOOST_CHECK_GT(found, previous);
+		previous = found;
+	}
 	}
 }
 

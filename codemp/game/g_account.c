@@ -8751,7 +8751,8 @@ qboolean SC_DBApplyProjection(const sc_config_t *config, const char *revision, c
 			CALL_SQLITE(finalize(stmt));
 		}
 	}
-	if (result == SQLITE_OK) sqlite3_exec(db, "COMMIT", NULL, NULL, NULL); else sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+	if (result == SQLITE_OK) result = sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
+	if (result != SQLITE_OK) sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
 	CALL_SQLITE(close(db));
 	return result == SQLITE_OK ? qtrue : qfalse;
 }

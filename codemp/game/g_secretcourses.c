@@ -86,10 +86,11 @@ static qboolean SC_ReadExistingTextFile(char *text, size_t text_size, int *out_l
 static qboolean SC_WriteRawTextFile(const char *path, const char *text, int length)
 {
 	fileHandle_t file;
+	qboolean written = qtrue;
 	if (!path || !text || length < 0 || trap->FS_Open(path, &file, FS_WRITE) < 0 || !file) return qfalse;
-	if (length) trap->FS_Write(text, length, file);
+	if (length && trap->FS_Write(text, length, file) != length) written = qfalse;
 	trap->FS_Close(file);
-	return qtrue;
+	return written;
 }
 
 qboolean SC_ReadAndValidateConfig(sc_config_t *config, char revision[65], sc_validation_result_t *error)
@@ -516,15 +517,52 @@ static int SC_WriteJsonFileFragment(void *context, const char *text, size_t leng
 	return 1;
 }
 
+static qboolean SC_CopyStaticFile(const char *source_path, const char *destination_path)
+{
+	char buffer[16384];
+	fileHandle_t source;
+	fileHandle_t destination;
+	int length;
+	int remaining;
+
+	if (!source_path || !destination_path) return qfalse;
+	length = trap->FS_Open(source_path, &source, FS_READ);
+	if (!source || length < 0) {
+		if (source) trap->FS_Close(source);
+		return qfalse;
+	}
+	if (trap->FS_Open(destination_path, &destination, FS_WRITE) < 0 || !destination) {
+		trap->FS_Close(source);
+		return qfalse;
+	}
+	remaining = length;
+	while (remaining > 0) {
+		int chunk = remaining > (int)sizeof(buffer) ? (int)sizeof(buffer) : remaining;
+		if (trap->FS_Read(buffer, chunk, source) != chunk || trap->FS_Write(buffer, chunk, destination) != chunk) {
+			trap->FS_Close(destination);
+			trap->FS_Close(source);
+			return qfalse;
+		}
+		remaining -= chunk;
+	}
+	trap->FS_Close(destination);
+	trap->FS_Close(source);
+	return qtrue;
+}
+
 static qboolean SC_WriteLeaderboardFile(const char *path, const sc_course_t *course, const char *revision)
 {
 	sc_file_json_stream_t file_stream;
 	sc_json_stream_t json_stream;
+	char temporary_path[260];
+	int written;
 
 	if (!path || !course) return qfalse;
 	memset(&file_stream, 0, sizeof(file_stream));
 	memset(&json_stream, 0, sizeof(json_stream));
-	if (trap->FS_Open(path, &file_stream.file, FS_WRITE) < 0 || !file_stream.file) return qfalse;
+	written = Com_sprintf(temporary_path, sizeof(temporary_path), "%s.tmp", path);
+	if (written < 0 || (size_t)written >= sizeof(temporary_path)) return qfalse;
+	if (trap->FS_Open(temporary_path, &file_stream.file, FS_WRITE) < 0 || !file_stream.file) return qfalse;
 	json_stream.write = SC_WriteJsonFileFragment;
 	json_stream.context = &file_stream;
 	if (!SC_DBWriteLeaderboardJson(course, revision, &json_stream) || file_stream.failed) {
@@ -532,7 +570,7 @@ static qboolean SC_WriteLeaderboardFile(const char *path, const sc_course_t *cou
 		return qfalse;
 	}
 	trap->FS_Close(file_stream.file);
-	return qtrue;
+	return SC_CopyStaticFile(temporary_path, path);
 }
 
 void SC_WriteStaticExports(void)
@@ -550,6 +588,7 @@ void SC_WriteStaticExports(void)
 	time_t now;
 	int first = 1;
 	qboolean status_full = qfalse;
+	qboolean status_failed = qfalse;
 
 	if (!SC_DBGetAppliedCourses(courses, SC_MAX_COURSES, &count) || !SC_DBGetAppliedRevision(revision) ||
 		SC_DBLoadCfgSnapshot(revision, &snapshot) != SC_CFG_SNAPSHOT_OK ||
@@ -565,7 +604,10 @@ void SC_WriteStaticExports(void)
 		char status_row[512];
 		int row_length;
 
-		if (!SC_AppendStatusSeasonJson(status_row, sizeof(status_row), &config.seasons[index])) continue;
+		if (!SC_AppendStatusSeasonJson(status_row, sizeof(status_row), &config.seasons[index])) {
+			status_failed = qtrue;
+			break;
+		}
 		row_length = strlen(status_row);
 		if (used + (first ? 0 : 1) + (size_t)row_length + strlen("],\"courses\":[]}") >= sizeof(status) ||
 			!SC_AppendStatusJsonRow(status, sizeof(status), &used, &first, status_row)) {
@@ -575,6 +617,10 @@ void SC_WriteStaticExports(void)
 	}
 	if (status_full) {
 		trap->Print("Secret Courses status export exceeded capacity while writing seasons.\n");
+		return;
+	}
+	if (status_failed) {
+		trap->Print("Secret Courses status export failed while writing seasons.\n");
 		return;
 	}
 	{
@@ -593,20 +639,29 @@ void SC_WriteStaticExports(void)
 		const char *visibility = course->archive_completed_at ? "public" : "private";
 		int written;
 
-		if (!SC_ValidateExportPathIds(course)) continue;
+		if (!SC_ValidateExportPathIds(course)) {
+			status_failed = qtrue;
+			break;
+		}
 		if (course->type == SC_COURSE_TYPE_CUP)
 			written = Com_sprintf(path, sizeof(path), "secretcourses/cup/%s/%s/leaderboard.json", course->season_id, course->id);
 		else
 			written = Com_sprintf(path, sizeof(path), "secretcourses/permanent/%s/leaderboard.json", course->id);
-		if (written < 0 || (size_t)written >= sizeof(path)) continue;
+		if (written < 0 || (size_t)written >= sizeof(path)) {
+			status_failed = qtrue;
+			break;
+		}
 		if (!SC_WriteLeaderboardFile(path, course, revision)) {
 			trap->Print("Secret Courses leaderboard export failed for %s.\n", course->id);
-			continue;
+			status_failed = qtrue;
+			break;
 		}
-		if (status_full) continue;
 		written = Com_sprintf(status_path, sizeof(status_path), "/%s", path);
 		if (written < 0 || (size_t)written >= sizeof(status_path) ||
-			!SC_AppendStatusCourseJson(status_row, sizeof(status_row), course, lifecycle, visibility, status_path)) continue;
+			!SC_AppendStatusCourseJson(status_row, sizeof(status_row), course, lifecycle, visibility, status_path)) {
+			status_failed = qtrue;
+			break;
+		}
 		if (!SC_StatusJsonHasRoom(used + (first ? 0 : 1), strlen(status_row), sizeof(status)) ||
 			!SC_AppendStatusJsonRow(status, sizeof(status), &used, &first, status_row)) {
 			status_full = qtrue;
@@ -615,6 +670,10 @@ void SC_WriteStaticExports(void)
 	}
 	if (status_full) {
 		trap->Print("Secret Courses status export exceeded capacity while writing courses.\n");
+		return;
+	}
+	if (status_failed) {
+		trap->Print("Secret Courses status export failed while writing courses.\n");
 		return;
 	}
 	Q_strncpyz(status + used, "]}", sizeof(status) - used);
