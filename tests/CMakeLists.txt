@@ -23,8 +23,10 @@ endif(NOT InOpenJK)
 
 set(TestFiles
 	"main.cpp"
+	"SecretCoursesTests.cpp"
 	"safe/string.cpp"
 	"safe/limited_vector.cpp"
+	"${MPDir}/game/g_secretcourses_core.c"
 	"${SharedDir}/qcommon/safe/string.cpp"
 	)
 if(MSVC)
@@ -46,6 +48,7 @@ set(TestTarget "UnitTests")
 set(TestLibraries "${Boost_UNIT_TEST_FRAMEWORK_LIBRARY}")
 set(TestIncludeDirectories
 	"${Boost_INCLUDE_DIRS}"
+	"${MPDir}/game"
 	"${SharedDir}"
 	"${GSLIncludeDirectory}"
 	)
