@@ -55,8 +55,6 @@ void SC_WriteStaticExports(void);
 
 qboolean SC_DBGetAppliedRevision(char revision[65]);
 sc_cfg_snapshot_result_t SC_DBLoadCfgSnapshot(const char *revision, sc_cfg_snapshot_t *out);
-qboolean SC_DBHasEventHistory(const char *id);
-qboolean SC_DBSnapshotLocalRuns(const char *id, const char *course_name);
 qboolean SC_DBGetLifecycleRows(sc_course_t *out, int capacity, int *count);
 qboolean SC_DBGetAppliedCourses(sc_course_t *out, int capacity, int *count);
 qboolean SC_DBActivateCourse(const sc_course_t *course, time_t now);

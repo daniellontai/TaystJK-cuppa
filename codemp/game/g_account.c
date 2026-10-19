@@ -7586,15 +7586,7 @@ void InitGameAccountStuff( void ) { //Called every mapload , move the create tab
 		G_ErrorPrint("ERROR: SQL Create Failed (InitGameAccountStuff 5)", s);
 	CALL_SQLITE (finalize(stmt));
 
-	sql = "CREATE TABLE IF NOT EXISTS LocalSecretCourses(coursename VARCHAR(40) PRIMARY KEY, secret_until INTEGER, created_at INTEGER)";
-	CALL_SQLITE(prepare_v2(db, sql, strlen(sql) + 1, &stmt, NULL));
-	s = sqlite3_step(stmt);
-	if (s != SQLITE_DONE)
-		G_ErrorPrint("ERROR: SQL Create Failed (InitGameAccountStuff 5)", s);
-	CALL_SQLITE(finalize(stmt));
-
-	/* Configuration-owned Secret Course projection. LocalSecretCourses remains
-	 * temporarily for legacy active-course migration during rollout. */
+	/* Configuration-owned Secret Course projection. */
 	sql = "CREATE TABLE IF NOT EXISTS LocalSecretCourse(id VARCHAR(64) PRIMARY KEY, course_name VARCHAR(40) NOT NULL, type UNSIGNED TINYINT NOT NULL, season_id VARCHAR(32), starts_at INTEGER NOT NULL, expires_at INTEGER, applied_revision VARCHAR(64) NOT NULL, retired_at INTEGER, activated_at INTEGER, finalized_at INTEGER, archive_completed_at INTEGER)";
 	CALL_SQLITE(prepare_v2(db, sql, strlen(sql) + 1, &stmt, NULL));
 	s = sqlite3_step(stmt);
@@ -8148,12 +8140,6 @@ qboolean SC_ArchiveExpiredCourseDemos(const sc_course_t *course) {
 	return complete;
 }
 
-void SC_CleanupSecretCourses(void) {
-	time_t currentTime;
-	time(&currentTime);
-	SC_ReconcileSchedule(currentTime);
-}
-
 void SC_LoadSecretCourses(void)
 {
 	sqlite3 *db;
@@ -8247,236 +8233,6 @@ qboolean SC_IsTimeSecret(const char *coursename)
 	return qfalse;
 }
 
-void SC_AddSecretCourse(const char *coursename, time_t secret_until)
-{
-	sqlite3 *db;
-	char *sql;
-	sqlite3_stmt *stmt;
-	time_t currentTime;
-	int result;
-
-	if (!coursename || !*coursename)
-	{
-		return;
-	}
-
-	time(&currentTime);
-
-	CALL_SQLITE(open(LOCAL_DB_PATH, &db));
-
-	// Use INSERT OR REPLACE to handle duplicates
-	sql = "INSERT OR REPLACE INTO LocalSecretCourses (coursename, secret_until, created_at) VALUES (?, ?, ?)";
-	CALL_SQLITE(prepare_v2(db, sql, strlen(sql) + 1, &stmt, NULL));
-	CALL_SQLITE(bind_text(stmt, 1, coursename, -1, SQLITE_STATIC));
-	CALL_SQLITE(bind_int64(stmt, 2, (sqlite3_int64)secret_until));
-	CALL_SQLITE(bind_int64(stmt, 3, (sqlite3_int64)currentTime));
-
-	result = sqlite3_step(stmt);
-	if (result != SQLITE_DONE)
-	{
-		G_ErrorPrint("ERROR: Failed to add secret course", result);
-	}
-
-	CALL_SQLITE(finalize(stmt));
-	CALL_SQLITE(close(db));
-
-	// Reload the memory array to reflect the change
-	SC_LoadSecretCourses();
-	trap->Print("--SCLOG-START-- COURSE_ADDED: %s | %d --SCLOG-END--\n", coursename, secret_until);
-}
-
-void SC_RemoveSecretCourse(const char *coursename, qboolean suppressSCLog, qboolean reloadAfter)
-{
-	sqlite3 *db;
-	char *sql;
-	sqlite3_stmt *stmt;
-	int result;
-
-	if (!coursename || !*coursename)
-	{
-		return;
-	}
-
-	CALL_SQLITE(open(LOCAL_DB_PATH, &db));
-
-	sql = "DELETE FROM LocalSecretCourses WHERE coursename = ?";
-	CALL_SQLITE(prepare_v2(db, sql, strlen(sql) + 1, &stmt, NULL));
-	CALL_SQLITE(bind_text(stmt, 1, coursename, -1, SQLITE_STATIC));
-
-	result = sqlite3_step(stmt);
-	if (result != SQLITE_DONE)
-	{
-		G_ErrorPrint("ERROR: Failed to remove secret course", result);
-	}
-
-	CALL_SQLITE(finalize(stmt));
-	CALL_SQLITE(close(db));
-
-	if (!suppressSCLog) {
-		trap->Print("--SCLOG-START-- COURSE_REMOVED: %s --SCLOG-END--\n", coursename);
-	}
-
-	// Reload the memory array to reflect the change
-	if (reloadAfter) {
-		SC_LoadSecretCourses();
-	}
-}
-
-// SC Admin commands
-void SC_Cmd_AddSecret_f(gentity_t *ent) {
-    char partialCourseName[40] = {0}, fullCourseName[40] = {0};
-    char timeValueStr[16] = {0}, timeTypeStr[16] = {0};
-    int timeValue;
-    time_t currentTime, secretUntil;
-    sqlite3 *db;
-    char *sql;
-    sqlite3_stmt *stmt;
-    int s;
-    const int args = trap->Argc();
-
-    // Permission check, use grantadmin flag for now
-    if (!G_AdminAllowed(ent, JAPRO_ACCOUNTFLAG_A_GRANTADMIN, qfalse, qfalse, "addsecretcourse")) {
-        return;
-    }
-
-    if (args != 4) {
-        trap->SendServerCommand(ent - g_entities, 
-            "print \"Usage: /addsecretcourse <coursename> <time_value> <time_type>\n"
-            "Time types: hour(s), day(s), week(s)\n"
-            "Examples: /addsecretcourse dash1 7 days, /addsecretcourse a-mountain 1 week\n\"");
-        return;
-    }
-
-    trap->Argv(1, partialCourseName, sizeof(partialCourseName));
-    trap->Argv(2, timeValueStr, sizeof(timeValueStr));
-    trap->Argv(3, timeTypeStr, sizeof(timeTypeStr));
-
-    // Parse time value
-    timeValue = atoi(timeValueStr);
-    if (timeValue <= 0) {
-        trap->SendServerCommand(ent - g_entities, "print \"Error: Time value must be a positive number.\n\"");
-        return;
-    }
-
-    // Parse time type and calculate seconds
-    Q_strlwr(timeTypeStr);
-    int secondsMultiplier = 0;
-    
-    if (!Q_stricmp(timeTypeStr, "day") || !Q_stricmp(timeTypeStr, "days")) {
-        secondsMultiplier = 24 * 60 * 60; // day in seconds
-    } else if (!Q_stricmp(timeTypeStr, "week") || !Q_stricmp(timeTypeStr, "weeks")) {
-        secondsMultiplier = 7 * 24 * 60 * 60; // week in seconds
-    } else if (!Q_stricmp(timeTypeStr, "hour") || !Q_stricmp(timeTypeStr, "hours")) {
-        secondsMultiplier = 60 * 60; // hour in seconds
-    } else if (!Q_stricmp(timeTypeStr, "sec")) {
-		secondsMultiplier = 1;
-	} else {
-        trap->SendServerCommand(ent - g_entities, 
-            "print \"Error: Invalid time type. Use 'hour(s)' 'day(s)' or 'week(s)'.\n\"");
-        return;
-    }
-
-    // Clean the partial course name
-    Q_strlwr(partialCourseName);
-    Q_CleanStr(partialCourseName);
-    Q_strstrip(partialCourseName, "&", " ");
-
-    // Find full course name from database (similar to rtop logic)
-    CALL_SQLITE(open(LOCAL_DB_PATH, &db));
-
-    sql = "SELECT DISTINCT(coursename) FROM LocalRun WHERE instr(coursename, ?) > 0 ORDER BY entries DESC LIMIT 1";
-    CALL_SQLITE(prepare_v2(db, sql, strlen(sql) + 1, &stmt, NULL));
-    CALL_SQLITE(bind_text(stmt, 1, partialCourseName, -1, SQLITE_STATIC));
-
-    s = sqlite3_step(stmt);
-    if (s == SQLITE_ROW) {
-        Q_strncpyz(fullCourseName, (char *)sqlite3_column_text(stmt, 0), sizeof(fullCourseName));
-    } else if (s == SQLITE_DONE) {
-		Q_strncpyz(fullCourseName, partialCourseName, sizeof(fullCourseName));
-        trap->SendServerCommand(ent - g_entities, 
-            va("print \"Notice: No matching course for partial coursename, adding course as typed: '%s'\n\"", partialCourseName));
-    } else {
-        G_ErrorPrint("ERROR: SQL Select Failed (SC_Cmd_AddSecret_f)", s);
-        CALL_SQLITE(finalize(stmt));
-        CALL_SQLITE(close(db));
-        return;
-    }
-    CALL_SQLITE(finalize(stmt));
-    CALL_SQLITE(close(db));
-
-    // Calculate secret until timestamp
-    time(&currentTime);
-    secretUntil = currentTime + (timeValue * secondsMultiplier);
-
-    // Add to database
-    SC_AddSecretCourse(fullCourseName, secretUntil);
-
-    // Success message
-	char timeStr[64];
-    struct tm *timeinfo = localtime(&secretUntil);
-    strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", timeinfo);
-    trap->SendServerCommand(ent - g_entities, 
-        va("print \"Secret course added: ^3%s^7 - Hidden until %s\n\"", fullCourseName, timeStr));
-}
-
-void SC_Cmd_RemoveSecret_f(gentity_t *ent) {
-    char partialCourseName[40] = {0}, fullCourseName[40] = {0};
-    sqlite3 *db;
-    char *sql;
-    sqlite3_stmt *stmt;
-    int s;
-    const int args = trap->Argc();
-
-    // Permission check
-    if (!G_AdminAllowed(ent, JAPRO_ACCOUNTFLAG_A_GRANTADMIN, qfalse, qfalse, "removesecretcourse")) {
-        return;
-    }
-
-    if (args != 2) {
-        trap->SendServerCommand(ent - g_entities, 
-            "print \"Usage: /removesecretcourse <coursename>\n\"");
-        return;
-    }
-
-    trap->Argv(1, partialCourseName, sizeof(partialCourseName));
-
-    // Clean the partial course name
-    Q_strlwr(partialCourseName);
-    Q_CleanStr(partialCourseName);
-    Q_strstrip(partialCourseName, "&", " ");
-
-    // Find full course name from secret courses table
-    CALL_SQLITE(open(LOCAL_DB_PATH, &db));
-
-    sql = "SELECT coursename FROM LocalSecretCourses WHERE instr(coursename, ?) > 0 LIMIT 1";
-    CALL_SQLITE(prepare_v2(db, sql, strlen(sql) + 1, &stmt, NULL));
-    CALL_SQLITE(bind_text(stmt, 1, partialCourseName, -1, SQLITE_STATIC));
-    
-    s = sqlite3_step(stmt);
-    if (s == SQLITE_ROW) {
-        Q_strncpyz(fullCourseName, (char *)sqlite3_column_text(stmt, 0), sizeof(fullCourseName));
-    } else if (s == SQLITE_DONE) {
-        trap->SendServerCommand(ent - g_entities, 
-            va("print \"Error: No secret course found matching '%s'.\n\"", partialCourseName));
-        CALL_SQLITE(finalize(stmt));
-        CALL_SQLITE(close(db));
-        return;
-    } else {
-        G_ErrorPrint("ERROR: SQL Select Failed (SC_Cmd_RemoveSecret_f)", s);
-        CALL_SQLITE(finalize(stmt));
-        CALL_SQLITE(close(db));
-        return;
-    }
-    CALL_SQLITE(finalize(stmt));
-    CALL_SQLITE(close(db));
-
-    // Remove from database
-    SC_RemoveSecretCourse(fullCourseName, qfalse, qtrue);
-
-    trap->SendServerCommand(ent - g_entities, 
-        va("print \"Secret course removed: ^3%s^7\n\"", fullCourseName));
-}
-
 qboolean SC_DBGetAppliedRevision(char revision[65])
 {
 	sqlite3 *db;
@@ -8553,18 +8309,6 @@ static qboolean SC_DBHasEventHistoryInDb(sqlite3 *db, const char *id)
 	return has_history;
 }
 
-qboolean SC_DBHasEventHistory(const char *id)
-{
-	sqlite3 *db;
-	qboolean has_history;
-
-	if (!id || !id[0]) return qfalse;
-	CALL_SQLITE(open(LOCAL_DB_PATH, &db));
-	has_history = SC_DBHasEventHistoryInDb(db, id);
-	CALL_SQLITE(close(db));
-	return has_history;
-}
-
 static int SC_DBSnapshotLocalRunsInDb(sqlite3 *db, const char *id, const char *course_name)
 {
 	sqlite3_stmt *stmt;
@@ -8588,20 +8332,6 @@ static int SC_DBSnapshotLocalRunsInDb(sqlite3 *db, const char *id, const char *c
 		CALL_SQLITE(finalize(stmt));
 	}
 	return result;
-}
-
-qboolean SC_DBSnapshotLocalRuns(const char *id, const char *course_name)
-{
-	sqlite3 *db;
-	int result;
-
-	CALL_SQLITE(open(LOCAL_DB_PATH, &db));
-	if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK) { CALL_SQLITE(close(db)); return qfalse; }
-	result = SC_DBSnapshotLocalRunsInDb(db, id, course_name);
-	if (result == SQLITE_OK) result = sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
-	if (result != SQLITE_OK) sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
-	CALL_SQLITE(close(db));
-	return result == SQLITE_OK ? qtrue : qfalse;
 }
 
 qboolean SC_DBActivateCourse(const sc_course_t *course, time_t now)

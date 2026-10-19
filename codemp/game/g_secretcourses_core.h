@@ -90,18 +90,9 @@ typedef struct {
 } sc_restore_plan_t;
 
 typedef struct {
-	int num_expired_cup_courses;
-} sc_transition_set_t;
-
-typedef struct {
 	char course_id[SC_COURSE_ID_MAX + 1];
 	int rank;
 } sc_jka_position_scan_t;
-
-typedef struct {
-	char source[256];
-	char destination[256];
-} sc_demo_move_t;
 
 typedef int (*sc_json_write_fn)(void *context, const char *text, size_t length);
 
@@ -134,7 +125,6 @@ int SC_CaptureCfgSnapshot(sc_cfg_snapshot_t *snapshot, const char *revision, con
 int SC_VerifyCfgSnapshot(const sc_cfg_snapshot_t *snapshot);
 int SC_ParseConfigText(const char *text, sc_config_t *out, sc_validation_result_t *result);
 void SC_FreeConfig(sc_config_t *config);
-int SC_ConfigRequiresConfirmation(const sc_config_t *applied, const sc_config_t *proposed);
 int SC_CourseIdentityChanged(const sc_course_t *applied, const sc_course_t *proposed);
 int SC_DescribeCourseDifferences(char *out, size_t out_size, const sc_course_t *applied, const sc_course_t *proposed);
 int SC_ReportLineFits(size_t used, size_t line_length, size_t capacity);
@@ -144,9 +134,6 @@ int SC_ShouldNotifyAfterFullAdminLogin(int gained_full_admin, int revision_misma
 int SC_CourseSchedulesOverlap(const sc_course_t *first, const sc_course_t *second);
 int SC_CourseCanBeApplied(const sc_course_t *course, time_t now);
 int SC_CourseCanBeAppliedOrRetainFinalized(const sc_course_t *course, int already_finalized, time_t now);
-void SC_CollectTransitions(const sc_config_t *config, time_t previous, time_t now, sc_transition_set_t *out);
-int SC_IsConfiguredCourseActive(const sc_config_t *config, const char *course_name, time_t now);
-int SC_PlanDemoArchive(sc_demo_move_t *out, const char *player_and_file, const char *season_id, const char *course_id);
 int SC_BeginLeaderboardJson(sc_json_stream_t *stream, const sc_course_t *course, const char *revision);
 int SC_AppendLeaderboardJsonEntry(sc_json_stream_t *stream, const char *username, int style, int duration_ms, int topspeed, int average, int end_time);
 int SC_EndLeaderboardJson(sc_json_stream_t *stream);
