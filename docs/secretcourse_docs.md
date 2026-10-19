@@ -60,7 +60,8 @@ Schedules may otherwise be adjusted before finalization. A display name may be
 used by multiple IDs only when their schedules do not overlap. When an old
 course is no longer needed in the applied projection, remove it from cfg to
 retire its ID. A retired ID with event history cannot be reactivated; a
-retired ID without event history may be reactivated by adding it back to cfg.
+retired, non-finalized ID without event history may be reactivated by adding
+it back to cfg.
 
 ## Lifecycle
 

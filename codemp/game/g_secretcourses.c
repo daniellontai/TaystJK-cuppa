@@ -489,16 +489,23 @@ void SC_ReconcileSchedule(time_t now)
 		sc_next_transition_time = sc_archive_retry_time;
 }
 
+static qboolean SC_CopyStaticFile(const char *source_path, const char *destination_path);
+
 static qboolean SC_WriteStaticFile(const char *path, const char *text)
 {
 	fileHandle_t file;
-	if (trap->FS_Open(path, &file, FS_WRITE) >= 0 && file) {
-		int length = strlen(text);
-		qboolean written = trap->FS_Write(text, length, file) == length ? qtrue : qfalse;
-		trap->FS_Close(file);
-		return written;
-	}
-	return qfalse;
+	char temporary_path[260];
+	int length;
+	int written;
+
+	if (!path || !text) return qfalse;
+	written = Com_sprintf(temporary_path, sizeof(temporary_path), "%s.tmp", path);
+	if (written < 0 || (size_t)written >= sizeof(temporary_path)) return qfalse;
+	if (trap->FS_Open(temporary_path, &file, FS_WRITE) < 0 || !file) return qfalse;
+	length = strlen(text);
+	written = trap->FS_Write(text, length, file);
+	trap->FS_Close(file);
+	return written == length ? SC_CopyStaticFile(temporary_path, path) : qfalse;
 }
 
 typedef struct {
