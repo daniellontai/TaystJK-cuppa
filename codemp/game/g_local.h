@@ -2118,8 +2118,12 @@ extern gameImport_t *trap;
 
 typedef struct secretCourse_s
 {
+	char course_id[64];
 	char coursename[40];
+	char season_id[32];
+	char season_name[64];
 	time_t secret_until;
+	qboolean permanent;
 } secretCourse_t;
 
 #define MAX_SECRET_COURSES 64
@@ -2127,10 +2131,10 @@ typedef struct secretCourse_s
 extern secretCourse_t g_secretCourses[MAX_SECRET_COURSES];
 extern int g_numSecretCourses;
 
-// shak todo: revise if these rly need to be here
-void SC_CleanupSecretCourses(void);
 void SC_LoadSecretCourses(void);
 qboolean SC_IsTimeSecret(const char *coursename);
-void SC_AddSecretCourse(const char *coursename, time_t secret_until);
-void SC_RemoveSecretCourse(const char *coursename, qboolean suppressSCLog, qboolean reloadAfter);
+void SC_ReconcileSchedule(time_t now);
+time_t SC_GetNextTransitionTime(void);
+void SC_NotifyConfigRevisionAfterFullAdminLogin(gentity_t *ent);
+void SC_WriteStaticExports(void);
 void SC_ConstructFullCourseName(char *fullCourseName, size_t bufferSize, const char *message);

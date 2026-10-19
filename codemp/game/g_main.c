@@ -24,6 +24,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 
 
 #include "g_local.h"
+#include "g_secretcourses.h"
 #include "g_ICARUScb.h"
 #include "g_nav.h"
 #include "bg_saga.h"
@@ -422,8 +423,8 @@ void G_InitGame( int levelTime, int randomSeed, int restart ) {
 	G_SpawnCapRoutesFromCFG();
 	G_SpawnCosmeticUnlocks();
 	InitGameAccountStuff();
-	// SC_CleanupSecretCourses(); // maybe suboptimal to do every mapload but shouldn't be too expensive?
-	SC_LoadSecretCourses();
+	SC_EnsureConfigTemplate();
+	SC_ReconcileSchedule(time(NULL));
 	SetGametypeFuncSolids();
 
 	// general initialization
@@ -3600,10 +3601,8 @@ void G_RunFrame( int levelTime ) {
 		}
 	}
 
-	static int lastSecretCleanup = 0;
-	if (level.time - lastSecretCleanup > 1 * 60 * 1000) { // x mins
-		SC_CleanupSecretCourses();
-		lastSecretCleanup = level.time;
+	if (SC_GetNextTransitionTime() && time(NULL) >= SC_GetNextTransitionTime()) {
+		SC_ReconcileSchedule(time(NULL));
 	}
 
 	if (level.gametype == GT_SIEGE &&
