@@ -497,6 +497,41 @@ static void SC_WriteStaticFile(const char *path, const char *text)
 	}
 }
 
+typedef struct {
+	fileHandle_t file;
+	qboolean failed;
+} sc_file_json_stream_t;
+
+static int SC_WriteJsonFileFragment(void *context, const char *text, size_t length)
+{
+	sc_file_json_stream_t *stream = (sc_file_json_stream_t *)context;
+
+	if (!stream || stream->failed || !text || trap->FS_Write(text, (int)length, stream->file) != (int)length) {
+		if (stream) stream->failed = qtrue;
+		return 0;
+	}
+	return 1;
+}
+
+static qboolean SC_WriteLeaderboardFile(const char *path, const sc_course_t *course, const char *revision)
+{
+	sc_file_json_stream_t file_stream;
+	sc_json_stream_t json_stream;
+
+	if (!path || !course) return qfalse;
+	memset(&file_stream, 0, sizeof(file_stream));
+	memset(&json_stream, 0, sizeof(json_stream));
+	if (trap->FS_Open(path, &file_stream.file, FS_WRITE) < 0 || !file_stream.file) return qfalse;
+	json_stream.write = SC_WriteJsonFileFragment;
+	json_stream.context = &file_stream;
+	if (!SC_DBWriteLeaderboardJson(course, revision, &json_stream) || file_stream.failed) {
+		trap->FS_Close(file_stream.file);
+		return qfalse;
+	}
+	trap->FS_Close(file_stream.file);
+	return qtrue;
+}
+
 void SC_WriteStaticExports(void)
 {
 	sc_course_t courses[SC_MAX_COURSES];
@@ -548,7 +583,6 @@ void SC_WriteStaticExports(void)
 	for (index = 0; index < count; index++) {
 		const sc_course_t *course = &courses[index];
 		sc_course_state_t state = course->finalized_at ? SC_COURSE_STATE_EXPIRED : SC_ResolveCourseState(course, now);
-		char leaderboard[2048];
 		char path[256];
 		char status_row[1024];
 		char status_path[257];
@@ -562,8 +596,10 @@ void SC_WriteStaticExports(void)
 		else
 			written = Com_sprintf(path, sizeof(path), "secretcourses/permanent/%s/leaderboard.json", course->id);
 		if (written < 0 || (size_t)written >= sizeof(path)) continue;
-		if (!SC_DBRenderLeaderboardJson(leaderboard, sizeof(leaderboard), course, state, revision)) continue;
-		SC_WriteStaticFile(path, leaderboard);
+		if (!SC_WriteLeaderboardFile(path, course, revision)) {
+			trap->Print("Secret Courses leaderboard export failed for %s.\n", course->id);
+			continue;
+		}
 		if (status_full) continue;
 		written = Com_sprintf(status_path, sizeof(status_path), "/%s", path);
 		if (written < 0 || (size_t)written >= sizeof(status_path) ||

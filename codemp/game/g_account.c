@@ -8711,7 +8711,7 @@ void SC_DBLogExpiredCourseById(const char *id)
 		CALL_SQLITE(bind_int(stmt, 2, MV_JKA));
 		trap->Print("--SCLOG-START-- FINAL_STANDINGS: %s\n", id);
 		used = Com_sprintf(message, sizeof(message), "print \"^3%s:^7\n", heading);
-		while (sqlite3_step(stmt) == SQLITE_ROW) {
+		while ((result = sqlite3_step(stmt)) == SQLITE_ROW) {
 			const char *username = (const char *)sqlite3_column_text(stmt, 0);
 			int duration = sqlite3_column_int(stmt, 1);
 			char time_str[32];
@@ -8735,41 +8735,27 @@ void SC_DBLogExpiredCourseById(const char *id)
 	CALL_SQLITE(close(db));
 }
 
-qboolean SC_DBRenderLeaderboardJson(char *out, size_t out_size, const sc_course_t *course, sc_course_state_t state, const char *revision)
+qboolean SC_DBWriteLeaderboardJson(const sc_course_t *course, const char *revision, sc_json_stream_t *stream)
 {
 	sqlite3 *db;
 	sqlite3_stmt *stmt;
-	char id[SC_COURSE_ID_MAX * 2 + 8];
-	char name[SC_COURSE_NAME_MAX * 2 + 8];
-	char rev[136];
-	char entry[512];
-	const char *visibility;
 	int result;
-	int used;
-	qboolean first = qtrue;
 
-	if (!out || !out_size || !course || !SC_JsonWriteEscapedString(id, sizeof(id), course->id) || !SC_JsonWriteEscapedString(name, sizeof(name), course->course_name) || !SC_JsonWriteEscapedString(rev, sizeof(rev), revision ? revision : "")) return qfalse;
-	visibility = course->archive_completed_at ? "public" : "private";
-	used = Com_sprintf(out, out_size, "{\"schema_version\":1,\"revision\":%s,\"course_id\":%s,\"course_name\":%s,\"demos_visibility\":\"%s\",\"entries\":[", rev, id, name, visibility);
-	if (used < 0 || (size_t)used >= out_size) return qfalse;
+	if (!course || !stream || !SC_BeginLeaderboardJson(stream, course, revision)) return qfalse;
 	CALL_SQLITE(open(LOCAL_DB_PATH, &db));
 	result = sqlite3_prepare_v2(db, "SELECT username, style, duration_ms, topspeed, average, end_time FROM LocalSecretCourseRun WHERE secret_course_id = ? ORDER BY style, duration_ms, username", -1, &stmt, NULL);
 	if (result == SQLITE_OK) {
 		CALL_SQLITE(bind_text(stmt, 1, course->id, -1, SQLITE_STATIC));
-		while (sqlite3_step(stmt) == SQLITE_ROW) {
-			if (!SC_RenderLeaderboardEntryJson(entry, sizeof(entry), (const char *)sqlite3_column_text(stmt, 0), sqlite3_column_int(stmt, 1), sqlite3_column_int(stmt, 2), sqlite3_column_int(stmt, 3), sqlite3_column_int(stmt, 4), sqlite3_column_int(stmt, 5))) continue;
-			if (used + (first ? 0 : 1) + (int)strlen(entry) + 3 >= (int)out_size) break;
-			if (!first) out[used++] = ',';
-			Q_strncpyz(out + used, entry, out_size - used);
-			used += strlen(entry);
-			first = qfalse;
+		while ((result = sqlite3_step(stmt)) == SQLITE_ROW) {
+			if (!SC_AppendLeaderboardJsonEntry(stream, (const char *)sqlite3_column_text(stmt, 0), sqlite3_column_int(stmt, 1), sqlite3_column_int(stmt, 2), sqlite3_column_int(stmt, 3), sqlite3_column_int(stmt, 4), sqlite3_column_int(stmt, 5))) {
+				result = SQLITE_ERROR;
+				break;
+			}
 		}
 		CALL_SQLITE(finalize(stmt));
 	}
 	CALL_SQLITE(close(db));
-	if (result != SQLITE_OK) return qfalse;
-	Q_strcat(out, out_size, "]}");
-	return qtrue;
+	return result == SQLITE_DONE && SC_EndLeaderboardJson(stream) ? qtrue : qfalse;
 }
 
 qboolean SC_DBGetLifecycleRows(sc_course_t *out, int capacity, int *count)

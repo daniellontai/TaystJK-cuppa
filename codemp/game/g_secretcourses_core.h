@@ -103,6 +103,15 @@ typedef struct {
 	char destination[256];
 } sc_demo_move_t;
 
+typedef int (*sc_json_write_fn)(void *context, const char *text, size_t length);
+
+typedef struct {
+	sc_json_write_fn write;
+	void *context;
+	int failed;
+	int first_entry;
+} sc_json_stream_t;
+
 int SC_ParseUtcTimestamp(const char *text, time_t *out);
 sc_course_state_t SC_ResolveCourseState(const sc_course_t *course, time_t now);
 int SC_ValidatePathComponent(const char *component);
@@ -138,7 +147,9 @@ int SC_CourseCanBeAppliedOrRetainFinalized(const sc_course_t *course, int alread
 void SC_CollectTransitions(const sc_config_t *config, time_t previous, time_t now, sc_transition_set_t *out);
 int SC_IsConfiguredCourseActive(const sc_config_t *config, const char *course_name, time_t now);
 int SC_PlanDemoArchive(sc_demo_move_t *out, const char *player_and_file, const char *season_id, const char *course_id);
-int SC_RenderLeaderboardJson(char *out, size_t out_size, const sc_course_t *course, sc_course_state_t state, const char *revision);
+int SC_BeginLeaderboardJson(sc_json_stream_t *stream, const sc_course_t *course, const char *revision);
+int SC_AppendLeaderboardJsonEntry(sc_json_stream_t *stream, const char *username, int style, int duration_ms, int topspeed, int average, int end_time);
+int SC_EndLeaderboardJson(sc_json_stream_t *stream);
 int SC_RenderLeaderboardEntryJson(char *out, size_t out_size, const char *username, int style, int duration_ms, int topspeed, int average, int end_time);
 int SC_AppendStatusSeasonJson(char *out, size_t out_size, const sc_season_t *season);
 int SC_AppendStatusCourseJson(char *out, size_t out_size, const sc_course_t *course, const char *lifecycle, const char *demos_visibility, const char *leaderboard_path);

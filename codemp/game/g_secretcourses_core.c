@@ -546,20 +546,49 @@ int SC_PlanDemoArchive(sc_demo_move_t *out, const char *player_and_file, const c
 	return SC_BuildArchivePath(out->destination, sizeof(out->destination), season_id, course_id, player, separator + 1);
 }
 
-int SC_RenderLeaderboardJson(char *out, size_t out_size, const sc_course_t *course, sc_course_state_t state, const char *revision)
+static int SC_JsonStreamWrite(sc_json_stream_t *stream, const char *text)
+{
+	if (!stream || !stream->write || stream->failed || !text || !stream->write(stream->context, text, strlen(text))) {
+		if (stream) stream->failed = 1;
+		return 0;
+	}
+	return 1;
+}
+
+int SC_BeginLeaderboardJson(sc_json_stream_t *stream, const sc_course_t *course, const char *revision)
 {
 	char id[SC_COURSE_ID_MAX * 2 + 8];
 	char name[SC_COURSE_NAME_MAX * 2 + 8];
 	char rev[136];
+	char header[512];
 	const char *visibility;
 	int written;
 
-	if (!out || !out_size || !course || !SC_JsonWriteEscapedString(id, sizeof(id), course->id) ||
+	if (!stream || !course || !SC_JsonWriteEscapedString(id, sizeof(id), course->id) ||
 		!SC_JsonWriteEscapedString(name, sizeof(name), course->course_name) ||
 		!SC_JsonWriteEscapedString(rev, sizeof(rev), revision ? revision : "")) return 0;
 	visibility = course->archive_completed_at ? "public" : "private";
-	written = snprintf(out, out_size, "{\"schema_version\":1,\"revision\":%s,\"course_id\":%s,\"course_name\":%s,\"demos_visibility\":\"%s\",\"entries\":[]}", rev, id, name, visibility);
-	return written >= 0 && (size_t)written < out_size;
+	written = snprintf(header, sizeof(header), "{\"schema_version\":1,\"revision\":%s,\"course_id\":%s,\"course_name\":%s,\"demos_visibility\":\"%s\",\"entries\":[", rev, id, name, visibility);
+	if (written < 0 || (size_t)written >= sizeof(header)) return 0;
+	stream->failed = 0;
+	stream->first_entry = 1;
+	return SC_JsonStreamWrite(stream, header);
+}
+
+int SC_AppendLeaderboardJsonEntry(sc_json_stream_t *stream, const char *username, int style, int duration_ms, int topspeed, int average, int end_time)
+{
+	char entry[512];
+
+	if (!stream || stream->failed || !SC_RenderLeaderboardEntryJson(entry, sizeof(entry), username, style, duration_ms, topspeed, average, end_time)) return 0;
+	if (!stream->first_entry && !SC_JsonStreamWrite(stream, ",")) return 0;
+	if (!SC_JsonStreamWrite(stream, entry)) return 0;
+	stream->first_entry = 0;
+	return 1;
+}
+
+int SC_EndLeaderboardJson(sc_json_stream_t *stream)
+{
+	return SC_JsonStreamWrite(stream, "]}");
 }
 
 int SC_RenderLeaderboardEntryJson(char *out, size_t out_size, const char *username, int style, int duration_ms, int topspeed, int average, int end_time)
