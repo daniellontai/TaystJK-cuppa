@@ -1494,6 +1494,28 @@ void G_MuteSound( int entnum, int channel )
 	}
 }
 
+void G_CopyClientBroadcastAudience( gentity_t *destination, const gentity_t *source )
+{
+	int clientNum;
+
+	if (!destination || !source || !source->client ||
+		!(source->r.svFlags & SVF_BROADCASTCLIENTS))
+	{
+		return;
+	}
+
+	clientNum = source->s.number;
+	if (clientNum < 0 || clientNum >= MAX_CLIENTS)
+	{
+		return;
+	}
+
+	destination->r.svFlags |= SVF_BROADCASTCLIENTS;
+	destination->r.broadcastClients[0] = source->r.broadcastClients[0];
+	destination->r.broadcastClients[1] = source->r.broadcastClients[1];
+	destination->r.broadcastClients[clientNum / 32] |= 1 << (clientNum % 32);
+}
+
 /*
 =============
 G_Sound
@@ -1505,6 +1527,7 @@ void G_Sound( gentity_t *ent, int channel, int soundIndex ) {
 	assert(soundIndex);
 
 	te = G_SoundTempEntity( ent->r.currentOrigin, EV_GENERAL_SOUND, channel );
+	G_CopyClientBroadcastAudience( te, ent );
 	te->s.eventParm = soundIndex;
 	te->s.saberEntityNum = channel;
 
@@ -1537,6 +1560,7 @@ void G_RaceSound( gentity_t *ent, int channel, int soundIndex, int racesound ) {
 	assert(soundIndex);
 
 	te = G_SoundTempEntity( ent->r.currentOrigin, EV_GENERAL_SOUND, channel );
+	G_CopyClientBroadcastAudience( te, ent );
 	te->s.eventParm = soundIndex;
 	te->s.saberEntityNum = channel;
 	te->s.eFlags2 = racesound;
@@ -1621,6 +1645,7 @@ void G_EntitySound( gentity_t *ent, int channel, int soundIndex ) {
 	gentity_t	*te;
 
 	te = G_TempEntity( ent->r.currentOrigin, EV_ENTITY_SOUND );
+	G_CopyClientBroadcastAudience( te, ent );
 	te->s.eventParm = soundIndex;
 	te->s.clientNum = ent->s.number;
 	te->s.trickedentindex = channel;
@@ -1632,6 +1657,7 @@ void G_SoundOnEnt( gentity_t *ent, int channel, const char *soundPath )
 	gentity_t	*te;
 
 	te = G_TempEntity( ent->r.currentOrigin, EV_ENTITY_SOUND );
+	G_CopyClientBroadcastAudience( te, ent );
 	te->s.eventParm = G_SoundIndex((char *)soundPath);
 	te->s.clientNum = ent->s.number;
 	te->s.trickedentindex = channel;

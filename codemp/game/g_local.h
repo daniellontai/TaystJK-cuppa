@@ -1679,6 +1679,7 @@ gentity_t	*G_PlayEffect(int fxID, vec3_t org, vec3_t ang);
 gentity_t	*G_PlayEffectID(const int fxID, vec3_t org, vec3_t ang);
 gentity_t	*G_ScreenShake(vec3_t org, gentity_t *target, float intensity, int duration, qboolean global);
 void	G_MuteSound( int entnum, int channel );
+void	G_CopyClientBroadcastAudience( gentity_t *destination, const gentity_t *source );
 void	G_Sound( gentity_t *ent, int channel, int soundIndex );
 void	G_RaceSound( gentity_t *ent, int channel, int soundIndex, int racesound );//bad
 void	G_SoundAtLoc( vec3_t loc, int channel, int soundIndex );
