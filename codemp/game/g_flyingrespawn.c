@@ -38,17 +38,22 @@ void G_FlyingRespawn_InitClient(flyingRespawnState_t *state)
 {
 	memset(state, 0, sizeof(*state));
 	state->commandDroppedThrough = state->stateDroppedThrough = INT_MIN;
+	state->executionDroppedThrough = INT_MIN;
 }
 
 void G_FlyingRespawn_FreeHistory(flyingRespawnState_t *state)
 {
 	free(state->rawCommands);
+	free(state->executionCommands);
 	free(state->movementStates);
 	state->rawCommands = NULL;
+	state->executionCommands = NULL;
 	state->movementStates = NULL;
 	state->historyCapacity = state->commandHead = state->commandCount = 0;
 	state->stateHead = state->stateCount = 0;
+	state->executionHead = state->executionCount = 0;
 	state->commandDroppedThrough = state->stateDroppedThrough = INT_MIN;
+	state->executionDroppedThrough = INT_MIN;
 	state->historyGeneration++;
 	memset(&state->replay, 0, sizeof(state->replay));
 }
@@ -63,7 +68,7 @@ void G_FlyingRespawn_FreeClient(flyingRespawnState_t *state)
 qboolean G_FlyingRespawn_Configure(flyingRespawnState_t *state, int rewindMs, int releaseOffsetMs, int testMode)
 {
 	int retention, capacity;
-	flyingRespawnRawCmd_t *commands;
+	flyingRespawnRawCmd_t *commands, *executions;
 	flyingRespawnSnapshot_t *snapshots;
 	if (rewindMs < 0 || releaseOffsetMs < 0 || rewindMs > INT_MAX - FLYING_RESPAWN_SAMPLE_MARGIN_MS - 2)
 		return qfalse;
@@ -76,14 +81,17 @@ qboolean G_FlyingRespawn_Configure(flyingRespawnState_t *state, int rewindMs, in
 	if ((size_t)capacity > SIZE_MAX / sizeof(*commands) || (size_t)capacity > SIZE_MAX / sizeof(*snapshots))
 		return qfalse;
 	commands = (flyingRespawnRawCmd_t *)malloc((size_t)capacity * sizeof(*commands));
+	executions = (flyingRespawnRawCmd_t *)malloc((size_t)capacity * sizeof(*executions));
 	snapshots = (flyingRespawnSnapshot_t *)malloc((size_t)capacity * sizeof(*snapshots));
-	if (!commands || !snapshots) {
+	if (!commands || !executions || !snapshots) {
 		free(commands);
+		free(executions);
 		free(snapshots);
 		return qfalse;
 	}
 	G_FlyingRespawn_FreeHistory(state);
 	state->rawCommands = commands;
+	state->executionCommands = executions;
 	state->movementStates = snapshots;
 	state->historyCapacity = capacity;
 	state->rewindMs = rewindMs;
@@ -115,7 +123,9 @@ void G_FlyingRespawn_ResetRun(flyingRespawnState_t *state, int serverTime)
 	state->respawnCount = 0;
 	state->runInvalid = state->mismatch = qfalse;
 	state->commandHead = state->commandCount = state->stateHead = state->stateCount = 0;
+	state->executionHead = state->executionCount = 0;
 	state->commandDroppedThrough = state->stateDroppedThrough = INT_MIN;
+	state->executionDroppedThrough = INT_MIN;
 	state->historyGeneration++;
 	G_FlyingRespawn_ResetSecondarySegment(state, serverTime, 0);
 }
@@ -139,7 +149,29 @@ void G_FlyingRespawn_RecordRawCmd(flyingRespawnState_t *state, int serverTime, c
 	slot = FR_Index(state->commandHead, state->commandCount++, state->historyCapacity);
 	state->rawCommands[slot].serverTime = serverTime;
 	state->rawCommands[slot].cmd = *cmd;
-	if (state->automaticCheckpoint.pending && !FR_AppendCapture(&state->automaticCheckpoint, &state->rawCommands[slot]))
+	state->historyGeneration++;
+}
+
+void G_FlyingRespawn_RecordExecutionCmd(flyingRespawnState_t *state, int serverTime, const usercmd_t *cmd)
+{
+	int slot;
+	int64_t cutoff = (int64_t)serverTime - state->retentionMs - FLYING_RESPAWN_SAMPLE_MARGIN_MS;
+	if (!state->historyCapacity || !cmd || state->replay.active) return;
+	if (state->executionCount && serverTime < state->executionCommands[FR_Index(state->executionHead, state->executionCount - 1, state->historyCapacity)].serverTime) return;
+	while (state->executionCount > 1 && state->executionCommands[FR_Index(state->executionHead, 1, state->historyCapacity)].serverTime <= cutoff) {
+		state->executionDroppedThrough = state->executionCommands[state->executionHead].serverTime;
+		state->executionHead = FR_Index(state->executionHead, 1, state->historyCapacity);
+		state->executionCount--;
+	}
+	if (state->executionCount == state->historyCapacity) {
+		state->executionDroppedThrough = state->executionCommands[state->executionHead].serverTime;
+		state->executionHead = FR_Index(state->executionHead, 1, state->historyCapacity);
+		state->executionCount--;
+	}
+	slot = FR_Index(state->executionHead, state->executionCount++, state->historyCapacity);
+	state->executionCommands[slot].serverTime = serverTime;
+	state->executionCommands[slot].cmd = *cmd;
+	if (state->automaticCheckpoint.pending && !FR_AppendCapture(&state->automaticCheckpoint, &state->executionCommands[slot]))
 		FR_ClearCapture(&state->automaticCheckpoint);
 	state->historyGeneration++;
 }
@@ -174,8 +206,12 @@ void G_FlyingRespawn_RecordState(flyingRespawnState_t *state, int serverTime, co
 	state->historyGeneration++;
 }
 
-qboolean G_FlyingRespawn_SelectHistory(const flyingRespawnState_t *state, int targetServerTime, int endServerTime, flyingRespawnSelection_t *selection)
+static qboolean FR_SelectHistory(const flyingRespawnState_t *state, int targetServerTime, int endServerTime, flyingRespawnSelection_t *selection, qboolean executionHistory)
 {
+	const flyingRespawnRawCmd_t *commands = executionHistory ? state->executionCommands : state->rawCommands;
+	int head = executionHistory ? state->executionHead : state->commandHead;
+	int count = executionHistory ? state->executionCount : state->commandCount;
+	int dropped = executionHistory ? state->executionDroppedThrough : state->commandDroppedThrough;
 	int i, snapshot = -1;
 	flyingRespawnSelection_t result;
 	if (!selection || targetServerTime > endServerTime || !state->historyCapacity) return qfalse;
@@ -187,11 +223,12 @@ qboolean G_FlyingRespawn_SelectHistory(const flyingRespawnState_t *state, int ta
 	}
 	if (snapshot < 0) return qfalse;
 	result.snapshot = state->movementStates[snapshot];
-	if (result.snapshot.serverTime < state->commandDroppedThrough) return qfalse;
+	if (result.snapshot.serverTime < dropped) return qfalse;
+	result.executionHistory = executionHistory;
 	result.endServerTime = endServerTime;
 	result.historyGeneration = state->historyGeneration;
-	for (i = 0; i < state->commandCount; i++) {
-		int time = state->rawCommands[FR_Index(state->commandHead, i, state->historyCapacity)].serverTime;
+	for (i = 0; i < count; i++) {
+		int time = commands[FR_Index(head, i, state->historyCapacity)].serverTime;
 		if (time <= result.snapshot.serverTime) continue;
 		if (time > endServerTime) break;
 		if (!result.commandCount) result.firstCommand = i;
@@ -201,10 +238,23 @@ qboolean G_FlyingRespawn_SelectHistory(const flyingRespawnState_t *state, int ta
 	return qtrue;
 }
 
+qboolean G_FlyingRespawn_SelectHistory(const flyingRespawnState_t *state, int targetServerTime, int endServerTime, flyingRespawnSelection_t *selection)
+{
+	return FR_SelectHistory(state, targetServerTime, endServerTime, selection, qfalse);
+}
+
+qboolean G_FlyingRespawn_SelectExecutionHistory(const flyingRespawnState_t *state, int targetServerTime, int endServerTime, flyingRespawnSelection_t *selection)
+{
+	return FR_SelectHistory(state, targetServerTime, endServerTime, selection, qtrue);
+}
+
 qboolean G_FlyingRespawn_GetSelectedCmd(const flyingRespawnState_t *state, const flyingRespawnSelection_t *selection, int index, flyingRespawnRawCmd_t *cmd)
 {
 	if (!selection || !cmd || selection->historyGeneration != state->historyGeneration || index < 0 || index >= selection->commandCount) return qfalse;
-	*cmd = state->rawCommands[FR_Index(state->commandHead, selection->firstCommand + index, state->historyCapacity)];
+	if (selection->executionHistory)
+		*cmd = state->executionCommands[FR_Index(state->executionHead, selection->firstCommand + index, state->historyCapacity)];
+	else
+		*cmd = state->rawCommands[FR_Index(state->commandHead, selection->firstCommand + index, state->historyCapacity)];
 	return qtrue;
 }
 
@@ -212,7 +262,7 @@ qboolean G_FlyingRespawn_BeginTestReplay(flyingRespawnState_t *state, int server
 {
 	flyingRespawnSelection_t selection;
 	if (!state->testMode || state->replay.active || durationMs < 0 || durationMs > FLYING_RESPAWN_MAX_TEST_MS || (int64_t)serverTime - durationMs < INT_MIN) return qfalse;
-	if (!G_FlyingRespawn_SelectHistory(state, serverTime - durationMs, serverTime, &selection)) return qfalse;
+	if (!G_FlyingRespawn_SelectExecutionHistory(state, serverTime - durationMs, serverTime, &selection)) return qfalse;
 	memset(&state->replay, 0, sizeof(state->replay));
 	state->replay.active = state->replay.testReplay = qtrue;
 	state->replay.selection = selection;
@@ -309,7 +359,7 @@ static qboolean FR_FreezeHistory(const flyingRespawnState_t *state, int serverTi
 	flyingRespawnRawCmd_t cmd;
 	int i;
 	if (rewindMs < 0 || (int64_t)serverTime - rewindMs < INT_MIN ||
-		!G_FlyingRespawn_SelectHistory(state, serverTime - rewindMs, serverTime, &selection)) return qfalse;
+		!G_FlyingRespawn_SelectExecutionHistory(state, serverTime - rewindMs, serverTime, &selection)) return qfalse;
 	capture->start = selection.snapshot;
 	for (i = 0; i < selection.commandCount; ++i) {
 		if (!G_FlyingRespawn_GetSelectedCmd(state, &selection, i, &cmd) || !FR_AppendCapture(capture, &cmd)) {

@@ -6008,6 +6008,10 @@ static void FlyingRespawnThink(gentity_t *ent)
 		/* Preserve held input; only its timestamp is normalized for the next legal step. */
 		ent->client->pers.cmd.serverTime = level.time > ent->client->ps.commandTime ? level.time : ent->client->ps.commandTime + 1;
 	}
+	/* Capture the actual invocation, after synchronous/forced timestamp and input choices.
+	 * Receipt history stays untouched; coalesced receipts are never replayed as extra steps. */
+	if (FlyingRespawnPlayer(ent))
+		G_FlyingRespawn_RecordExecutionCmd(state, level.time, &ent->client->pers.cmd);
 	ClientThink_real(ent);
 	FlyingRespawnPostMovement(ent);
 }

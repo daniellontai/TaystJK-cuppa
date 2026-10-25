@@ -41,6 +41,7 @@ typedef struct {
 	qboolean valid;
 	flyingRespawnSnapshot_t snapshot;
 	flyingRespawnSnapshot_t start, handoff;
+	/* Frozen applied commands, separate from the immutable raw receipt ring. */
 	flyingRespawnRawCmd_t *commands;
 	int commandCount, commandCapacity;
 	qboolean pending;
@@ -53,6 +54,7 @@ typedef struct {
 	int endServerTime;
 	int firstCommand, commandCount;
 	unsigned int historyGeneration;
+	qboolean executionHistory;
 } flyingRespawnSelection_t;
 
 typedef struct {
@@ -69,9 +71,12 @@ typedef struct {
 	/* These are distinct capture owners; run restart clears only automatic capture. */
 	flyingRespawnCapture_t manualSave, automaticCheckpoint;
 	flyingRespawnRawCmd_t *rawCommands;
+	/* Commands actually passed to normal movement, including coalesced/forced server steps. */
+	flyingRespawnRawCmd_t *executionCommands;
 	flyingRespawnSnapshot_t *movementStates;
 	int commandHead, commandCount, stateHead, stateCount, historyCapacity;
 	int commandDroppedThrough, stateDroppedThrough;
+	int executionHead, executionCount, executionDroppedThrough;
 	unsigned int historyGeneration;
 	int rewindMs, releaseOffsetMs, retentionMs;
 	qboolean testMode;
@@ -90,8 +95,10 @@ void G_FlyingRespawn_FreeClient(flyingRespawnState_t *state);
 qboolean G_FlyingRespawn_Configure(flyingRespawnState_t *state, int rewindMs, int releaseOffsetMs, int testMode);
 void G_FlyingRespawn_ResetRun(flyingRespawnState_t *state, int serverTime);
 void G_FlyingRespawn_RecordRawCmd(flyingRespawnState_t *state, int serverTime, const usercmd_t *cmd);
+void G_FlyingRespawn_RecordExecutionCmd(flyingRespawnState_t *state, int serverTime, const usercmd_t *cmd);
 void G_FlyingRespawn_RecordState(flyingRespawnState_t *state, int serverTime, const flyingRespawnMovement_t *movement);
 qboolean G_FlyingRespawn_SelectHistory(const flyingRespawnState_t *state, int targetServerTime, int endServerTime, flyingRespawnSelection_t *selection);
+qboolean G_FlyingRespawn_SelectExecutionHistory(const flyingRespawnState_t *state, int targetServerTime, int endServerTime, flyingRespawnSelection_t *selection);
 qboolean G_FlyingRespawn_GetSelectedCmd(const flyingRespawnState_t *state, const flyingRespawnSelection_t *selection, int index, flyingRespawnRawCmd_t *cmd);
 qboolean G_FlyingRespawn_BeginTestReplay(flyingRespawnState_t *state, int serverTime, int durationMs);
 void G_FlyingRespawn_ReadMovement(flyingRespawnMovement_t *movement, const playerState_t *ps, int movementStyle, int checkpoints, int courseID);
