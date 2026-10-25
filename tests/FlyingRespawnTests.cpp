@@ -474,3 +474,174 @@ BOOST_AUTO_TEST_CASE(flying_respawn_manual_replays_only_coalesced_synchronous_ex
     BOOST_CHECK(!G_FlyingRespawn_NextManualCmd(&h.state, 2100, &step));
     BOOST_CHECK(G_FlyingRespawn_FinishManualReplay(&h.state, 2100, qtrue));
 }
+
+// Catches treating absent/invalid mapper values as zero, or permitting negative release.
+BOOST_AUTO_TEST_CASE(flying_respawn_checkpoint_mapper_settings)
+{
+    flyingRespawnCheckpointConfig_t config = {};
+    G_FlyingRespawn_ParseCheckpointConfig(&config, nullptr, nullptr, nullptr);
+    BOOST_CHECK(!config.disabled);
+    BOOST_CHECK(!config.hasRewind);
+    BOOST_CHECK(!config.hasRelease);
+    G_FlyingRespawn_ParseCheckpointConfig(&config, "1", "2500", "375");
+    BOOST_CHECK(config.disabled);
+    BOOST_CHECK(config.hasRewind);
+    BOOST_CHECK_EQUAL(config.rewindMs, 2500);
+    BOOST_CHECK(config.hasRelease);
+    BOOST_CHECK_EQUAL(config.releaseMs, 375);
+    G_FlyingRespawn_ParseCheckpointConfig(&config, "0", "-1", "-400");
+    BOOST_CHECK(!config.disabled);
+    BOOST_CHECK(!config.hasRewind);
+    BOOST_CHECK(config.hasRelease);
+    BOOST_CHECK_EQUAL(config.releaseMs, 0);
+    for (const char* invalid : {"", "12ms", "2147483648", "no"}) {
+        G_FlyingRespawn_ParseCheckpointConfig(&config, nullptr, invalid, invalid);
+        BOOST_CHECK(!config.hasRewind);
+        BOOST_CHECK(!config.hasRelease);
+    }
+}
+
+// Catches map overrides being pruned by shorter defaults and timer restart keeping old owners.
+BOOST_AUTO_TEST_CASE(flying_respawn_checkpoint_run_defaults_and_map_retention)
+{
+    FlyingHistory h;
+    BOOST_REQUIRE(G_FlyingRespawn_OnTimerStart(&h.state, 1000, 100, 50, 0, 400));
+    BOOST_CHECK_EQUAL(h.state.rewindMs, 100);
+    BOOST_CHECK_EQUAL(h.state.releaseOffsetMs, 50);
+    BOOST_CHECK_EQUAL(h.state.retentionMs, 400);
+    flyingRespawnMovement_t movement = {};
+    usercmd_t cmd = {};
+    for (int time : {1000, 1100, 1200, 1300, 1400, 1500}) {
+        cmd.serverTime = movement.commandTime = time;
+        G_FlyingRespawn_RecordExecutionCmd(&h.state, time, &cmd);
+        G_FlyingRespawn_RecordState(&h.state, time, &movement);
+    }
+    flyingRespawnCheckpointConfig_t config = {};
+    BOOST_REQUIRE(G_FlyingRespawn_OnCheckpointTouch(&h.state, 1500, 20, &config, &movement));
+    BOOST_CHECK_EQUAL(h.state.automaticCheckpoint.start.serverTime, 1400);
+    BOOST_CHECK_EQUAL(h.state.automaticCheckpoint.releaseServerTime, 1550);
+    G_FlyingRespawn_ParseCheckpointConfig(&config, "0", "400", "0");
+    BOOST_REQUIRE(G_FlyingRespawn_OnCheckpointTouch(&h.state, 1500, 21, &config, &movement));
+    BOOST_CHECK_EQUAL(h.state.automaticCheckpoint.start.serverTime, 1100);
+    BOOST_REQUIRE(G_FlyingRespawn_CaptureManual(&h.state, 1500, &movement));
+    h.state.respawnCount = 4;
+    h.state.runInvalid = qtrue;
+    h.state.replay.active = qtrue;
+    BOOST_REQUIRE(G_FlyingRespawn_OnTimerStart(&h.state, 2000, 200, 0, 0, 400));
+    BOOST_CHECK_EQUAL(h.state.rewindMs, 200);
+    BOOST_CHECK_EQUAL(h.state.releaseOffsetMs, 0);
+    BOOST_CHECK(!h.state.automaticCheckpoint.valid);
+    BOOST_CHECK(!h.state.automaticCheckpoint.pending);
+    BOOST_CHECK(h.state.automaticCheckpoint.commands == nullptr);
+    BOOST_CHECK(h.state.manualSave.valid);
+    BOOST_CHECK(!h.state.replay.active);
+    BOOST_CHECK(!h.state.runInvalid);
+    BOOST_CHECK_EQUAL(h.state.respawnCount, 0);
+    BOOST_CHECK_EQUAL(G_FlyingRespawn_GetSecondaryElapsed(&h.state, 2050), 50);
+}
+
+// Catches disabled, pending, or uncapturable later checkpoints falling back to older targets.
+BOOST_AUTO_TEST_CASE(flying_respawn_checkpoint_later_touch_invalidates_without_fallback)
+{
+    FlyingHistory h;
+    BOOST_REQUIRE(G_FlyingRespawn_OnTimerStart(&h.state, 1000, 0, 0, 0, 0));
+    flyingRespawnMovement_t movement = {};
+    flyingRespawnCheckpointConfig_t config = {};
+    BOOST_REQUIRE(G_FlyingRespawn_OnCheckpointTouch(&h.state, 1100, 20, &config, &movement));
+    BOOST_CHECK(h.state.automaticCheckpoint.valid);
+    BOOST_CHECK_EQUAL(h.state.automaticCheckpoint.checkpointEntityNum, 20);
+    config.disabled = qtrue;
+    BOOST_CHECK(!G_FlyingRespawn_OnCheckpointTouch(&h.state, 1200, 21, &config, &movement));
+    BOOST_CHECK(!h.state.automaticCheckpoint.valid);
+    BOOST_CHECK(!h.state.automaticCheckpoint.pending);
+    config.disabled = qfalse;
+    BOOST_REQUIRE(G_FlyingRespawn_OnCheckpointTouch(&h.state, 1300, 22, &config, &movement));
+    G_FlyingRespawn_ParseCheckpointConfig(&config, "0", "0", "100");
+    BOOST_REQUIRE(G_FlyingRespawn_OnCheckpointTouch(&h.state, 1400, 23, &config, &movement));
+    BOOST_CHECK(!h.state.automaticCheckpoint.valid);
+    BOOST_CHECK(h.state.automaticCheckpoint.pending);
+    BOOST_CHECK_EQUAL(h.state.automaticCheckpoint.snapshot.serverTime, 1400);
+    BOOST_CHECK(!G_FlyingRespawn_CaptureAutomaticHandoff(&h.state, 1499, &movement));
+    BOOST_REQUIRE(G_FlyingRespawn_CaptureAutomaticHandoff(&h.state, 1500, &movement));
+    BOOST_CHECK(h.state.automaticCheckpoint.valid);
+    G_FlyingRespawn_ParseCheckpointConfig(&config, "0", "500", "0");
+    BOOST_CHECK(!G_FlyingRespawn_OnCheckpointTouch(&h.state, 1600, 24, &config, &movement));
+    BOOST_CHECK(!h.state.automaticCheckpoint.valid);
+    BOOST_CHECK(!h.state.automaticCheckpoint.pending);
+}
+
+// Catches replay capture/secondary recommits and applying pre-contact instead of post-contact progress.
+BOOST_AUTO_TEST_CASE(flying_respawn_checkpoint_expected_contact_restores_only_progress)
+{
+    FlyingHistory h;
+    BOOST_REQUIRE(G_FlyingRespawn_OnTimerStart(&h.state, 1000, 0, 0, 0, 0));
+    flyingRespawnCheckpointConfig_t config = {};
+    flyingRespawnMovement_t movement = {};
+    movement.checkpoints = 7;
+    movement.courseID = 42;
+    movement.origin[0] = 100;
+    BOOST_REQUIRE(G_FlyingRespawn_OnCheckpointTouch(&h.state, 1200, 20, &config, &movement));
+    BOOST_CHECK_EQUAL(h.state.automaticCheckpoint.secondaryElapsedMs, 200);
+    h.state.replay.active = qtrue;
+    BOOST_CHECK(G_FlyingRespawn_IsExpectedCheckpointTouch(&h.state, 20));
+    BOOST_CHECK(!G_FlyingRespawn_IsExpectedCheckpointTouch(&h.state, 21));
+    h.state.replay.manualReplay = qtrue;
+    BOOST_CHECK(!G_FlyingRespawn_IsExpectedCheckpointTouch(&h.state, 20));
+    h.state.replay.manualReplay = qfalse;
+    h.state.replay.testReplay = qtrue;
+    BOOST_CHECK(!G_FlyingRespawn_IsExpectedCheckpointTouch(&h.state, 20));
+    h.state.replay.testReplay = qfalse;
+    movement.checkpoints = 0;
+    movement.courseID = 0;
+    movement.origin[0] = 999; // generic map interactions may change physical state
+    BOOST_REQUIRE(G_FlyingRespawn_ApplyExpectedCheckpointProgress(&h.state, &movement));
+    BOOST_CHECK_EQUAL(movement.checkpoints, 7);
+    BOOST_CHECK_EQUAL(movement.courseID, 42);
+    BOOST_CHECK_EQUAL(movement.origin[0], 999);
+    BOOST_CHECK(h.state.replay.checkpointTouched);
+    BOOST_CHECK(!G_FlyingRespawn_OnCheckpointTouch(&h.state, 2200, 21, &config, &movement));
+    BOOST_CHECK_EQUAL(h.state.automaticCheckpoint.snapshot.serverTime, 1200);
+    BOOST_CHECK_EQUAL(h.state.automaticCheckpoint.secondaryElapsedMs, 200);
+    // Static second-respawn uses the same progress operation without activating replay.
+    h.state.replay.active = qfalse;
+    movement.checkpoints = 0;
+    BOOST_REQUIRE(G_FlyingRespawn_ApplyExpectedCheckpointProgress(&h.state, &movement));
+    BOOST_CHECK_EQUAL(movement.checkpoints, 7);
+}
+
+// Catches positive-release captures restarting forever during continuous brush contact.
+BOOST_AUTO_TEST_CASE(flying_respawn_checkpoint_continuous_touch_and_reentry)
+{
+    FlyingHistory h;
+    BOOST_REQUIRE(G_FlyingRespawn_OnTimerStart(&h.state, 1000, 0, 500, 0, 0));
+    flyingRespawnMovement_t movement = {};
+    flyingRespawnCheckpointConfig_t config = {};
+    BOOST_REQUIRE(G_FlyingRespawn_OnCheckpointTouch(&h.state, 1100, 20, &config, &movement));
+    for (int time : {1150, 1300, 1550}) {
+        BOOST_CHECK(!G_FlyingRespawn_OnCheckpointTouch(&h.state, time, 20, &config, &movement));
+        BOOST_CHECK_EQUAL(h.state.automaticCheckpoint.releaseServerTime, 1600);
+    }
+    BOOST_REQUIRE(G_FlyingRespawn_CaptureAutomaticHandoff(&h.state, 1600, &movement));
+    BOOST_REQUIRE(G_FlyingRespawn_OnCheckpointTouch(&h.state, 1801, 20, &config, &movement));
+    BOOST_CHECK(!h.state.automaticCheckpoint.valid);
+    BOOST_CHECK_EQUAL(h.state.automaticCheckpoint.releaseServerTime, 2301);
+    config.disabled = qtrue;
+    BOOST_CHECK(!G_FlyingRespawn_OnCheckpointTouch(&h.state, 1802, 21, &config, &movement));
+    BOOST_CHECK(!h.state.automaticCheckpoint.pending);
+    BOOST_CHECK(!h.state.automaticCheckpoint.valid);
+}
+
+// Catches the first live frame after replay replacing the immutable checkpoint owner.
+BOOST_AUTO_TEST_CASE(flying_respawn_checkpoint_replay_contact_debounces_live_handoff)
+{
+    FlyingHistory h;
+    BOOST_REQUIRE(G_FlyingRespawn_OnTimerStart(&h.state, 1000, 0, 0, 0, 0));
+    flyingRespawnMovement_t movement = {};
+    flyingRespawnCheckpointConfig_t config = {};
+    BOOST_REQUIRE(G_FlyingRespawn_OnCheckpointTouch(&h.state, 1200, 20, &config, &movement));
+    h.state.replay.active = qtrue;
+    BOOST_CHECK(!G_FlyingRespawn_OnCheckpointTouch(&h.state, 5000, 20, &config, &movement));
+    h.state.replay.active = qfalse;
+    BOOST_CHECK(!G_FlyingRespawn_OnCheckpointTouch(&h.state, 5050, 20, &config, &movement));
+    BOOST_CHECK_EQUAL(h.state.automaticCheckpoint.snapshot.serverTime, 1200);
+}

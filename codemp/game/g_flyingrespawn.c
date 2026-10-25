@@ -1,6 +1,7 @@
 #include "g_flyingrespawn.h"
 #include "sqlite3.h"
 
+#include <errno.h>
 #include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -65,14 +66,16 @@ void G_FlyingRespawn_FreeClient(flyingRespawnState_t *state)
 	FR_ClearCapture(&state->automaticCheckpoint);
 }
 
-qboolean G_FlyingRespawn_Configure(flyingRespawnState_t *state, int rewindMs, int releaseOffsetMs, int testMode)
+static qboolean FR_Configure(flyingRespawnState_t *state, int rewindMs, int releaseOffsetMs, int testMode, int mapRewindMs)
 {
 	int retention, capacity;
 	flyingRespawnRawCmd_t *commands, *executions;
 	flyingRespawnSnapshot_t *snapshots;
 	if (rewindMs < 0 || releaseOffsetMs < 0 || rewindMs > INT_MAX - FLYING_RESPAWN_SAMPLE_MARGIN_MS - 2)
 		return qfalse;
-	retention = testMode == 1 && rewindMs < FLYING_RESPAWN_MAX_TEST_MS ? FLYING_RESPAWN_MAX_TEST_MS : rewindMs;
+	retention = mapRewindMs > rewindMs ? mapRewindMs : rewindMs;
+	if (retention > INT_MAX - FLYING_RESPAWN_SAMPLE_MARGIN_MS - 2) return qfalse;
+	if (testMode == 1 && retention < FLYING_RESPAWN_MAX_TEST_MS) retention = FLYING_RESPAWN_MAX_TEST_MS;
 	capacity = retention + FLYING_RESPAWN_SAMPLE_MARGIN_MS + 2; /* At most one distinct effective movement command per millisecond. */
 	if (state->historyCapacity == capacity && state->rewindMs == rewindMs && state->testMode == (testMode == 1)) {
 		state->releaseOffsetMs = releaseOffsetMs;
@@ -101,6 +104,11 @@ qboolean G_FlyingRespawn_Configure(flyingRespawnState_t *state, int rewindMs, in
 	return qtrue;
 }
 
+qboolean G_FlyingRespawn_Configure(flyingRespawnState_t *state, int rewindMs, int releaseOffsetMs, int testMode)
+{
+	return FR_Configure(state, rewindMs, releaseOffsetMs, testMode, rewindMs);
+}
+
 void G_FlyingRespawn_ResetSecondarySegment(flyingRespawnState_t *state, int serverTime, int baseMs)
 {
 	state->secondaryBaseMs = baseMs < 0 ? 0 : baseMs;
@@ -121,6 +129,7 @@ void G_FlyingRespawn_ResetRun(flyingRespawnState_t *state, int serverTime)
 	FR_ClearCapture(&state->automaticCheckpoint);
 	memset(&state->replay, 0, sizeof(state->replay));
 	state->respawnCount = 0;
+	state->hasCheckpointContact = qfalse;
 	state->runInvalid = state->mismatch = qfalse;
 	state->commandHead = state->commandCount = state->stateHead = state->stateCount = 0;
 	state->executionHead = state->executionCount = 0;
@@ -128,6 +137,88 @@ void G_FlyingRespawn_ResetRun(flyingRespawnState_t *state, int serverTime)
 	state->executionDroppedThrough = INT_MIN;
 	state->historyGeneration++;
 	G_FlyingRespawn_ResetSecondarySegment(state, serverTime, 0);
+}
+
+static qboolean FR_ParseMilliseconds(const char *text, int *value)
+{
+	char *end;
+	long parsed;
+	if (!text || !*text) return qfalse;
+	errno = 0;
+	parsed = strtol(text, &end, 10);
+	if (errno == ERANGE || end == text || *end || parsed < INT_MIN || parsed > INT_MAX) return qfalse;
+	*value = (int)parsed;
+	return qtrue;
+}
+
+void G_FlyingRespawn_ParseCheckpointConfig(flyingRespawnCheckpointConfig_t *config, const char *disabled, const char *rewind, const char *release)
+{
+	int value;
+	memset(config, 0, sizeof(*config));
+	config->disabled = FR_ParseMilliseconds(disabled, &value) && value == 1 ? qtrue : qfalse;
+	if (FR_ParseMilliseconds(rewind, &value) && value >= 0 && value <= INT_MAX - FLYING_RESPAWN_SAMPLE_MARGIN_MS - 2) {
+		config->hasRewind = qtrue;
+		config->rewindMs = value;
+	}
+	if (FR_ParseMilliseconds(release, &value)) {
+		config->hasRelease = qtrue;
+		config->releaseMs = value < 0 ? 0 : value;
+	}
+}
+
+qboolean G_FlyingRespawn_OnTimerStart(flyingRespawnState_t *state, int time, int rewindMs, int releaseMs, int testMode, int mapRewindMs)
+{
+	qboolean configured = FR_Configure(state, rewindMs, releaseMs, testMode, mapRewindMs);
+	/* A failed configuration must not expose the preceding run's checkpoint. */
+	G_FlyingRespawn_ResetRun(state, time);
+	if (!configured) G_FlyingRespawn_FreeHistory(state);
+	return configured;
+}
+
+qboolean G_FlyingRespawn_OnCheckpointTouch(flyingRespawnState_t *state, int time, int entityNum, const flyingRespawnCheckpointConfig_t *config, const flyingRespawnMovement_t *movement)
+{
+	int rewindMs, releaseMs;
+	if (state->replay.active) {
+		/* Continue the contact debounce across the replay-to-live handoff. */
+		if (G_FlyingRespawn_IsExpectedCheckpointTouch(state, entityNum)) {
+			state->hasCheckpointContact = qtrue;
+			state->lastCheckpointEntityNum = entityNum;
+			state->lastCheckpointTouchTime = time;
+		}
+		return qfalse;
+	}
+	/* Engine touches repeat while inside a brush. A gap permits a new crossing. */
+	if (state->hasCheckpointContact && state->lastCheckpointEntityNum == entityNum &&
+		time >= state->lastCheckpointTouchTime && (int64_t)time - state->lastCheckpointTouchTime <= 250) {
+		state->lastCheckpointTouchTime = time;
+		return qfalse;
+	}
+	state->hasCheckpointContact = qtrue;
+	state->lastCheckpointEntityNum = entityNum;
+	state->lastCheckpointTouchTime = time;
+	FR_ClearCapture(&state->automaticCheckpoint);
+	if (!state->secondaryRunning || !config || config->disabled) return qfalse;
+	rewindMs = config->hasRewind ? config->rewindMs : state->rewindMs;
+	releaseMs = config->hasRelease ? config->releaseMs : state->releaseOffsetMs;
+	if (!G_FlyingRespawn_CaptureAutomaticStart(state, time, movement, rewindMs, releaseMs)) return qfalse;
+	state->automaticCheckpoint.checkpointEntityNum = entityNum;
+	return qtrue;
+}
+
+qboolean G_FlyingRespawn_IsExpectedCheckpointTouch(const flyingRespawnState_t *state, int entityNum)
+{
+	return state->replay.active && !state->replay.manualReplay && !state->replay.testReplay &&
+		state->automaticCheckpoint.valid && state->automaticCheckpoint.checkpointEntityNum == entityNum;
+}
+
+qboolean G_FlyingRespawn_ApplyExpectedCheckpointProgress(flyingRespawnState_t *state, flyingRespawnMovement_t *movement)
+{
+	if (!movement || !state->automaticCheckpoint.valid) return qfalse;
+	movement->checkpoints = state->automaticCheckpoint.snapshot.movement.checkpoints;
+	movement->courseID = state->automaticCheckpoint.snapshot.movement.courseID;
+	if (state->replay.active && !state->replay.manualReplay && !state->replay.testReplay)
+		state->replay.checkpointTouched = qtrue;
+	return qtrue;
 }
 
 void G_FlyingRespawn_RecordRawCmd(flyingRespawnState_t *state, int serverTime, const usercmd_t *cmd)

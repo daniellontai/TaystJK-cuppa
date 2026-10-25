@@ -1435,6 +1435,21 @@ static QINLINE int GetTimeMS() {
 
 //void G_SoundPrivate( gentity_t *ent, int channel, int soundIndex );
 void G_UpdatePlaytime(int null, char *username, int seconds );
+static void FlyingRespawnTimerStart(gentity_t *player)
+{
+	int i, mapRewindMs = 0;
+	for (i = MAX_CLIENTS; i < level.num_entities; ++i) {
+		gentity_t *checkpoint = &g_entities[i];
+		if (checkpoint->inuse && checkpoint->classname && !Q_stricmp(checkpoint->classname, "df_trigger_checkpoint") &&
+			!checkpoint->flyingRespawnCheckpoint.disabled && checkpoint->flyingRespawnCheckpoint.hasRewind &&
+			checkpoint->flyingRespawnCheckpoint.rewindMs > mapRewindMs)
+			mapRewindMs = checkpoint->flyingRespawnCheckpoint.rewindMs;
+	}
+	G_FlyingRespawn_OnTimerStart(&player->client->pers.flyingRespawn, level.time,
+		g_flyingRespawnRewindMs.integer, g_flyingRespawnReleaseOffsetMs.integer,
+		g_flyingRespawnTestMode.integer, mapRewindMs);
+}
+
 void TimerStart(gentity_t *trigger, gentity_t *player, trace_t *trace) {//JAPRO Timers
 	int lessTime;
 	char userinfo[MAX_INFO_STRING];
@@ -1577,6 +1592,7 @@ void TimerStart(gentity_t *trigger, gentity_t *player, trace_t *trace) {//JAPRO 
 	player->client->pers.stats.displacementSamples = 0;
 	player->client->pers.stats.checkpoints = 0;
 	player->client->pers.stats.courseID = trigger->courseID;
+	FlyingRespawnTimerStart(player);
 
 	// Snapshot plugin state at timer start for mid-run change detection
 	trap->GetUserinfo(player - g_entities, userinfo, sizeof(userinfo));
@@ -1884,8 +1900,20 @@ void TimerStop(gentity_t *trigger, gentity_t *player, trace_t *trace) {//JAPRO T
 	//Set coopstarted to false?
 }
 
+static void FlyingRespawnCheckpointTouch(gentity_t *trigger, gentity_t *player, qboolean disabled)
+{
+	flyingRespawnMovement_t movement;
+	flyingRespawnCheckpointConfig_t config = trigger->flyingRespawnCheckpoint;
+	if (!player->client->pers.stats.startTime) return;
+	if (disabled) config.disabled = qtrue;
+	G_FlyingRespawn_CaptureMovement(player, &movement);
+	G_FlyingRespawn_OnCheckpointTouch(&player->client->pers.flyingRespawn, level.time,
+		trigger->s.number, &config, &movement);
+}
+
 void TimerCheckpoint(gentity_t *trigger, gentity_t *player, trace_t *trace) {//JAPRO Timers
 	int mandatoryCheckpoint = 0;
+	flyingRespawnState_t *flyingRespawn;
 	if (!player->client)
 		return;
 	if (player->client->sess.sessionTeam != TEAM_FREE)
@@ -1896,7 +1924,21 @@ void TimerCheckpoint(gentity_t *trigger, gentity_t *player, trace_t *trace) {//J
 		return;
 	if  (player->client->ps.pm_type != PM_NORMAL && player->client->ps.pm_type != PM_FLOAT && player->client->ps.pm_type != PM_FREEZE && player->client->ps.pm_type != PM_JETPACK)
 		return;
+	flyingRespawn = &player->client->pers.flyingRespawn;
+	if (G_FlyingRespawn_IsExpectedCheckpointTouch(flyingRespawn, trigger->s.number)) {
+		flyingRespawnMovement_t movement;
+		G_FlyingRespawn_CaptureMovement(player, &movement);
+		G_FlyingRespawn_ApplyExpectedCheckpointProgress(flyingRespawn, &movement);
+		player->client->pers.stats.checkpoints = movement.checkpoints;
+		player->client->pers.stats.courseID = movement.courseID;
+		G_FlyingRespawn_OnCheckpointTouch(flyingRespawn, level.time, trigger->s.number,
+			&trigger->flyingRespawnCheckpoint, &movement);
+		/* No new capture, ordinary text, reset timer, or secondary-clock commit. */
+		return;
+	}
+	if (flyingRespawn->replay.active && (trigger->spawnflags & 2)) return;
 	if (player->client->pers.stats.startTime && trigger && trigger->spawnflags & 2) { //Instead of a checkpoint, make it reset their time (they went out of bounds or something)
+		FlyingRespawnCheckpointTouch(trigger, player, qtrue);
 		if (player->client->pers.stats.startTime)
 			trap->SendServerCommand( player-g_entities, "cp \"Timer reset\n\n\n\n\n\n\n\n\n\n\""); //Send message?
 		player->client->pers.stats.startTime = 0;
@@ -1905,6 +1947,7 @@ void TimerCheckpoint(gentity_t *trigger, gentity_t *player, trace_t *trace) {//J
 		return;
 	}
 	if (!(trigger->spawnflags & 4) && trigger->objective > 0 && ((player->client->pers.stats.checkpoints & trigger->objective) == trigger->objective)) {
+		FlyingRespawnCheckpointTouch(trigger, player, qfalse);
 		return;
 	}
 
@@ -1913,6 +1956,7 @@ void TimerCheckpoint(gentity_t *trigger, gentity_t *player, trace_t *trace) {//J
 
 		if (trigger->spawnflags & 4) { //Spawnflags 4 on checkpoint unsets the objective #
 			player->client->pers.stats.checkpoints &= ~trigger->objective;
+			FlyingRespawnCheckpointTouch(trigger, player, qfalse);
 			return; //Todo, notify the client or?
 		}
 		else
@@ -1926,6 +1970,9 @@ void TimerCheckpoint(gentity_t *trigger, gentity_t *player, trace_t *trace) {//J
 			}
 		}
 	}
+
+	FlyingRespawnCheckpointTouch(trigger, player, qfalse);
+	if (flyingRespawn->replay.active) return;
 
 	if (player->client->pers.stats.startTime && (level.time - player->client->pers.stats.lastCheckpointTime > 1000)) { //make this more accurate with interp? or dosnt really matter ...
 		int i;
@@ -2527,6 +2574,14 @@ void SP_trigger_timer_checkpoint( gentity_t *self )
 			self->courseID = atoi(s);
 		else
 			self->courseID = 0;
+	}
+
+	{
+		char *disabled, *rewind, *release;
+		G_SpawnString("flyingrespawndisable", "", &disabled);
+		G_SpawnString("flyingrespawnrewind", "", &rewind);
+		G_SpawnString("flyingrespawnrelease", "", &release);
+		G_FlyingRespawn_ParseCheckpointConfig(&self->flyingRespawnCheckpoint, disabled, rewind, release);
 	}
 
 	self->touch = TimerCheckpoint;

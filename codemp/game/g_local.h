@@ -625,6 +625,7 @@ struct gentity_s {
 	int			awesomenoise_index;//japro
 	int			worldrecordnoise_index;//japro
 	int			courseID;
+	flyingRespawnCheckpointConfig_t flyingRespawnCheckpoint;
 	int			speakerEntity;
 
 	// timing variables

@@ -38,7 +38,13 @@ typedef struct {
 } flyingRespawnSnapshot_t;
 
 typedef struct {
+	qboolean disabled, hasRewind, hasRelease;
+	int rewindMs, releaseMs;
+} flyingRespawnCheckpointConfig_t;
+
+typedef struct {
 	qboolean valid;
+	int checkpointEntityNum;
 	flyingRespawnSnapshot_t snapshot;
 	flyingRespawnSnapshot_t start, handoff;
 	/* Frozen applied commands, separate from the immutable raw receipt ring. */
@@ -59,6 +65,7 @@ typedef struct {
 
 typedef struct {
 	qboolean active, testReplay, manualReplay;
+	qboolean checkpointTouched;
 	flyingRespawnSelection_t selection;
 	int commandCursor, startServerTime, releaseServerTime;
 	int mismatchCount;
@@ -83,6 +90,8 @@ typedef struct {
 	qboolean secondaryRunning;
 	int secondaryBaseMs, secondarySegmentStart;
 	int respawnCount;
+	qboolean hasCheckpointContact;
+	int lastCheckpointEntityNum, lastCheckpointTouchTime;
 	qboolean runInvalid, mismatch;
 	flyingRespawnReplay_t replay;
 } flyingRespawnState_t;
@@ -94,6 +103,16 @@ void G_FlyingRespawn_FreeHistory(flyingRespawnState_t *state);
 void G_FlyingRespawn_FreeClient(flyingRespawnState_t *state);
 qboolean G_FlyingRespawn_Configure(flyingRespawnState_t *state, int rewindMs, int releaseOffsetMs, int testMode);
 void G_FlyingRespawn_ResetRun(flyingRespawnState_t *state, int serverTime);
+/* Optional malformed values inherit; a negative mapper release clamps to zero. */
+void G_FlyingRespawn_ParseCheckpointConfig(flyingRespawnCheckpointConfig_t *config, const char *disabled, const char *rewind, const char *release);
+/* Retain the largest map override, while snapshotting defaults independently. */
+qboolean G_FlyingRespawn_OnTimerStart(flyingRespawnState_t *state, int serverTime, int rewindMs, int releaseMs, int testMode, int mapRewindMs);
+/* Call after normal progress. Every new crossing discards the prior owner; continuous
+ * same-entity touches (at most 250 ms apart) keep the original contact/deadline. */
+qboolean G_FlyingRespawn_OnCheckpointTouch(flyingRespawnState_t *state, int serverTime, int entityNum, const flyingRespawnCheckpointConfig_t *config, const flyingRespawnMovement_t *movement);
+qboolean G_FlyingRespawn_IsExpectedCheckpointTouch(const flyingRespawnState_t *state, int entityNum);
+/* Also used by static second-respawn after installing the recorded contact pose. */
+qboolean G_FlyingRespawn_ApplyExpectedCheckpointProgress(flyingRespawnState_t *state, flyingRespawnMovement_t *movement);
 void G_FlyingRespawn_RecordRawCmd(flyingRespawnState_t *state, int serverTime, const usercmd_t *cmd);
 void G_FlyingRespawn_RecordExecutionCmd(flyingRespawnState_t *state, int serverTime, const usercmd_t *cmd);
 void G_FlyingRespawn_RecordState(flyingRespawnState_t *state, int serverTime, const flyingRespawnMovement_t *movement);
