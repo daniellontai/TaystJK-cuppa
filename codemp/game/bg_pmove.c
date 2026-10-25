@@ -5247,7 +5247,7 @@ static void PM_DodgeMove(int forward, int right)
 		DODGE_SPEED = pm->ps->speed * 1.75f;
 		DODGE_JUMP_SPEED = 0;
 #ifdef _GAME
-		G_PlayEffect(EFFECT_LANDING_SAND, pm->ps->origin, dodgedir);//Should be spot on wall, and wallnormal, a better, predicted way to do this?
+		G_PlayEffectForEntity((gentity_t *)pm_entSelf, EFFECT_LANDING_SAND, pm->ps->origin, dodgedir);//Should be spot on wall, and wallnormal, a better, predicted way to do this?
 #endif
 	}
 
@@ -5320,8 +5320,8 @@ static void PM_ThrustMove(void)
 		pm->ps->fd.forcePower = pm->ps->fd.forcePower * 0.25f;
 #ifdef _GAME
 		gentity_t *self = (gentity_t *)pm_entSelf;
-		G_PlayEffect(EFFECT_LANDING_SNOW, pm->ps->origin, pml.forward);//Should be spot on wall, and wallnormal, a better, predicted way to do this?
-		G_PlayEffectID(G_EffectIndex("env/powerbolt"), pm->ps->origin, pm->ps->viewangles);
+		G_PlayEffectForEntity((gentity_t *)pm_entSelf, EFFECT_LANDING_SNOW, pm->ps->origin, pml.forward);//Should be spot on wall, and wallnormal, a better, predicted way to do this?
+		G_PlayEffectIDForEntity((gentity_t *)pm_entSelf, G_EffectIndex("env/powerbolt"), pm->ps->origin, pm->ps->viewangles);
 		G_Sound(self, CHAN_BODY, G_SoundIndex("sound/weapons/force/speed.wav"));
 #endif
 	}
@@ -5379,8 +5379,8 @@ static void PM_BlinkMove(void) //Just blink for now
 			pm->ps->fd.forcePower = 0;
 #ifdef _GAME
 		gentity_t *self = (gentity_t *)pm_entSelf;
-		G_PlayEffectID(G_EffectIndex("howler/sonic"), pm->ps->origin, pm->ps->viewangles);
-		G_PlayEffectID(G_EffectIndex("env/powerbolt_long"), pm->ps->origin, pm->ps->viewangles);
+		G_PlayEffectIDForEntity((gentity_t *)pm_entSelf, G_EffectIndex("howler/sonic"), pm->ps->origin, pm->ps->viewangles);
+		G_PlayEffectIDForEntity((gentity_t *)pm_entSelf, G_EffectIndex("env/powerbolt_long"), pm->ps->origin, pm->ps->viewangles);
 		G_Sound(self, CHAN_BODY, G_SoundIndex("sound/weapons/force/teamforce.mp3"));
 		pm->ps->fd.forceRageRecoveryTime = level.time + 10000; // ?
 #endif
@@ -5603,7 +5603,7 @@ static void PM_CheckWallJump( void )//loda fixme, wip
 
 		//PM_AddEvent( EV_FALL );
 #ifdef _GAME
-		G_PlayEffect( EFFECT_LANDING_SAND, trace.endpos, trace.plane.normal );//Should be spot on wall, and wallnormal, a better, predicted way to do this?
+		G_PlayEffectForEntity((gentity_t *)pm_entSelf, EFFECT_LANDING_SAND, trace.endpos, trace.plane.normal);//Should be spot on wall, and wallnormal, a better, predicted way to do this?
 #endif
 
 	/*
@@ -6361,7 +6361,7 @@ static void PM_CrashLandEffect( void )
 
 		if ( effectID != -1 )
 		{
-			G_PlayEffect( effectID, bottom, pml.groundTrace.plane.normal );
+			G_PlayEffectForEntity((gentity_t *)pm_entSelf, effectID, bottom, pml.groundTrace.plane.normal );
 		}
 	}
 }
@@ -8917,15 +8917,15 @@ static void PM_WaterEvents( void ) {		// FIXME?
 		{
 			if ( (tr.contents&CONTENTS_LAVA) )
 			{
-				G_PlayEffect( EFFECT_LAVA_SPLASH, tr.endpos, tr.plane.normal );
+				G_PlayEffectForEntity((gentity_t *)pm_entSelf, EFFECT_LAVA_SPLASH, tr.endpos, tr.plane.normal );
 			}
 			else if ( (tr.contents&CONTENTS_SLIME) )
 			{
-				G_PlayEffect( EFFECT_ACID_SPLASH, tr.endpos, tr.plane.normal );
+				G_PlayEffectForEntity((gentity_t *)pm_entSelf, EFFECT_ACID_SPLASH, tr.endpos, tr.plane.normal );
 			}
 			else //must be water
 			{
-				G_PlayEffect( EFFECT_WATER_SPLASH, tr.endpos, tr.plane.normal );
+				G_PlayEffectForEntity((gentity_t *)pm_entSelf, EFFECT_WATER_SPLASH, tr.endpos, tr.plane.normal );
 			}
 		}
 	}

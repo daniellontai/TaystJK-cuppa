@@ -2068,6 +2068,7 @@ void SendPendingPredictableEvents( playerState_t *ps ) {
 		// send to everyone except the client who generated the event
 		t->r.svFlags |= SVF_NOTSINGLECLIENT;
 		t->r.singleClient = ps->clientNum;
+		G_CopyClientBroadcastAudience( t, &g_entities[ps->clientNum] );
 		// set back external event
 		ps->externalEvent = extEvent;
 	}

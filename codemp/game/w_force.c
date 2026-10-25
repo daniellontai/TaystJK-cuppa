@@ -59,6 +59,16 @@ gentity_t *G_PreDefSound(vec3_t org, int pdSound)
 
 	return te;
 }
+
+gentity_t *G_PreDefSoundForEntity(gentity_t *source, vec3_t org, int pdSound)
+{
+	gentity_t	*te;
+
+	te = G_PreDefSound(org, pdSound);
+	G_CopyClientBroadcastAudience(te, source);
+
+	return te;
+}
 const int forcePowerMinRank[NUM_FORCE_POWER_LEVELS][NUM_FORCE_POWERS] = //0 == neutral
 {
 	{
@@ -2624,7 +2634,7 @@ int WP_GetVelocityForForceJump( gentity_t *self, vec3_t jumpVel, usercmd_t *ucmd
 
 	G_MuteSound(self->client->ps.fd.killSoundEntIndex[TRACK_CHANNEL_1-50], CHAN_VOICE);
 
-	G_PreDefSound(self->client->ps.origin, PDSOUND_FORCEJUMP);
+	G_PreDefSoundForEntity(self, self->client->ps.origin, PDSOUND_FORCEJUMP);
 
 	if (self->client->ps.fd.forceJumpCharge < JUMP_VELOCITY+40)
 	{ //give him at least a tiny boost from just a tap
@@ -5601,7 +5611,7 @@ qboolean G_SpecialRollGetup(gentity_t *self)
 	}
 	else if (self->client->pers.cmd.upmove)
 	{
-		G_PreDefSound(self->client->ps.origin, PDSOUND_FORCEJUMP);
+		G_PreDefSoundForEntity(self, self->client->ps.origin, PDSOUND_FORCEJUMP);
 		self->client->ps.forceDodgeAnim = 2;
 		self->client->ps.forceHandExtendTime = level.time + 500;
 
@@ -5733,7 +5743,7 @@ void WP_ForcePowersUpdate( gentity_t *self, usercmd_t *ucmd )
 					if (self->client->pers.cmd.upmove &&
 						self->client->ps.fd.forcePowerLevel[FP_LEVITATION] > FORCE_LEVEL_1)
 					{ //force getup
-						G_PreDefSound(self->client->ps.origin, PDSOUND_FORCEJUMP);
+						G_PreDefSoundForEntity(self, self->client->ps.origin, PDSOUND_FORCEJUMP);
 						self->client->ps.forceDodgeAnim = 2;
 						self->client->ps.forceHandExtendTime = level.time + 500;
 
@@ -5936,7 +5946,7 @@ void WP_ForcePowersUpdate( gentity_t *self, usercmd_t *ucmd )
 
 	if (self->client->ps.fd.forceJumpSound)
 	{
-		G_PreDefSound(self->client->ps.origin, PDSOUND_FORCEJUMP);
+		G_PreDefSoundForEntity(self, self->client->ps.origin, PDSOUND_FORCEJUMP);
 		self->client->ps.fd.forceJumpSound = 0;
 	}
 
