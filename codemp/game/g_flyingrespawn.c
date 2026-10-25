@@ -129,7 +129,7 @@ void G_FlyingRespawn_ResetRun(flyingRespawnState_t *state, int serverTime)
 	FR_ClearCapture(&state->automaticCheckpoint);
 	memset(&state->replay, 0, sizeof(state->replay));
 	state->respawnCount = 0;
-	state->hasCheckpointContact = qfalse;
+	memset(state->checkpointContactSeen, 0, sizeof(state->checkpointContactSeen));
 	state->runInvalid = state->mismatch = qfalse;
 	state->commandHead = state->commandCount = state->stateHead = state->stateCount = 0;
 	state->executionHead = state->executionCount = 0;
@@ -178,24 +178,21 @@ qboolean G_FlyingRespawn_OnTimerStart(flyingRespawnState_t *state, int time, int
 qboolean G_FlyingRespawn_OnCheckpointTouch(flyingRespawnState_t *state, int time, int entityNum, const flyingRespawnCheckpointConfig_t *config, const flyingRespawnMovement_t *movement)
 {
 	int rewindMs, releaseMs;
+	if (entityNum < 0 || entityNum >= MAX_GENTITIES) return qfalse;
 	if (state->replay.active) {
-		/* Continue the contact debounce across the replay-to-live handoff. */
-		if (G_FlyingRespawn_IsExpectedCheckpointTouch(state, entityNum)) {
-			state->hasCheckpointContact = qtrue;
-			state->lastCheckpointEntityNum = entityNum;
-			state->lastCheckpointTouchTime = time;
-		}
+		/* Keep every overlapping contact continuous across the replay-to-live handoff. */
+		state->checkpointContactSeen[entityNum] = 1;
+		state->checkpointTouchTimes[entityNum] = time;
 		return qfalse;
 	}
 	/* Engine touches repeat while inside a brush. A gap permits a new crossing. */
-	if (state->hasCheckpointContact && state->lastCheckpointEntityNum == entityNum &&
-		time >= state->lastCheckpointTouchTime && (int64_t)time - state->lastCheckpointTouchTime <= 250) {
-		state->lastCheckpointTouchTime = time;
+	if (state->checkpointContactSeen[entityNum] && time >= state->checkpointTouchTimes[entityNum] &&
+		(int64_t)time - state->checkpointTouchTimes[entityNum] <= 250) {
+		state->checkpointTouchTimes[entityNum] = time;
 		return qfalse;
 	}
-	state->hasCheckpointContact = qtrue;
-	state->lastCheckpointEntityNum = entityNum;
-	state->lastCheckpointTouchTime = time;
+	state->checkpointContactSeen[entityNum] = 1;
+	state->checkpointTouchTimes[entityNum] = time;
 	FR_ClearCapture(&state->automaticCheckpoint);
 	if (!state->secondaryRunning || !config || config->disabled) return qfalse;
 	rewindMs = config->hasRewind ? config->rewindMs : state->rewindMs;

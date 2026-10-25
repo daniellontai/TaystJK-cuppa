@@ -645,3 +645,74 @@ BOOST_AUTO_TEST_CASE(flying_respawn_checkpoint_replay_contact_debounces_live_han
     BOOST_CHECK(!G_FlyingRespawn_OnCheckpointTouch(&h.state, 5050, 20, &config, &movement));
     BOOST_CHECK_EQUAL(h.state.automaticCheckpoint.snapshot.serverTime, 1200);
 }
+
+// Catches alternating overlapping brush callbacks renewing each other's positive-release deadline.
+BOOST_AUTO_TEST_CASE(flying_respawn_checkpoint_overlapping_contacts_keep_independent_gaps)
+{
+    FlyingHistory h;
+    BOOST_REQUIRE(G_FlyingRespawn_OnTimerStart(&h.state, 1000, 0, 500, 0, 0));
+    flyingRespawnMovement_t movement = {};
+    flyingRespawnCheckpointConfig_t config = {};
+    BOOST_REQUIRE(G_FlyingRespawn_OnCheckpointTouch(&h.state, 1100, 20, &config, &movement));
+    BOOST_REQUIRE(G_FlyingRespawn_OnCheckpointTouch(&h.state, 1100, 21, &config, &movement));
+    for (int time = 1150; time <= 2100; time += 50) {
+        BOOST_CHECK(!G_FlyingRespawn_OnCheckpointTouch(&h.state, time, 20, &config, &movement));
+        BOOST_CHECK(!G_FlyingRespawn_OnCheckpointTouch(&h.state, time, 21, &config, &movement));
+        BOOST_CHECK_EQUAL(h.state.automaticCheckpoint.checkpointEntityNum, 21);
+        BOOST_CHECK_EQUAL(h.state.automaticCheckpoint.snapshot.serverTime, 1100);
+        BOOST_CHECK_EQUAL(h.state.automaticCheckpoint.releaseServerTime, 1600);
+        if (time == 1600)
+            BOOST_CHECK(G_FlyingRespawn_CaptureAutomaticHandoff(&h.state, time, &movement));
+    }
+    BOOST_CHECK(h.state.automaticCheckpoint.valid);
+    BOOST_CHECK(!h.state.automaticCheckpoint.pending);
+    // B remains in contact while A leaves for 251 ms, then re-enters.
+    for (int time : {2200, 2300})
+        BOOST_CHECK(!G_FlyingRespawn_OnCheckpointTouch(&h.state, time, 21, &config, &movement));
+    BOOST_REQUIRE(G_FlyingRespawn_OnCheckpointTouch(&h.state, 2351, 20, &config, &movement));
+    BOOST_CHECK_EQUAL(h.state.automaticCheckpoint.checkpointEntityNum, 20);
+    BOOST_CHECK_EQUAL(h.state.automaticCheckpoint.releaseServerTime, 2851);
+    config.disabled = qtrue;
+    BOOST_CHECK(!G_FlyingRespawn_OnCheckpointTouch(&h.state, 2352, 22, &config, &movement));
+    config.disabled = qfalse;
+    BOOST_CHECK(!G_FlyingRespawn_OnCheckpointTouch(&h.state, 2353, 21, &config, &movement));
+    BOOST_CHECK(!h.state.automaticCheckpoint.valid);
+    BOOST_CHECK(!h.state.automaticCheckpoint.pending);
+    // A new run clears every brush's contact gap, including the overlapping ones.
+    BOOST_REQUIRE(G_FlyingRespawn_OnTimerStart(&h.state, 2400, 0, 500, 0, 0));
+    BOOST_REQUIRE(G_FlyingRespawn_OnCheckpointTouch(&h.state, 2401, 20, &config, &movement));
+    BOOST_CHECK_EQUAL(h.state.automaticCheckpoint.releaseServerTime, 2901);
+}
+
+// Catches invalid entity numbers indexing the per-checkpoint contact table or replacing the target.
+BOOST_AUTO_TEST_CASE(flying_respawn_checkpoint_contact_table_rejects_invalid_entities)
+{
+    FlyingHistory h;
+    BOOST_REQUIRE(G_FlyingRespawn_OnTimerStart(&h.state, 1000, 0, 0, 0, 0));
+    flyingRespawnMovement_t movement = {};
+    flyingRespawnCheckpointConfig_t config = {};
+    BOOST_REQUIRE(G_FlyingRespawn_OnCheckpointTouch(&h.state, 1100, MAX_GENTITIES - 1, &config, &movement));
+    BOOST_CHECK(!G_FlyingRespawn_OnCheckpointTouch(&h.state, 1150, -1, &config, &movement));
+    BOOST_CHECK(!G_FlyingRespawn_OnCheckpointTouch(&h.state, 1150, MAX_GENTITIES, &config, &movement));
+    BOOST_CHECK_EQUAL(h.state.automaticCheckpoint.checkpointEntityNum, MAX_GENTITIES - 1);
+    BOOST_CHECK_EQUAL(h.state.automaticCheckpoint.snapshot.serverTime, 1100);
+}
+
+// Catches a non-target overlapping brush being mistaken for a new crossing at replay handoff.
+BOOST_AUTO_TEST_CASE(flying_respawn_checkpoint_overlapping_replay_contacts_preserve_handoff)
+{
+    FlyingHistory h;
+    BOOST_REQUIRE(G_FlyingRespawn_OnTimerStart(&h.state, 1000, 0, 0, 0, 0));
+    flyingRespawnMovement_t movement = {};
+    flyingRespawnCheckpointConfig_t config = {};
+    BOOST_REQUIRE(G_FlyingRespawn_OnCheckpointTouch(&h.state, 1100, 20, &config, &movement));
+    BOOST_REQUIRE(G_FlyingRespawn_OnCheckpointTouch(&h.state, 1100, 21, &config, &movement));
+    h.state.replay.active = qtrue;
+    BOOST_CHECK(!G_FlyingRespawn_OnCheckpointTouch(&h.state, 5000, 20, &config, &movement));
+    BOOST_CHECK(!G_FlyingRespawn_OnCheckpointTouch(&h.state, 5000, 21, &config, &movement));
+    h.state.replay.active = qfalse;
+    BOOST_CHECK(!G_FlyingRespawn_OnCheckpointTouch(&h.state, 5050, 20, &config, &movement));
+    BOOST_CHECK(!G_FlyingRespawn_OnCheckpointTouch(&h.state, 5050, 21, &config, &movement));
+    BOOST_CHECK_EQUAL(h.state.automaticCheckpoint.checkpointEntityNum, 21);
+    BOOST_CHECK_EQUAL(h.state.automaticCheckpoint.snapshot.serverTime, 1100);
+}

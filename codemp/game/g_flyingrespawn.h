@@ -90,8 +90,9 @@ typedef struct {
 	qboolean secondaryRunning;
 	int secondaryBaseMs, secondarySegmentStart;
 	int respawnCount;
-	qboolean hasCheckpointContact;
-	int lastCheckpointEntityNum, lastCheckpointTouchTime;
+	/* Brushes may overlap: each contact gap must survive touches of other entities. */
+	byte checkpointContactSeen[MAX_GENTITIES];
+	int checkpointTouchTimes[MAX_GENTITIES];
 	qboolean runInvalid, mismatch;
 	flyingRespawnReplay_t replay;
 } flyingRespawnState_t;
