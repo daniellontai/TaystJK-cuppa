@@ -31,6 +31,13 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 //
 // Cvar callbacks
 //
+static void CVU_FlyingRespawnOffsets(void) {
+	if (g_flyingRespawnRewindMs.integer < 0)
+		trap->Cvar_Set("g_flyingRespawnRewindMs", "0");
+	if (g_flyingRespawnReleaseOffsetMs.integer < 0)
+		trap->Cvar_Set("g_flyingRespawnReleaseOffsetMs", "0");
+}
+
 
 //[JAPRO - Serverside - jcinfo update]
 static void CVU_Flipkick(void) {

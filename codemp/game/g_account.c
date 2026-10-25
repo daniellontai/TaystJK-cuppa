@@ -885,7 +885,7 @@ void G_AddToDBFromFile(void) { //loda fixme, we can filter out the slower times 
 	trap->FS_Close(f);
 	
 	CALL_SQLITE (open (LOCAL_DB_PATH, & db));
-	sql = "INSERT INTO LocalRun (username, coursename, duration_ms, topspeed, average, style, end_time) VALUES (?, ?, ?, ?, ?, ?, ?)";	 //loda fixme, make multiple?
+	sql = "INSERT INTO LocalRun (username, coursename, duration_ms, topspeed, average, style, end_time, respawn_count) VALUES (?, ?, ?, ?, ?, ?, ?, 0)";	 //loda fixme, make multiple?
 
 	CALL_SQLITE (prepare_v2 (db, sql, strlen (sql) + 1, & stmt, NULL));
 
@@ -1407,7 +1407,7 @@ static void G_UpdateOurLocalRun(sqlite3 * db, int seasonOldRank_self, int season
 	}
 
 	if (seasonOldRank_self == -1) { //First attempt of the season
-		sql = "INSERT INTO LocalRun (username, coursename, duration_ms, topspeed, average, style, season, end_time, rank, entries, season_rank, season_entries, last_update, invalid) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)";
+		sql = "INSERT INTO LocalRun (username, coursename, duration_ms, topspeed, average, style, season, end_time, rank, entries, season_rank, season_entries, last_update, invalid, respawn_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)";
 		CALL_SQLITE (prepare_v2 (db, sql, strlen (sql) + 1, & stmt, NULL));
 		CALL_SQLITE (bind_text (stmt, 1, username_self, -1, SQLITE_STATIC));
 		CALL_SQLITE (bind_text (stmt, 2, coursename_self, -1, SQLITE_STATIC));
@@ -7553,7 +7553,7 @@ void InitGameAccountStuff( void ) { //Called every mapload , move the create tab
 
 #if 1//NEWRACERANKING
 	sql = "CREATE TABLE IF NOT EXISTS LocalRun(id INTEGER PRIMARY KEY, username VARCHAR(16), coursename VARCHAR(40), duration_ms UNSIGNED INTEGER, topspeed UNSIGNED SMALLINT, "
-		"average UNSIGNED SMALLINT, style UNSIGNED TINYINT, season UNSIGNED TINYINT, end_time UNSIGNED INTEGER, rank UNSIGNED SMALLINT, entries UNSIGNED SMALLINT, season_rank UNSIGNED SMALLINT, season_entries UNSIGNED SMALLINT, last_update UNSIGNED INTEGER, invalid UNSIGNED TINYINT)";
+		"average UNSIGNED SMALLINT, style UNSIGNED TINYINT, season UNSIGNED TINYINT, end_time UNSIGNED INTEGER, rank UNSIGNED SMALLINT, entries UNSIGNED SMALLINT, season_rank UNSIGNED SMALLINT, season_entries UNSIGNED SMALLINT, last_update UNSIGNED INTEGER, invalid UNSIGNED TINYINT, respawn_count INTEGER NOT NULL DEFAULT 0)";
 #else
 	sql = "CREATE TABLE IF NOT EXISTS LocalRun(id INTEGER PRIMARY KEY, username VARCHAR(16), coursename VARCHAR(40), duration_ms UNSIGNED INTEGER, topspeed UNSIGNED SMALLINT, "
 		"average UNSIGNED SMALLINT, style UNSIGNED TINYINT, end_time UNSIGNED INTEGER)";
@@ -7563,6 +7563,10 @@ void InitGameAccountStuff( void ) { //Called every mapload , move the create tab
 	if (s != SQLITE_DONE)
 		G_ErrorPrint("ERROR: SQL Create Failed (InitGameAccountStuff 2)", s);
 	CALL_SQLITE (finalize(stmt));
+
+	s = G_FlyingRespawn_MigrateLocalRun(db);
+	if (s != SQLITE_OK)
+		G_ErrorPrint("ERROR: SQL Flying Respawn Migration Failed", s);
 
 	sql = "CREATE TABLE IF NOT EXISTS LocalDuel(id INTEGER PRIMARY KEY, winner VARCHAR(16), loser VARCHAR(16), duration UNSIGNED SMALLINT, "
 		"type UNSIGNED TINYINT, winner_hp UNSIGNED TINYINT, winner_shield UNSIGNED TINYINT, end_time UNSIGNED INTEGER, winner_elo DECIMAL(6,2), loser_elo DECIMAL(6,2), odds DECIMAL(9,2))";

@@ -362,6 +362,8 @@ void G_InitGame( int levelTime, int randomSeed, int restart ) {
 	// initialize all clients for this game
 	level.maxclients = sv_maxclients.integer;
 	memset( g_clients, 0, MAX_CLIENTS * sizeof(g_clients[0]) );
+	for (i = 0; i < MAX_CLIENTS; i++)
+		G_FlyingRespawn_InitClient(&g_clients[i].pers.flyingRespawn);
 	level.clients = g_clients;
 
 	// set client fields on player ents
@@ -575,6 +577,9 @@ void G_ShutdownGame( int restart ) {
 
 //	trap->Print ("==== ShutdownGame ====\n");
 
+	for (i = 0; i < MAX_CLIENTS; i++)
+		G_FlyingRespawn_FreeHistory(&g_clients[i].pers.flyingRespawn);
+	i = 0;
 	G_CleanAllFakeClients(); //get rid of dynamically allocated fake client structs.
 
 	BG_ClearAnimsets(); //free all dynamic allocations made through the engine

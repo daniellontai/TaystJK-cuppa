@@ -24,9 +24,12 @@ endif(NOT InOpenJK)
 set(TestFiles
 	"main.cpp"
 	"SecretCoursesTests.cpp"
+	"FlyingRespawnTests.cpp"
 	"safe/string.cpp"
 	"safe/limited_vector.cpp"
 	"${MPDir}/game/g_secretcourses_core.c"
+	"${MPDir}/game/g_flyingrespawn.c"
+	"${MPDir}/game/sqlite3.c"
 	"${SharedDir}/qcommon/safe/string.cpp"
 	)
 if(MSVC)
@@ -45,9 +48,10 @@ endif()
 find_package( Boost COMPONENTS unit_test_framework REQUIRED )
 
 set(TestTarget "UnitTests")
-set(TestLibraries "${Boost_UNIT_TEST_FRAMEWORK_LIBRARY}")
+set(TestLibraries "${Boost_UNIT_TEST_FRAMEWORK_LIBRARY}" ${CMAKE_DL_LIBS})
 set(TestIncludeDirectories
 	"${Boost_INCLUDE_DIRS}"
+	"${MPDir}"
 	"${MPDir}/game"
 	"${SharedDir}"
 	"${GSLIncludeDirectory}"
