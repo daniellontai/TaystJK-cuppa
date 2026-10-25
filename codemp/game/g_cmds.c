@@ -5827,6 +5827,7 @@ void Cmd_Aminfo_f(gentity_t *ent)
 		}
 		Q_strcat(buf, sizeof(buf), "+button13 (dodge/dash/walljump)");
 		trap->SendServerCommand(ent-g_entities, va("print \"%s\n\"", buf));
+		trap->SendServerCommand(ent-g_entities, "print \"   ^3Respawn & practice: ^7/savepos (practice bookmark), /respos (practice), /respawn (map checkpoint)\n\"");
 	}
 
 	Q_strncpyz(buf, "   ^3Emote commands: ", sizeof(buf));

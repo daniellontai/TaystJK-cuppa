@@ -60,6 +60,32 @@ Try to make use of noise, message, etc fields on the triggers.  If you have mult
 **New/modified entities:**
 See here https://github.com/videoP/jaPRO/blob/master/scripts/japro_entities.def
 
+**Flying respawn checkpoints:**
+
+`df_trigger_checkpoint` enables `/respawn` by default. It captures the run immediately before the checkpoint and replays the recorded movement through it, then returns control at `GO!`. The official race timer continues throughout; it is never rewound. A second `/respawn` during the preparation switches to a stationary checkpoint pose with zero velocity, keeping the original `GO!` deadline and counting as the same respawn. Live movement, jump, and view input held during preparation takes effect at `GO!`.
+
+The following entity keys use integer milliseconds for all timing values:
+
+| Key | Default | Behavior |
+| --- | --- | --- |
+| `flyingrespawndisable` | `0` | Set exactly `1` to disable flying respawn at this checkpoint. The ordinary checkpoint still works. |
+| `flyingrespawnrewind` | Inherit `g_flyingRespawnRewindMs`, default `1500` | Non-negative time before checkpoint contact to replay. `0` starts at contact. Invalid or negative values inherit the server default. |
+| `flyingrespawnrelease` | Inherit `g_flyingRespawnReleaseOffsetMs`, default `0` | Non-negative time after checkpoint contact to replay before returning control. Negative values clamp to `0`; invalid values inherit the server default. |
+
+For example, `flyingrespawnrewind 1500` and `flyingrespawnrelease 500` replay approximately 2000 ms of recorded movement: 1500 ms before contact and 500 ms after it. A positive release offset first leaves the new checkpoint **pending** while the player records that post-checkpoint movement. `/respawn` is unavailable until this capture is ready; rejection prints to the console without replacing the countdown. Sampling can extend the interval to the next recorded movement step. Each later checkpoint contact immediately replaces the previous target, including when the new checkpoint is pending or disabled. There is no fallback to an older checkpoint.
+
+Server timing defaults are captured when a run starts. `g_enableFlyingRespawn` defaults to `1`; setting it to `0` rejects new checkpoint replays. `g_flyingRespawnTestMode` defaults to `0` and enables the diagnostic `/replaytest <milliseconds>` command when set to `1`, with a maximum interval of 30000 ms. Start a new run after enabling test mode to retain that much history. Diagnostic replays never submit results or add a respawn count.
+
+Flying respawn restores the player's movement and Force state, not the shared world. Set `flyingrespawndisable 1` on checkpoints whose replay depends on changing movers, breakables, shared doors, one-shot target chains, or other world state that cannot safely repeat. Test the approach and release interval in every supported movement style; replaying a target chain does not rewind that chain's world effects.
+
+`/savepos` is an independent practice bookmark and `/respos` restores it in practice. These commands do not replace the map checkpoint. At completion the normal public result remains unchanged, followed by a private `no-respawn` time and respawn count for the finisher. Valid respawned personal bests keep their count in `LocalRun.respawn_count`; this metadata does not change ranking. A movement/Force mismatch makes the run unranked and stores a diagnostic row in `LocalRunInvalid` with `invalid = 1`, leaving valid personal bests and Secret Course results intact.
+
+**Flying respawn acceptance checks:**
+
+On a test server, enable `g_flyingRespawnTestMode 1`, begin a new run, and record at least 30 seconds of movement. Run `/replaytest 20000` and `/replaytest 30000`; compare the complete original and replayed movement and Force diagnostic lines, including angles, velocity, movement state, Force values/timers, and checkpoint/course progress. Confirm that neither test changes results or the checkpoint respawn count.
+
+Test an ordinary checkpoint replay, then a second press during preparation. Hold forward and jump while changing view during the countdown; the newest input should apply on the first `GO!` tick. Check a disabled checkpoint and a positive-release checkpoint before and after its capture becomes ready. Confirm that neither falls back to an earlier checkpoint. Verify the official timer continues across all respawns, and that bystanders receive only the normal public completion message. Finally, complete one valid respawned run and one deliberately mismatched replay. Inspect `LocalRun` for the valid best's count and `LocalRunInvalid` for the mismatch; the mismatch must not replace a valid best, award unlocks, or change Secret Course results. Disable test mode before recording those two runs, and start new runs so their diagnostic-replay flags are clear.
+
 **Examples:**
 Challenge style map: https://www.youtube.com/watch?v=NqDdeNQkCjI
 

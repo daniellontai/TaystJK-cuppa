@@ -1381,7 +1381,7 @@ static QINLINE int G_GetSeason(void) {
 }
 
 static void G_UpdateOurLocalRun(sqlite3 * db, int seasonOldRank_self, int seasonNewRank_self, int globalOldRank_self, int globalNewRank_self, int style_self, char *username_self, char *coursename_self, 
-	int duration_ms_self, int topspeed_self, int average_self, int end_time_self, int seasonCount, int globalCount) {
+	int duration_ms_self, int topspeed_self, int average_self, int end_time_self, int seasonCount, int globalCount, int respawnCount) {
 	char * sql;
 	sqlite3_stmt * stmt;
 	int s;
@@ -1407,7 +1407,7 @@ static void G_UpdateOurLocalRun(sqlite3 * db, int seasonOldRank_self, int season
 	}
 
 	if (seasonOldRank_self == -1) { //First attempt of the season
-		sql = "INSERT INTO LocalRun (username, coursename, duration_ms, topspeed, average, style, season, end_time, rank, entries, season_rank, season_entries, last_update, invalid, respawn_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)";
+		sql = "INSERT INTO LocalRun (username, coursename, duration_ms, topspeed, average, style, season, end_time, rank, entries, season_rank, season_entries, last_update, invalid, respawn_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)";
 		CALL_SQLITE (prepare_v2 (db, sql, strlen (sql) + 1, & stmt, NULL));
 		CALL_SQLITE (bind_text (stmt, 1, username_self, -1, SQLITE_STATIC));
 		CALL_SQLITE (bind_text (stmt, 2, coursename_self, -1, SQLITE_STATIC));
@@ -1422,6 +1422,7 @@ static void G_UpdateOurLocalRun(sqlite3 * db, int seasonOldRank_self, int season
 		CALL_SQLITE (bind_int (stmt, 11, seasonNewRank_self));
 		CALL_SQLITE (bind_int (stmt, 12, seasonCount));
 		CALL_SQLITE (bind_int (stmt, 13, end_time_self));
+		CALL_SQLITE (bind_int (stmt, 14, respawnCount));
 		s = sqlite3_step(stmt);
 		if (s != SQLITE_DONE) {
 			char string[1024] = {0};
@@ -1434,7 +1435,7 @@ static void G_UpdateOurLocalRun(sqlite3 * db, int seasonOldRank_self, int season
 		CALL_SQLITE (finalize(stmt));
 	}
 	else {
-		sql = "UPDATE LocalRun SET duration_ms = ?, topspeed = ?, average = ?, end_time = ?, rank = ?, season_rank = ?, last_update = ?, invalid = 0 WHERE username = ? AND coursename = ? AND style = ? AND season = ?";
+		sql = "UPDATE LocalRun SET duration_ms = ?, topspeed = ?, average = ?, end_time = ?, rank = ?, season_rank = ?, last_update = ?, invalid = 0, respawn_count = ? WHERE username = ? AND coursename = ? AND style = ? AND season = ?";
 		CALL_SQLITE (prepare_v2 (db, sql, strlen (sql) + 1, & stmt, NULL));
 		CALL_SQLITE (bind_int (stmt, 1, duration_ms_self));
 		CALL_SQLITE (bind_int (stmt, 2, topspeed_self));
@@ -1443,10 +1444,11 @@ static void G_UpdateOurLocalRun(sqlite3 * db, int seasonOldRank_self, int season
 		CALL_SQLITE (bind_int (stmt, 5, globalNewRank_self));
 		CALL_SQLITE (bind_int (stmt, 6, seasonNewRank_self));
 		CALL_SQLITE (bind_int (stmt, 7, end_time_self));
-		CALL_SQLITE (bind_text (stmt, 8, username_self, -1, SQLITE_STATIC));
-		CALL_SQLITE (bind_text (stmt, 9, coursename_self, -1, SQLITE_STATIC));
-		CALL_SQLITE (bind_int (stmt, 10, style_self));
-		CALL_SQLITE (bind_int (stmt, 11, season));
+		CALL_SQLITE (bind_int (stmt, 8, respawnCount));
+		CALL_SQLITE (bind_text (stmt, 9, username_self, -1, SQLITE_STATIC));
+		CALL_SQLITE (bind_text (stmt, 10, coursename_self, -1, SQLITE_STATIC));
+		CALL_SQLITE (bind_int (stmt, 11, style_self));
+		CALL_SQLITE (bind_int (stmt, 12, season));
 		s = sqlite3_step(stmt);
 		if (s != SQLITE_DONE) {
 			char string[1024] = {0};
@@ -1589,11 +1591,27 @@ void TimeToString(int duration_ms, char *timeStr, size_t strSize) {
 }
 
 void SC_ConstructFullCourseName(char *fullCourseName, size_t bufferSize, const char *message);
+static void PrintFlyingRespawnTime(int clientNum)
+{
+	const flyingRespawnState_t *state = &level.clients[clientNum].pers.flyingRespawn;
+	char elapsed[32];
+	if (!state->secondaryRunning) return;
+	TimeToString(G_FlyingRespawn_GetSecondaryElapsed(state, level.time), elapsed, sizeof(elapsed));
+	trap->SendServerCommand(clientNum, va("print \"^7no-respawn: ^3%s^7 (respawns: %i)\n\"", elapsed, G_FlyingRespawn_GetRespawnCount(state)));
+}
+
 void PrintRaceTime(char *username, char *playername, char *message, char *style, int topspeed, int average, char *timeStr, int clientNum, int season_newRank, qboolean spb, int global_newRank, qboolean loggedin, qboolean valid, int season_oldRank, int global_oldRank, float addedScore, int awesomenoise, int worldrecordnoise) {
 	int nameColor, color;
 	char awardString[28] = {0}, messageStr[64] = {0}, nameStr[32] = {0};
 	int msgClientExcept = -1;
 	const char* msgTemplate = "", *msgType = "dffinish_japro_normal";
+	const flyingRespawnState_t *respawn = &level.clients[clientNum].pers.flyingRespawn;
+	if (respawn->testReplayUsed) return;
+	if (G_FlyingRespawn_IsRunInvalid(respawn)) {
+		trap->SendServerCommand(clientNum, "print \"^1Run not ranked: flying respawn replay mismatch.^7\n\"");
+		PrintFlyingRespawnTime(clientNum);
+		return;
+	}
 
 	//Com_Printf("SOldrank %i SNewrank %i GOldrank %i GNewrank %i Addscore %.1f\n", season_oldRank, season_newRank, global_oldRank, global_newRank, addedScore);
 
@@ -1715,6 +1733,7 @@ void PrintRaceTime(char *username, char *playername, char *message, char *style,
 
 	G_SendServerCommandExcept( msgClientExcept, va(msgTemplate,
 				messageStr, timeStr, color, topspeed, color, average, color, style, color, nameColor, nameStr, awardString, "", msgType));
+	PrintFlyingRespawnTime(clientNum);
 }
 
 void G_UpdatePlaytime(sqlite3 *db, char *username, int seconds ) {
@@ -2064,6 +2083,8 @@ void G_AddRaceTime(char *username, char *message, int duration_ms, int style, in
 	const int season = G_GetSeason();
 
 	cl = &level.clients[clientNum];
+	/* A completed diagnostic replay never submits a result, even after GO. */
+	if (cl->pers.flyingRespawn.testReplayUsed) return;
 
 	time(&rawtime);
 	localtime(&rawtime);
@@ -2085,6 +2106,27 @@ void G_AddRaceTime(char *username, char *message, int duration_ms, int style, in
 	Q_CleanStr(coursename);
 
 	IntegerToRaceName(style, styleString, sizeof(styleString));
+	if (G_FlyingRespawn_IsRunInvalid(&cl->pers.flyingRespawn)) {
+		/* Audit separately: LocalRun is a PB projection whose legacy seasonal
+		 * queries include invalid rows. A mismatch must never replace a PB. */
+		CALL_SQLITE(open(LOCAL_DB_PATH, &db));
+		CALL_SQLITE(prepare_v2(db, "INSERT INTO LocalRunInvalid (username, coursename, duration_ms, topspeed, average, style, season, end_time, invalid, respawn_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)", -1, &stmt, NULL));
+		CALL_SQLITE(bind_text(stmt, 1, username, -1, SQLITE_STATIC));
+		CALL_SQLITE(bind_text(stmt, 2, coursename, -1, SQLITE_STATIC));
+		CALL_SQLITE(bind_int(stmt, 3, duration_ms));
+		CALL_SQLITE(bind_int(stmt, 4, topspeed));
+		CALL_SQLITE(bind_int(stmt, 5, average));
+		CALL_SQLITE(bind_int(stmt, 6, style));
+		CALL_SQLITE(bind_int(stmt, 7, season));
+		CALL_SQLITE(bind_int64(stmt, 8, (sqlite3_int64)rawtime));
+		CALL_SQLITE(bind_int(stmt, 9, G_FlyingRespawn_GetRespawnCount(&cl->pers.flyingRespawn)));
+		if (sqlite3_step(stmt) != SQLITE_DONE) G_ErrorPrint("ERROR: SQL Insert Failed (LocalRunInvalid)", sqlite3_errcode(db));
+		CALL_SQLITE(finalize(stmt));
+		CALL_SQLITE(close(db));
+		TimeToString(duration_ms, timeStr, sizeof(timeStr));
+		PrintRaceTime(username, cl->pers.netname, message, styleString, topspeed, average, timeStr, clientNum, 0, qfalse, 0, qtrue, qfalse, 0, 0, 0, 0, 0);
+		return;
+	}
 
 	Com_sprintf(string, sizeof(string), "%s;%s;%i;%i;%i;%i;%i\n", username, coursename, duration_ms, topspeed, average, style, rawtime);
 
@@ -2291,7 +2333,7 @@ void G_AddRaceTime(char *username, char *message, int duration_ms, int style, in
 				G_UpdateOtherLocalRun(db, season_newRank, season_oldRank, global_newRank, global_oldRank, style, coursename, rawtime); //Update other spots in race list
 			}
 		}
-		G_UpdateOurLocalRun(db, season_oldRank, season_newRank, global_oldRank, global_newRank, style, username, coursename, duration_ms, topspeed, average, rawtime, season_newCount, global_newCount);//Update our race list
+		G_UpdateOurLocalRun(db, season_oldRank, season_newRank, global_oldRank, global_newRank, style, username, coursename, duration_ms, topspeed, average, rawtime, season_newCount, global_newCount, G_FlyingRespawn_GetRespawnCount(&cl->pers.flyingRespawn));//Update our race list
 
 		if (cl->pers.recordingDemo && globalPB) {
 			char mapCourse[MAX_QPATH] = { 0 };
@@ -7567,6 +7609,12 @@ void InitGameAccountStuff( void ) { //Called every mapload , move the create tab
 	s = G_FlyingRespawn_MigrateLocalRun(db);
 	if (s != SQLITE_OK)
 		G_ErrorPrint("ERROR: SQL Flying Respawn Migration Failed", s);
+	/* Mismatch diagnostics are audit data, never candidates for PB/rank queries. */
+	sql = "CREATE TABLE IF NOT EXISTS LocalRunInvalid(id INTEGER PRIMARY KEY, username VARCHAR(16), coursename VARCHAR(40), duration_ms INTEGER NOT NULL, topspeed INTEGER, average INTEGER, style INTEGER, season INTEGER, end_time INTEGER NOT NULL, invalid INTEGER NOT NULL DEFAULT 1, respawn_count INTEGER NOT NULL DEFAULT 0)";
+	CALL_SQLITE(prepare_v2(db, sql, -1, &stmt, NULL));
+	if (sqlite3_step(stmt) != SQLITE_DONE)
+		G_ErrorPrint("ERROR: SQL Create Failed (LocalRunInvalid)", sqlite3_errcode(db));
+	CALL_SQLITE(finalize(stmt));
 
 	sql = "CREATE TABLE IF NOT EXISTS LocalDuel(id INTEGER PRIMARY KEY, winner VARCHAR(16), loser VARCHAR(16), duration UNSIGNED SMALLINT, "
 		"type UNSIGNED TINYINT, winner_hp UNSIGNED TINYINT, winner_shield UNSIGNED TINYINT, end_time UNSIGNED INTEGER, winner_elo DECIMAL(6,2), loser_elo DECIMAL(6,2), odds DECIMAL(9,2))";

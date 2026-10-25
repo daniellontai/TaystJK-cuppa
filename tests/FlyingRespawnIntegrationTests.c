@@ -1,25 +1,41 @@
 /* Links the real game module objects; only engine imports are replaced. */
 #include "g_local.h"
+#include "sqlite3.h"
 
 #include <stdio.h>
 #include <string.h>
+#include <stdarg.h>
 
 void TimerStart(gentity_t *, gentity_t *, trace_t *);
 void TimerStop(gentity_t *, gentity_t *, trace_t *);
 void WP_ForcePowersUpdate(gentity_t *, usercmd_t *);
 void G_RunFrame(int);
+void InitGameAccountStuff(void);
+void Cmd_Aminfo_f(gentity_t *);
+void G_AddRaceTime(char *, char *, int, int, int, int, int, int, int);
+void PrintRaceTime(char *, char *, char *, char *, int, int, char *, int, int, qboolean, int, qboolean, qboolean, int, int, float, int, int);
 extern gclient_t g_clients[MAX_CLIENTS];
 
 static gameImport_t imports;
 static int failures, routeCalls, commandsSent;
+static struct { int client; char text[2048]; } sent[64];
 #define CHECK(condition) do { if (!(condition)) { \
     fprintf(stderr, "%s:%d: %s\n", __func__, __LINE__, #condition); failures++; \
 } } while (0)
 
 static int Clock(void) { return 5000; }
-static void ServerCommand(int client, const char *text) { (void)client; (void)text; commandsSent++; }
+static void ServerCommand(int client, const char *text) {
+    if (commandsSent < 64) {
+        sent[commandsSent].client = client;
+        Q_strncpyz(sent[commandsSent].text, text, sizeof(sent[commandsSent].text));
+    }
+    commandsSent++;
+}
+static void CvarString(const char *name, char *buffer, int size) { (void)name; Q_strncpyz(buffer, ".", size); }
+static void Print(const char *format, ...) { va_list args; va_start(args, format); vfprintf(stderr, format, args); va_end(args); }
+static int Open(const char *path, fileHandle_t *file, fsMode_t mode) { (void)path; (void)mode; *file = 0; return -1; }
 static void Userinfo(int client, char *buffer, int size) { (void)client; if (size) buffer[0] = 0; }
-static void Serverinfo(char *buffer, int size) { if (size) buffer[0] = 0; }
+static void Serverinfo(char *buffer, int size) { Q_strncpyz(buffer, "\\mapname\\testmap", size); }
 static qboolean InPVS(const vec3_t a, const vec3_t b) { (void)a; (void)b; return qtrue; }
 static void LinkEntity(sharedEntity_t *entity) { (void)entity; }
 static void Noop(void) {}
@@ -49,6 +65,9 @@ static gentity_t *Player(void)
     imports.SendServerCommand = ServerCommand;
     imports.GetUserinfo = Userinfo;
     imports.GetServerinfo = Serverinfo;
+    imports.Cvar_VariableStringBuffer = CvarString;
+    imports.Print = Print;
+    imports.FS_Open = Open;
     imports.InPVS = InPVS;
     imports.LinkEntity = LinkEntity;
     imports.ICARUS_FreeEnt = LinkEntity;
@@ -86,6 +105,7 @@ static gentity_t *Player(void)
     player->client->pers.stats.coopStarted = qtrue;
     player->client->ps.duelTime = 999;
     routeCalls = commandsSent = 0;
+    memset(sent, 0, sizeof(sent));
     G_FlyingRespawn_InitClient(&player->client->pers.flyingRespawn);
     return player;
 }
@@ -288,14 +308,132 @@ static void StaticServerFrameTimeout(void)
     G_FlyingRespawn_FreeClient(state);
 }
 
-int main(void)
+static int Scalar(sqlite3 *db, const char *sql)
 {
-    StaticForceWait();
-    FlyingFrameInput();
-    ReplayTimerBrushes();
-    StaticTribesServerFrames();
-    StaticServerFrameTimeout();
+    sqlite3_stmt *statement = NULL;
+    int value = -1;
+    CHECK(sqlite3_prepare_v2(db, sql, -1, &statement, NULL) == SQLITE_OK);
+    if (statement && sqlite3_step(statement) == SQLITE_ROW) value = sqlite3_column_int(statement, 0);
+    sqlite3_finalize(statement);
+    return value;
+}
+
+/* Catches public-format/audience changes and secondary time leaking to spectators. */
+static void FinishPublicPrivate(void)
+{
+    gentity_t *player = Player();
+    flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
+    char playerName[] = "Runner", style[] = "jka", time[] = "9.500";
+    CHECK(G_FlyingRespawn_OnTimerStart(state, 1000, 0, 0, 0, 0));
+    G_FlyingRespawn_ResetSecondarySegment(state, 9000, 3000);
+    state->respawnCount = 2;
+    level.time = 9500;
+    PrintRaceTime(NULL, playerName, NULL, style, 123, 45, time, 0, 0, qfalse, 0, qfalse, qtrue, 0, 0, 0, -1, -1);
+    CHECK(commandsSent == 2);
+    CHECK(sent[0].client == -1);
+    CHECK(!strcmp(sent[0].text, "print \"^2Completed in ^39.500       ^2 max:^3123       ^2 avg:^345        ^2 style:^3jka       ^2 by ^7Runner ^7\n\" dffinish_japro_valid"));
+    CHECK(sent[1].client == 0);
+    CHECK(strstr(sent[1].text, "no-respawn") != NULL);
+    CHECK(strstr(sent[1].text, "3.500") != NULL);
+    CHECK(strstr(sent[1].text, "2") != NULL);
+    CHECK(player->client->pers.stats.startTime == 777);
+    CHECK(player->client->pers.stats.startLevelTime == 888);
+    CHECK(player->client->ps.duelTime == 999);
+    G_FlyingRespawn_FreeClient(state);
+}
+
+/* Catches missing metadata on INSERT/UPDATE and mismatch/test pollution of PBs. */
+static void FinishPersistence(void)
+{
+    gentity_t *player = Player();
+    flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
+    sqlite3 *db = NULL;
+    char user[] = "runner";
+    InitGameAccountStuff();
+    InitGameAccountStuff(); /* fresh schema and repeated map initialization */
+    CHECK(sqlite3_open("./data.db", &db) == SQLITE_OK);
+    CHECK(Scalar(db, "SELECT count(*) FROM sqlite_master WHERE name='LocalRunInvalid'") == 1);
+    CHECK(sqlite3_exec(db, "INSERT INTO LocalSecretCourse (id, course_name, type, starts_at, applied_revision) VALUES ('active', 'testmap', 1, 0, 'fixture')", NULL, NULL, NULL) == SQLITE_OK);
+    CHECK(G_FlyingRespawn_OnTimerStart(state, 1000, 0, 0, 0, 0));
+    state->respawnCount = 2;
+    G_AddRaceTime(user, NULL, 9500, MV_JKA, 0, 0, 0, -1, -1);
+    CHECK(Scalar(db, "SELECT respawn_count FROM LocalRun WHERE username='runner'") == 2);
+    CHECK(Scalar(db, "SELECT invalid FROM LocalRun WHERE username='runner'") == 0);
+    CHECK(Scalar(db, "SELECT rank FROM LocalRun WHERE username='runner'") == 1);
+    state->respawnCount = 3;
+    G_AddRaceTime(user, NULL, 8500, MV_JKA, 0, 0, 0, -1, -1);
+    CHECK(Scalar(db, "SELECT respawn_count FROM LocalRun WHERE username='runner'") == 3);
+    state->respawnCount = 9;
+    G_AddRaceTime(user, NULL, 9000, MV_JKA, 0, 0, 0, -1, -1);
+    CHECK(Scalar(db, "SELECT respawn_count FROM LocalRun WHERE username='runner'") == 3);
+    memset(cosmeticUnlocks, 0, sizeof(cosmeticUnlocks));
+    Q_strncpyz(cosmeticUnlocks[0].mapname, "testmap", sizeof(cosmeticUnlocks[0].mapname));
+    cosmeticUnlocks[0].style = MV_JKA;
+    cosmeticUnlocks[0].duration = 2000;
+    cosmeticUnlocks[0].bitvalue = 1;
+    state->runInvalid = state->mismatch = qtrue;
+    state->respawnCount = 4;
+    commandsSent = 0;
+    G_AddRaceTime(user, NULL, 1000, MV_JKA, 0, 0, 0, -1, -1);
+    CHECK(Scalar(db, "SELECT duration_ms FROM LocalRun WHERE username='runner'") == 8500);
+    CHECK(Scalar(db, "SELECT respawn_count FROM LocalRun WHERE username='runner'") == 3);
+    CHECK(Scalar(db, "SELECT rank FROM LocalRun WHERE username='runner'") == 1);
+    CHECK(Scalar(db, "SELECT season_rank FROM LocalRun WHERE username='runner'") == 1);
+    CHECK(Scalar(db, "SELECT count(*) FROM LocalRunInvalid WHERE username='runner' AND coursename='testmap' AND duration_ms=1000 AND invalid=1 AND respawn_count=4 AND season=6") == 1);
+    CHECK(Scalar(db, "SELECT duration_ms FROM LocalSecretCourseRun WHERE username='runner'") == 8500);
+    CHECK(player->client->pers.unlocks == 0);
+    for (int i = 0; i < commandsSent && i < 64; i++) CHECK(sent[i].client == 0);
+    state->testReplayUsed = qtrue;
+    state->runInvalid = state->mismatch = qfalse;
+    commandsSent = 0;
+    G_AddRaceTime(user, NULL, 500, MV_JKA, 0, 0, 0, -1, -1);
+    CHECK(Scalar(db, "SELECT count(*) FROM LocalRun") == 1);
+    CHECK(Scalar(db, "SELECT count(*) FROM LocalRunInvalid") == 1);
+    CHECK(Scalar(db, "SELECT duration_ms FROM LocalRun WHERE username='runner'") == 8500);
+    CHECK(Scalar(db, "SELECT duration_ms FROM LocalSecretCourseRun WHERE username='runner'") == 8500);
+    CHECK(commandsSent == 0);
+    state->runInvalid = state->mismatch = qtrue;
+    G_AddRaceTime(user, NULL, 250, MV_JKA, 0, 0, 0, -1, -1);
+    CHECK(Scalar(db, "SELECT count(*) FROM LocalRunInvalid") == 1);
+    CHECK(commandsSent == 0);
+    memset(cosmeticUnlocks, 0, sizeof(cosmeticUnlocks));
+    sqlite3_close(db);
+    G_FlyingRespawn_FreeClient(state);
+}
+
+/* Catches a missing command category in actual /aminfo output. */
+static void FinishHelp(void)
+{
+    gentity_t *player = Player();
+    int found = 0;
+    g_raceMode.integer = 1;
+    Cmd_Aminfo_f(player);
+    for (int i = 0; i < commandsSent && i < 64; i++) {
+        if (strstr(sent[i].text, "Respawn & practice")) {
+            CHECK(sent[i].client == 0);
+            CHECK(strstr(sent[i].text, "/savepos (practice bookmark)") != NULL);
+            CHECK(strstr(sent[i].text, "/respos (practice)") != NULL);
+            CHECK(strstr(sent[i].text, "/respawn (map checkpoint)") != NULL);
+            found++;
+        }
+    }
+    CHECK(found == 1);
+    G_FlyingRespawn_FreeClient(&player->client->pers.flyingRespawn);
+}
+
+int main(int argc, char **argv)
+{
+    if (argc < 2 || strcmp(argv[1], "finish")) {
+        StaticForceWait();
+        FlyingFrameInput();
+        ReplayTimerBrushes();
+        StaticTribesServerFrames();
+        StaticServerFrameTimeout();
+    }
+    FinishPublicPrivate();
+    FinishPersistence();
+    FinishHelp();
     if (failures) fprintf(stderr, "%d integration assertions failed\n", failures);
-    else puts("5 flying-respawn integration cases passed");
+    else puts(argc > 1 ? "3 flying-respawn finish integration cases passed" : "8 flying-respawn integration cases passed");
     return failures ? 1 : 0;
 }
