@@ -421,6 +421,82 @@ static void FinishHelp(void)
     G_FlyingRespawn_FreeClient(&player->client->pers.flyingRespawn);
 }
 
+/* Catches one co-op partner submitting a shared result the other cannot rank. */
+static void FinishCoopEligibility(void)
+{
+    for (int mode = 0; mode < 3; mode++) {
+        for (int owner = 0; owner < 2; owner++) {
+            gentity_t *player = Player(), *partner = &g_entities[1];
+            gentity_t *finish = &g_entities[MAX_CLIENTS];
+            sqlite3 *db = NULL;
+            flyingRespawnState_t *flagged;
+            fprintf(stderr, "Running co-op finish mode=%d flagged partner=%d\n", mode, owner);
+            level.maxclients = 2;
+            level.time = level.frameStartTime = 5000;
+            g_stepSlideFix.integer = g_smoothClients.integer = 1;
+            timescale.value = 1.0f;
+            partner->inuse = qtrue;
+            partner->client = &g_clients[1];
+            *partner->client = *player->client;
+            G_FlyingRespawn_InitClient(&partner->client->pers.flyingRespawn);
+            for (int i = 0; i < 2; i++) {
+                gclient_t *client = &g_clients[i];
+                client->ps.clientNum = i;
+                client->ps.duelInProgress = qtrue;
+                client->ps.duelIndex = 1 - i;
+                client->ps.stats[STAT_MOVEMENTSTYLE] = client->sess.movementStyle = MV_COOP_JKA;
+                client->pers.cmd.serverTime = 5000;
+                Q_strncpyz(client->pers.userName, i ? "booster" : "runner", sizeof(client->pers.userName));
+                CHECK(G_FlyingRespawn_OnTimerStart(&client->pers.flyingRespawn, 1000, 0, 0, 0, 0));
+                client->pers.flyingRespawn.respawnCount = i + 2;
+            }
+            InitGameAccountStuff();
+            CHECK(sqlite3_open("./data.db", &db) == SQLITE_OK);
+            CHECK(sqlite3_exec(db,
+                "DELETE FROM LocalRun; DELETE FROM LocalRunInvalid; DELETE FROM LocalSecretCourseRun; DELETE FROM LocalSecretCourse;"
+                "INSERT INTO LocalSecretCourse (id, course_name, type, starts_at, applied_revision) VALUES ('coop', 'testmap', 1, 0, 'fixture');"
+                "INSERT INTO LocalRun (username, coursename, duration_ms, style, season, rank, season_rank, invalid, respawn_count) VALUES ('runner', 'testmap', 10000, 15, 6, 1, 1, 0, 0), ('booster', 'testmap', 10000, 15, 6, 1, 1, 0, 0);"
+                "INSERT INTO LocalSecretCourseRun (secret_course_id, username, style, duration_ms, end_time) VALUES ('coop', 'runner', 15, 10000, 1), ('coop', 'booster', 15, 10000, 1)",
+                NULL, NULL, NULL) == SQLITE_OK);
+            memset(cosmeticUnlocks, 0, sizeof(cosmeticUnlocks));
+            Q_strncpyz(cosmeticUnlocks[0].mapname, "testmap", sizeof(cosmeticUnlocks[0].mapname));
+            cosmeticUnlocks[0].style = MV_COOP_JKA;
+            cosmeticUnlocks[0].duration = 5000;
+            cosmeticUnlocks[0].bitvalue = 1;
+            flagged = &g_clients[owner].pers.flyingRespawn;
+            flagged->testReplayUsed = mode != 1;
+            if (mode == 1) flagged->runInvalid = qtrue;
+            if (mode == 2) g_clients[1 - owner].pers.flyingRespawn.runInvalid = qtrue;
+            finish->inuse = qtrue;
+            finish->wait = 1;
+            commandsSent = 0;
+            TimerStop(finish, player, NULL);
+            CHECK(Scalar(db, "SELECT count(*) FROM LocalRun WHERE duration_ms=10000 AND rank=1 AND season_rank=1 AND respawn_count=0") == 2);
+            CHECK(Scalar(db, "SELECT count(*) FROM LocalSecretCourseRun WHERE duration_ms=10000") == 2);
+            CHECK(Scalar(db, "SELECT count(*) FROM LocalRunInvalid") == (mode == 1 ? 2 : 0));
+            if (mode == 1) {
+                CHECK(Scalar(db, "SELECT respawn_count FROM LocalRunInvalid WHERE username='runner' AND invalid=1") == 2);
+                CHECK(Scalar(db, "SELECT respawn_count FROM LocalRunInvalid WHERE username='booster' AND invalid=1") == 3);
+            }
+            CHECK(g_clients[0].pers.unlocks == 0 && g_clients[1].pers.unlocks == 0);
+            CHECK(g_clients[0].pers.stats.startTime == 0 && g_clients[1].pers.stats.startTime == 0);
+            for (int i = 0; i < commandsSent && i < 64; i++) {
+                CHECK(sent[i].client == 0 || sent[i].client == 1);
+                CHECK(strstr(sent[i].text, "dffinish_") == NULL);
+            }
+            if (mode != 1) CHECK(commandsSent == 0);
+            CHECK(g_clients[owner].pers.flyingRespawn.testReplayUsed == (mode != 1));
+            CHECK(g_clients[1 - owner].pers.flyingRespawn.testReplayUsed == qfalse);
+            CHECK(g_clients[owner].pers.flyingRespawn.runInvalid == (mode == 1));
+            CHECK(g_clients[1 - owner].pers.flyingRespawn.runInvalid == (mode == 2));
+            sqlite3_close(db);
+            G_FlyingRespawn_FreeClient(&g_clients[0].pers.flyingRespawn);
+            G_FlyingRespawn_FreeClient(&g_clients[1].pers.flyingRespawn);
+            memset(cosmeticUnlocks, 0, sizeof(cosmeticUnlocks));
+        }
+    }
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 2 || strcmp(argv[1], "finish")) {
@@ -433,7 +509,8 @@ int main(int argc, char **argv)
     FinishPublicPrivate();
     FinishPersistence();
     FinishHelp();
+    FinishCoopEligibility();
     if (failures) fprintf(stderr, "%d integration assertions failed\n", failures);
-    else puts(argc > 1 ? "3 flying-respawn finish integration cases passed" : "8 flying-respawn integration cases passed");
+    else puts(argc > 1 ? "4 flying-respawn finish integration cases passed" : "9 flying-respawn integration cases passed");
     return failures ? 1 : 0;
 }

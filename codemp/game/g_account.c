@@ -1591,6 +1591,26 @@ void TimeToString(int duration_ms, char *timeStr, size_t strSize) {
 }
 
 void SC_ConstructFullCourseName(char *fullCourseName, size_t bufferSize, const char *message);
+static void FlyingRespawnFinishEligibility(int clientNum, qboolean *testReplayUsed, qboolean *invalid)
+{
+	const gclient_t *client = &level.clients[clientNum];
+	const flyingRespawnState_t *state = &client->pers.flyingRespawn;
+	*testReplayUsed = state->testReplayUsed;
+	*invalid = G_FlyingRespawn_IsRunInvalid(state);
+#if _COOP
+	/* Both submissions represent one co-op result. Read shared eligibility
+	 * before either write without changing either player's controller state. */
+	if (client->sess.raceMode && client->ps.duelInProgress &&
+		client->ps.duelIndex >= 0 && client->ps.duelIndex < MAX_CLIENTS) {
+		const gclient_t *partner = g_entities[client->ps.duelIndex].client;
+		if (partner && partner->sess.raceMode) {
+			*testReplayUsed = *testReplayUsed || partner->pers.flyingRespawn.testReplayUsed;
+			*invalid = *invalid || G_FlyingRespawn_IsRunInvalid(&partner->pers.flyingRespawn);
+		}
+	}
+#endif
+}
+
 static void PrintFlyingRespawnTime(int clientNum)
 {
 	const flyingRespawnState_t *state = &level.clients[clientNum].pers.flyingRespawn;
@@ -1605,9 +1625,10 @@ void PrintRaceTime(char *username, char *playername, char *message, char *style,
 	char awardString[28] = {0}, messageStr[64] = {0}, nameStr[32] = {0};
 	int msgClientExcept = -1;
 	const char* msgTemplate = "", *msgType = "dffinish_japro_normal";
-	const flyingRespawnState_t *respawn = &level.clients[clientNum].pers.flyingRespawn;
-	if (respawn->testReplayUsed) return;
-	if (G_FlyingRespawn_IsRunInvalid(respawn)) {
+	qboolean testReplayUsed, respawnInvalid;
+	FlyingRespawnFinishEligibility(clientNum, &testReplayUsed, &respawnInvalid);
+	if (testReplayUsed) return;
+	if (respawnInvalid) {
 		trap->SendServerCommand(clientNum, "print \"^1Run not ranked: flying respawn replay mismatch.^7\n\"");
 		PrintFlyingRespawnTime(clientNum);
 		return;
@@ -2081,10 +2102,12 @@ void G_AddRaceTime(char *username, char *message, int duration_ms, int style, in
 	float addedScore = 0.0f;
 	gclient_t	*cl;
 	const int season = G_GetSeason();
+	qboolean testReplayUsed, respawnInvalid;
 
 	cl = &level.clients[clientNum];
+	FlyingRespawnFinishEligibility(clientNum, &testReplayUsed, &respawnInvalid);
 	/* A completed diagnostic replay never submits a result, even after GO. */
-	if (cl->pers.flyingRespawn.testReplayUsed) return;
+	if (testReplayUsed) return;
 
 	time(&rawtime);
 	localtime(&rawtime);
@@ -2106,7 +2129,7 @@ void G_AddRaceTime(char *username, char *message, int duration_ms, int style, in
 	Q_CleanStr(coursename);
 
 	IntegerToRaceName(style, styleString, sizeof(styleString));
-	if (G_FlyingRespawn_IsRunInvalid(&cl->pers.flyingRespawn)) {
+	if (respawnInvalid) {
 		/* Audit separately: LocalRun is a PB projection whose legacy seasonal
 		 * queries include invalid rows. A mismatch must never replace a PB. */
 		CALL_SQLITE(open(LOCAL_DB_PATH, &db));
