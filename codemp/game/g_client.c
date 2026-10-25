@@ -2962,7 +2962,9 @@ char *ClientConnect( int clientNum, qboolean firstTime, qboolean isBot ) {
 	//assign the pointer for bg entity access
 	ent->playerState = &ent->client->ps;
 
+	G_FlyingRespawn_FreeClient(&client->pers.flyingRespawn);
 	memset( client, 0, sizeof(*client) );
+	G_FlyingRespawn_InitClient(&client->pers.flyingRespawn);
 
 	Q_strncpyz( client->pers.guid, guid, sizeof( client->pers.guid ) );
 
@@ -3185,6 +3187,9 @@ void ClientBegin( int clientNum, qboolean allowTeamReset ) {
 	}
 	i = 0;
 
+	G_FlyingRespawn_FreeClient(&client->pers.flyingRespawn);
+	G_FlyingRespawn_InitClient(&client->pers.flyingRespawn);
+	client->pers.savePosUsed = qfalse;
 	memset( &client->ps, 0, sizeof( client->ps ) );
 	client->ps.eFlags = flags;
 	client->ps.persistant[PERS_SPAWN_COUNT] = spawnCount;
@@ -4127,6 +4132,7 @@ void ClientSpawn(gentity_t *ent) {
 
 	G_ResetTrail( ent );//unlagged
 
+	memset(&client->pers.flyingRespawn.replay, 0, sizeof(client->pers.flyingRespawn.replay));
 	saved = client->pers;
 	savedSess = client->sess;
 	savedPing = client->ps.ping;
@@ -4899,6 +4905,9 @@ void ClientDisconnect( int clientNum ) {
 	if ( !ent->client || ent->client->pers.connected == CON_DISCONNECTED ) {
 		return;
 	}
+
+	G_FlyingRespawn_FreeClient(&ent->client->pers.flyingRespawn);
+	G_FlyingRespawn_InitClient(&ent->client->pers.flyingRespawn);
 
 //JAPRO - Serverside - Stop those pesky reconnect whores - Start
 	if (g_fixKillCredit.integer > 1 && (ent->health > 0) && !(ent->r.svFlags & SVF_BOT) && 0 <= ent->client->ps.otherKiller && ent->client->ps.otherKiller < MAX_CLIENTS && ent->client->ps.otherKillerTime > level.time && ent->client->sess.sessionTeam != TEAM_SPECTATOR)

@@ -11,6 +11,29 @@ static int FR_Index(int head, int offset, int capacity)
 	return (int)(((size_t)head + offset) % capacity);
 }
 
+static void FR_ClearCapture(flyingRespawnCapture_t *capture)
+{
+	free(capture->commands);
+	memset(capture, 0, sizeof(*capture));
+}
+
+static qboolean FR_AppendCapture(flyingRespawnCapture_t *capture, const flyingRespawnRawCmd_t *cmd)
+{
+	if (capture->commandCount == capture->commandCapacity) {
+		int capacity;
+		flyingRespawnRawCmd_t *commands;
+		if (capture->commandCapacity > INT_MAX / 2) return qfalse;
+		capacity = capture->commandCapacity ? capture->commandCapacity * 2 : 32;
+		if ((size_t)capacity > SIZE_MAX / sizeof(*commands)) return qfalse;
+		commands = (flyingRespawnRawCmd_t *)realloc(capture->commands, (size_t)capacity * sizeof(*commands));
+		if (!commands) return qfalse;
+		capture->commands = commands;
+		capture->commandCapacity = capacity;
+	}
+	capture->commands[capture->commandCount++] = *cmd;
+	return qtrue;
+}
+
 void G_FlyingRespawn_InitClient(flyingRespawnState_t *state)
 {
 	memset(state, 0, sizeof(*state));
@@ -28,6 +51,13 @@ void G_FlyingRespawn_FreeHistory(flyingRespawnState_t *state)
 	state->commandDroppedThrough = state->stateDroppedThrough = INT_MIN;
 	state->historyGeneration++;
 	memset(&state->replay, 0, sizeof(state->replay));
+}
+
+void G_FlyingRespawn_FreeClient(flyingRespawnState_t *state)
+{
+	G_FlyingRespawn_FreeHistory(state);
+	FR_ClearCapture(&state->manualSave);
+	FR_ClearCapture(&state->automaticCheckpoint);
 }
 
 qboolean G_FlyingRespawn_Configure(flyingRespawnState_t *state, int rewindMs, int releaseOffsetMs, int testMode)
@@ -80,7 +110,7 @@ int G_FlyingRespawn_GetSecondaryElapsed(const flyingRespawnState_t *state, int s
 
 void G_FlyingRespawn_ResetRun(flyingRespawnState_t *state, int serverTime)
 {
-	memset(&state->automaticCheckpoint, 0, sizeof(state->automaticCheckpoint));
+	FR_ClearCapture(&state->automaticCheckpoint);
 	memset(&state->replay, 0, sizeof(state->replay));
 	state->respawnCount = 0;
 	state->runInvalid = state->mismatch = qfalse;
@@ -109,6 +139,8 @@ void G_FlyingRespawn_RecordRawCmd(flyingRespawnState_t *state, int serverTime, c
 	slot = FR_Index(state->commandHead, state->commandCount++, state->historyCapacity);
 	state->rawCommands[slot].serverTime = serverTime;
 	state->rawCommands[slot].cmd = *cmd;
+	if (state->automaticCheckpoint.pending && !FR_AppendCapture(&state->automaticCheckpoint, &state->rawCommands[slot]))
+		FR_ClearCapture(&state->automaticCheckpoint);
 	state->historyGeneration++;
 }
 
@@ -185,6 +217,196 @@ qboolean G_FlyingRespawn_BeginTestReplay(flyingRespawnState_t *state, int server
 	state->replay.active = state->replay.testReplay = qtrue;
 	state->replay.selection = selection;
 	state->replay.startServerTime = serverTime;
+	return qtrue;
+}
+
+/* Snapshot only movement/progress: official timer fields deliberately have no path here. */
+void G_FlyingRespawn_ReadMovement(flyingRespawnMovement_t *m, const playerState_t *ps, int style, int checkpoints, int courseID)
+{
+	memset(m, 0, sizeof(*m));
+	memcpy(m->origin, ps->origin, sizeof(m->origin));
+	memcpy(m->velocity, ps->velocity, sizeof(m->velocity));
+	memcpy(m->viewangles, ps->viewangles, sizeof(m->viewangles));
+	memcpy(m->deltaAngles, ps->delta_angles, sizeof(m->deltaAngles));
+	memcpy(m->moveDir, ps->moveDir, sizeof(m->moveDir));
+	m->commandTime = ps->commandTime;
+	m->pmFlags = ps->pm_flags;
+	m->pmTime = ps->pm_time;
+	m->pmType = ps->pm_type;
+	m->groundEntityNum = ps->groundEntityNum;
+	m->movementStyle = style;
+	m->checkpoints = checkpoints;
+	m->courseID = courseID;
+	m->forcePower = ps->fd.forcePower;
+	m->forcePowersActive = ps->fd.forcePowersActive;
+	m->forcePowerSelected = ps->fd.forcePowerSelected;
+	m->forceButtonNeedRelease = ps->fd.forceButtonNeedRelease;
+	memcpy(m->forcePowerDebounce, ps->fd.forcePowerDebounce, sizeof(m->forcePowerDebounce));
+	memcpy(m->forcePowerDuration, ps->fd.forcePowerDuration, sizeof(m->forcePowerDuration));
+	m->forcePowerRegenDebounceTime = ps->fd.forcePowerRegenDebounceTime;
+	m->forceJumpZStart = ps->fd.forceJumpZStart;
+	m->forceJumpCharge = ps->fd.forceJumpCharge;
+	m->forceJumpAddTime = ps->fd.forceJumpAddTime;
+	m->legsAnim = ps->legsAnim;
+	m->legsTimer = ps->legsTimer;
+	m->torsoAnim = ps->torsoAnim;
+	m->torsoTimer = ps->torsoTimer;
+	m->bobCycle = ps->bobCycle;
+	m->movementDir = ps->movementDir;
+	m->lastOnGround = ps->lastOnGround;
+	m->gravity = ps->gravity;
+	m->speed = ps->speed;
+	m->basespeed = ps->basespeed;
+}
+
+static int FR_ShiftTime(int time, int offset)
+{
+	int64_t result = (int64_t)time + offset;
+	if (result > INT_MAX) return INT_MAX;
+	return result < INT_MIN ? INT_MIN : (int)result;
+}
+
+void G_FlyingRespawn_WriteMovement(playerState_t *ps, const flyingRespawnMovement_t *m, int offset)
+{
+	int i;
+	memcpy(ps->origin, m->origin, sizeof(m->origin));
+	memcpy(ps->velocity, m->velocity, sizeof(m->velocity));
+	memcpy(ps->viewangles, m->viewangles, sizeof(m->viewangles));
+	memcpy(ps->delta_angles, m->deltaAngles, sizeof(m->deltaAngles));
+	memcpy(ps->moveDir, m->moveDir, sizeof(m->moveDir));
+	ps->commandTime = FR_ShiftTime(m->commandTime, offset);
+	ps->pm_flags = m->pmFlags;
+	ps->pm_time = m->pmTime;
+	ps->pm_type = m->pmType;
+	ps->groundEntityNum = m->groundEntityNum;
+	ps->fd.forcePower = m->forcePower;
+	ps->fd.forcePowersActive = m->forcePowersActive;
+	ps->fd.forcePowerSelected = m->forcePowerSelected;
+	ps->fd.forceButtonNeedRelease = m->forceButtonNeedRelease;
+	for (i = 0; i < NUM_FORCE_POWERS; ++i) {
+		ps->fd.forcePowerDebounce[i] = m->forcePowerDebounce[i] ? FR_ShiftTime(m->forcePowerDebounce[i], offset) : 0;
+		ps->fd.forcePowerDuration[i] = m->forcePowerDuration[i] ? FR_ShiftTime(m->forcePowerDuration[i], offset) : 0;
+	}
+	ps->fd.forcePowerRegenDebounceTime = m->forcePowerRegenDebounceTime ? FR_ShiftTime(m->forcePowerRegenDebounceTime, offset) : 0;
+	ps->fd.forceJumpAddTime = m->forceJumpAddTime ? FR_ShiftTime(m->forceJumpAddTime, offset) : 0;
+	ps->fd.forceJumpZStart = m->forceJumpZStart;
+	ps->fd.forceJumpCharge = m->forceJumpCharge;
+	ps->legsAnim = m->legsAnim;
+	ps->legsTimer = m->legsTimer;
+	ps->torsoAnim = m->torsoAnim;
+	ps->torsoTimer = m->torsoTimer;
+	ps->bobCycle = m->bobCycle;
+	ps->movementDir = m->movementDir;
+	ps->lastOnGround = m->lastOnGround ? FR_ShiftTime(m->lastOnGround, offset) : 0;
+	ps->gravity = m->gravity;
+	ps->speed = m->speed;
+	ps->basespeed = m->basespeed;
+}
+
+static qboolean FR_FreezeHistory(const flyingRespawnState_t *state, int serverTime, int rewindMs, flyingRespawnCapture_t *capture)
+{
+	flyingRespawnSelection_t selection;
+	flyingRespawnRawCmd_t cmd;
+	int i;
+	if (rewindMs < 0 || (int64_t)serverTime - rewindMs < INT_MIN ||
+		!G_FlyingRespawn_SelectHistory(state, serverTime - rewindMs, serverTime, &selection)) return qfalse;
+	capture->start = selection.snapshot;
+	for (i = 0; i < selection.commandCount; ++i) {
+		if (!G_FlyingRespawn_GetSelectedCmd(state, &selection, i, &cmd) || !FR_AppendCapture(capture, &cmd)) {
+			FR_ClearCapture(capture);
+			return qfalse;
+		}
+	}
+	return qtrue;
+}
+
+qboolean G_FlyingRespawn_CaptureManual(flyingRespawnState_t *state, int time, const flyingRespawnMovement_t *movement)
+{
+	flyingRespawnCapture_t capture;
+	if (!movement || state->replay.active) return qfalse;
+	memset(&capture, 0, sizeof(capture));
+	if (!state->rewindMs || !FR_FreezeHistory(state, time, state->rewindMs, &capture)) {
+		/* A bookmark made before a full approach exists remains an ordinary saved pose. */
+		capture.start.serverTime = time;
+		capture.start.movement = *movement;
+	}
+	capture.snapshot.serverTime = time;
+	capture.snapshot.movement = *movement;
+	capture.handoff = capture.snapshot;
+	capture.valid = qtrue;
+	FR_ClearCapture(&state->manualSave);
+	state->manualSave = capture;
+	return qtrue;
+}
+
+qboolean G_FlyingRespawn_BeginManualReplay(flyingRespawnState_t *state, int time, qboolean practice)
+{
+	flyingRespawnCapture_t *capture = &state->manualSave;
+	int64_t duration = (int64_t)capture->snapshot.serverTime - capture->start.serverTime;
+	if (!practice || state->replay.active || !capture->valid || duration < 0 || (int64_t)time + duration > INT_MAX) return qfalse;
+	memset(&state->replay, 0, sizeof(state->replay));
+	state->replay.active = state->replay.manualReplay = qtrue;
+	state->replay.selection.snapshot = capture->start;
+	state->replay.selection.endServerTime = capture->snapshot.serverTime;
+	state->replay.selection.commandCount = capture->commandCount;
+	state->replay.startServerTime = time;
+	state->replay.releaseServerTime = time + (int)duration;
+	return qtrue;
+}
+
+qboolean G_FlyingRespawn_NextManualCmd(flyingRespawnState_t *state, int time, flyingRespawnRawCmd_t *cmd)
+{
+	flyingRespawnReplay_t *replay = &state->replay;
+	const flyingRespawnCapture_t *capture = &state->manualSave;
+	const flyingRespawnRawCmd_t *next;
+	if (!cmd || !replay->active || !replay->manualReplay || replay->commandCursor >= capture->commandCount) return qfalse;
+	next = &capture->commands[replay->commandCursor];
+	if ((int64_t)time - replay->startServerTime < (int64_t)next->serverTime - capture->start.serverTime) return qfalse;
+	*cmd = *next;
+	replay->commandCursor++;
+	return qtrue;
+}
+
+qboolean G_FlyingRespawn_FinishManualReplay(flyingRespawnState_t *state, int time, qboolean practice)
+{
+	flyingRespawnReplay_t *replay = &state->replay;
+	if (!practice || !replay->active || !replay->manualReplay || time < replay->releaseServerTime ||
+		replay->commandCursor < state->manualSave.commandCount) return qfalse;
+	replay->active = qfalse;
+	return qtrue;
+}
+
+qboolean G_FlyingRespawn_CaptureAutomaticStart(flyingRespawnState_t *state, int time, const flyingRespawnMovement_t *movement, int rewindMs, int releaseMs)
+{
+	flyingRespawnCapture_t capture;
+	if (state->replay.active || !movement || rewindMs < 0 || releaseMs < 0 || (int64_t)time + releaseMs > INT_MAX) return qfalse;
+	FR_ClearCapture(&state->automaticCheckpoint);
+	memset(&capture, 0, sizeof(capture));
+	if (rewindMs) {
+		if (!FR_FreezeHistory(state, time, rewindMs, &capture)) return qfalse;
+	} else {
+		capture.start.serverTime = time;
+		capture.start.movement = *movement;
+	}
+	capture.snapshot.serverTime = time;
+	capture.snapshot.movement = *movement;
+	capture.secondaryElapsedMs = G_FlyingRespawn_GetSecondaryElapsed(state, time);
+	capture.releaseServerTime = time + releaseMs;
+	capture.pending = releaseMs > 0 ? qtrue : qfalse;
+	capture.valid = !capture.pending;
+	capture.handoff = capture.snapshot;
+	state->automaticCheckpoint = capture;
+	return qtrue;
+}
+
+qboolean G_FlyingRespawn_CaptureAutomaticHandoff(flyingRespawnState_t *state, int time, const flyingRespawnMovement_t *movement)
+{
+	flyingRespawnCapture_t *capture = &state->automaticCheckpoint;
+	if (!movement || !capture->pending || state->replay.active || time < capture->releaseServerTime) return qfalse;
+	capture->handoff.serverTime = time;
+	capture->handoff.movement = *movement;
+	capture->pending = qfalse;
+	capture->valid = qtrue;
 	return qtrue;
 }
 

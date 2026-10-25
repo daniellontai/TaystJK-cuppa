@@ -578,7 +578,7 @@ void G_ShutdownGame( int restart ) {
 //	trap->Print ("==== ShutdownGame ====\n");
 
 	for (i = 0; i < MAX_CLIENTS; i++)
-		G_FlyingRespawn_FreeHistory(&g_clients[i].pers.flyingRespawn);
+		G_FlyingRespawn_FreeClient(&g_clients[i].pers.flyingRespawn);
 	i = 0;
 	G_CleanAllFakeClients(); //get rid of dynamically allocated fake client structs.
 

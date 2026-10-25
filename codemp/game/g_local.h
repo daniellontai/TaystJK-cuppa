@@ -896,12 +896,8 @@ typedef struct clientPersistant_s {
 
 	flyingRespawnState_t flyingRespawn;
 
-	// savepos/respos state (practice mode only)
+	// Frozen pose/input is owned by flyingRespawn.manualSave; only manual practice timer data follows.
 	qboolean	savePosUsed;
-	vec3_t		savePosPosition;
-	vec3_t		savePosVelocity;
-	vec3_t		savePosAngle;
-	int			savePosForce;
 	// timer snapshot at savepos time (savePosTimerElapsed == 0 means timer was not running)
 	int			savePosTimerElapsed;		// trap->Milliseconds() - stats.startTime
 	int			savePosLevelTimeElapsed;	// level.time - stats.startLevelTime
@@ -1936,6 +1932,10 @@ void G_CheckClientTimeouts	( gentity_t *ent );
 void ClientThink			( int clientNum, usercmd_t *ucmd );
 void ClientEndFrame			( gentity_t *ent );
 void G_RunClient			( gentity_t *ent );
+void G_FlyingRespawn_CaptureMovement(gentity_t *ent, flyingRespawnMovement_t *movement);
+void G_FlyingRespawn_RestoreMovement(gentity_t *ent, const flyingRespawnSnapshot_t *snapshot, int timeOffset);
+qboolean G_FlyingRespawn_StartManualReplay(gentity_t *ent);
+void G_FlyingRespawn_ManualTimerHandoff(gentity_t *ent);
 
 //
 // g_team.c

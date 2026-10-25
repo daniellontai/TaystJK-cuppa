@@ -7258,29 +7258,18 @@ static void Cmd_Launch_f(gentity_t *ent)
 
 static void Cmd_Savepos_f(gentity_t *ent)
 {
-	if (!ent->client)
-		return;
-
-	if (!ent->client->pers.practice) {
-		trap->SendServerCommand(ent - g_entities, "print \"savepos is only available in practice mode.\n\"");
-		return;
-	}
-
+	flyingRespawnMovement_t movement;
+	if (!ent->client) return;
 	if (ent->client->noclip) {
 		trap->SendServerCommand(ent - g_entities, "print \"Can't save position during noclip.\n\"");
 		return;
 	}
-
 	if (ent->health <= 0) {
 		trap->SendServerCommand(ent - g_entities, "print \"You must be alive to save position.\n\"");
 		return;
 	}
-
-	VectorCopy(ent->client->ps.origin,     ent->client->pers.savePosPosition);
-	VectorCopy(ent->client->ps.velocity,   ent->client->pers.savePosVelocity);
-	VectorCopy(ent->client->ps.viewangles, ent->client->pers.savePosAngle);
-	ent->client->pers.savePosForce = ent->client->ps.fd.forcePower;
-
+	G_FlyingRespawn_CaptureMovement(ent, &movement);
+	if (!G_FlyingRespawn_CaptureManual(&ent->client->pers.flyingRespawn, level.time, &movement)) return;
 	if (ent->client->pers.stats.startTime) {
 		ent->client->pers.savePosTimerElapsed        = trap->Milliseconds() - ent->client->pers.stats.startTime;
 		ent->client->pers.savePosLevelTimeElapsed    = level.time - ent->client->pers.stats.startLevelTime;
@@ -7299,30 +7288,28 @@ static void Cmd_Savepos_f(gentity_t *ent)
 
 static void Cmd_Respos_f(gentity_t *ent)
 {
-	if (!ent->client)
-		return;
-
+	if (!ent->client) return;
 	if (!ent->client->pers.practice) {
 		trap->SendServerCommand(ent - g_entities, "print \"respos is only available in practice mode.\n\"");
 		return;
 	}
-
 	if (ent->client->noclip) {
 		trap->SendServerCommand(ent - g_entities, "print \"Can't restore position during noclip.\n\"");
 		return;
 	}
-
-	if (!ent->client->pers.savePosUsed) {
+	if (!ent->client->pers.flyingRespawn.manualSave.valid) {
 		trap->SendServerCommand(ent - g_entities, "print \"Cannot restore position: none saved.\n\"");
 		return;
 	}
+	G_FlyingRespawn_StartManualReplay(ent);
+}
 
-	VectorCopy(ent->client->pers.savePosPosition, ent->client->ps.origin);
-	VectorCopy(ent->client->pers.savePosVelocity, ent->client->ps.velocity);
-	SetClientViewAngle(ent, ent->client->pers.savePosAngle);
-	ent->client->ps.eFlags ^= EF_TELEPORT_BIT;
-	ent->client->ps.fd.forcePower = ent->client->pers.savePosForce < ent->client->ps.fd.forcePowerMax ? ent->client->pers.savePosForce : ent->client->ps.fd.forcePowerMax;
-
+/* Called only by the manual practice replay handoff. The existing timer semantics stay here. */
+void G_FlyingRespawn_ManualTimerHandoff(gentity_t *ent)
+{
+	if (!ent->client || !ent->client->pers.practice ||
+		ent->client->pers.flyingRespawn.replay.active ||
+		!ent->client->pers.flyingRespawn.replay.manualReplay) return;
 	if (ent->client->pers.savePosTimerElapsed) {
 		ent->client->pers.stats.startTime           = trap->Milliseconds() - ent->client->pers.savePosTimerElapsed;
 		ent->client->pers.stats.startLevelTime      = level.time - ent->client->pers.savePosLevelTimeElapsed;

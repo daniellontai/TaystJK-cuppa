@@ -6,7 +6,7 @@
 struct FlyingHistory {
     flyingRespawnState_t state = {};
     FlyingHistory() { G_FlyingRespawn_InitClient(&state); }
-    ~FlyingHistory() { G_FlyingRespawn_FreeHistory(&state); }
+    ~FlyingHistory() { G_FlyingRespawn_FreeClient(&state); }
 };
 
 // Catches selecting the newest state instead of the last state preceding rewind.
@@ -154,4 +154,236 @@ BOOST_AUTO_TEST_CASE(flying_respawn_history_keeps_commands_for_sampled_predecess
     BOOST_REQUIRE(G_FlyingRespawn_SelectHistory(&h.state, 1550, 3050, &selected));
     BOOST_CHECK_EQUAL(selected.snapshot.serverTime, 1500);
     BOOST_CHECK_EQUAL(selected.commandCount, 1550);
+}
+
+// Catches manual bookmarks borrowing rolling storage or changing live run state.
+BOOST_AUTO_TEST_CASE(flying_respawn_manual_freezes_input_without_live_side_effects)
+{
+    FlyingHistory h;
+    BOOST_REQUIRE(G_FlyingRespawn_Configure(&h.state, 100, 0, 0));
+    flyingRespawnMovement_t movement = {};
+    usercmd_t cmd = {};
+    for (int time : {1000, 1050, 1100}) {
+        movement.commandTime = cmd.serverTime = time;
+        movement.origin[0] = static_cast<float>(time);
+        cmd.forwardmove = static_cast<signed char>((time - 1000) / 10);
+        G_FlyingRespawn_RecordRawCmd(&h.state, time, &cmd);
+        G_FlyingRespawn_RecordState(&h.state, time, &movement);
+    }
+    h.state.respawnCount = 3;
+    G_FlyingRespawn_ResetSecondarySegment(&h.state, 1000, 42);
+    const auto generation = h.state.historyGeneration;
+    BOOST_REQUIRE(G_FlyingRespawn_CaptureManual(&h.state, 1100, &movement));
+    BOOST_CHECK_EQUAL(h.state.historyGeneration, generation);
+    BOOST_CHECK_EQUAL(h.state.commandCount, 3);
+    BOOST_CHECK_EQUAL(h.state.respawnCount, 3);
+    BOOST_CHECK_EQUAL(G_FlyingRespawn_GetSecondaryElapsed(&h.state, 1100), 142);
+    BOOST_CHECK(!h.state.replay.active);
+    BOOST_CHECK(!h.state.runInvalid);
+    BOOST_CHECK_EQUAL(movement.origin[0], 1100);
+    for (int time = 1101; time <= 3500; ++time) {
+        cmd.serverTime = movement.commandTime = time;
+        cmd.forwardmove = 99;
+        G_FlyingRespawn_RecordRawCmd(&h.state, time, &cmd);
+        G_FlyingRespawn_RecordState(&h.state, time, &movement);
+    }
+    BOOST_CHECK(!G_FlyingRespawn_BeginManualReplay(&h.state, 4000, qfalse));
+    BOOST_REQUIRE(G_FlyingRespawn_BeginManualReplay(&h.state, 4000, qtrue));
+    BOOST_CHECK_EQUAL(h.state.replay.selection.snapshot.movement.origin[0], 1000);
+    flyingRespawnRawCmd_t raw = {};
+    BOOST_CHECK(!G_FlyingRespawn_NextManualCmd(&h.state, 4049, &raw));
+    BOOST_REQUIRE(G_FlyingRespawn_NextManualCmd(&h.state, 4050, &raw));
+    BOOST_CHECK_EQUAL(raw.cmd.serverTime, 1050);
+    BOOST_CHECK_EQUAL(raw.cmd.forwardmove, 5);
+    BOOST_REQUIRE(G_FlyingRespawn_NextManualCmd(&h.state, 4100, &raw));
+    BOOST_CHECK_EQUAL(raw.cmd.forwardmove, 10);
+    BOOST_CHECK_EQUAL(h.state.respawnCount, 3);
+}
+
+// Catches restoring the practice timer early, repeatedly, or from non-manual playback.
+BOOST_AUTO_TEST_CASE(flying_respawn_manual_handoff_is_practice_only_and_once)
+{
+    FlyingHistory h;
+    BOOST_REQUIRE(G_FlyingRespawn_Configure(&h.state, 100, 0, 0));
+    flyingRespawnMovement_t movement = {};
+    movement.commandTime = 1000;
+    G_FlyingRespawn_RecordState(&h.state, 1000, &movement);
+    usercmd_t cmd = {};
+    cmd.serverTime = movement.commandTime = 1100;
+    G_FlyingRespawn_RecordRawCmd(&h.state, 1100, &cmd);
+    BOOST_REQUIRE(G_FlyingRespawn_CaptureManual(&h.state, 1100, &movement));
+    BOOST_REQUIRE(G_FlyingRespawn_BeginManualReplay(&h.state, 2000, qtrue));
+    BOOST_CHECK(!G_FlyingRespawn_FinishManualReplay(&h.state, 2100, qtrue)); // command must be simulated first
+    flyingRespawnRawCmd_t raw = {};
+    BOOST_REQUIRE(G_FlyingRespawn_NextManualCmd(&h.state, 2100, &raw));
+    BOOST_CHECK(!G_FlyingRespawn_FinishManualReplay(&h.state, 2099, qtrue));
+    BOOST_CHECK(!G_FlyingRespawn_FinishManualReplay(&h.state, 2100, qfalse));
+    BOOST_REQUIRE(G_FlyingRespawn_FinishManualReplay(&h.state, 2100, qtrue));
+    BOOST_CHECK(!h.state.replay.active);
+    BOOST_CHECK(!G_FlyingRespawn_FinishManualReplay(&h.state, 2100, qtrue));
+}
+
+// Catches discarding earlier commands received within the same server tick.
+BOOST_AUTO_TEST_CASE(flying_respawn_manual_keeps_same_tick_commands)
+{
+    FlyingHistory h;
+    BOOST_REQUIRE(G_FlyingRespawn_Configure(&h.state, 100, 0, 0));
+    flyingRespawnMovement_t movement = {};
+    movement.commandTime = 1000;
+    G_FlyingRespawn_RecordState(&h.state, 1000, &movement);
+    usercmd_t cmd = {};
+    for (int commandTime : {1010, 1020, 1030}) {
+        cmd.serverTime = movement.commandTime = commandTime;
+        G_FlyingRespawn_RecordRawCmd(&h.state, 1050, &cmd);
+        G_FlyingRespawn_RecordState(&h.state, 1050, &movement);
+    }
+    BOOST_REQUIRE(G_FlyingRespawn_CaptureManual(&h.state, 1100, &movement));
+    BOOST_REQUIRE(G_FlyingRespawn_BeginManualReplay(&h.state, 2000, qtrue));
+    flyingRespawnRawCmd_t raw = {};
+    for (int expected : {1010, 1020, 1030}) {
+        BOOST_REQUIRE(G_FlyingRespawn_NextManualCmd(&h.state, 2050, &raw));
+        BOOST_CHECK_EQUAL(raw.cmd.serverTime, expected);
+    }
+    BOOST_CHECK(!G_FlyingRespawn_NextManualCmd(&h.state, 2100, &raw));
+}
+
+// Catches incomplete movement/Force restoration or accidental official HUD timer writes.
+BOOST_AUTO_TEST_CASE(flying_respawn_manual_movement_roundtrip_keeps_timer_untouched)
+{
+    playerState_t original = {}, restored = {};
+    original.origin[0] = 12;
+    original.velocity[2] = 345;
+    original.viewangles[1] = 90;
+    original.delta_angles[1] = 42;
+    original.commandTime = 1000;
+    original.pm_flags = 17;
+    original.pm_time = 25;
+    original.groundEntityNum = 1023;
+    original.fd.forcePower = 37;
+    original.fd.forcePowersActive = 1 << FP_SPEED;
+    original.fd.forcePowerDuration[FP_SPEED] = 1500;
+    original.fd.forcePowerDebounce[FP_LEVITATION] = 1200;
+    original.fd.forcePowerRegenDebounceTime = 1300;
+    original.fd.forceJumpZStart = 91;
+    original.fd.forceJumpCharge = 7;
+    original.legsTimer = 23;
+    original.lastOnGround = 900;
+    original.duelTime = 123;
+    restored.duelTime = 777;
+    flyingRespawnMovement_t movement = {};
+    G_FlyingRespawn_ReadMovement(&movement, &original, 4, 5, 6);
+    G_FlyingRespawn_WriteMovement(&restored, &movement, 2000);
+    BOOST_CHECK_EQUAL(restored.origin[0], 12);
+    BOOST_CHECK_EQUAL(restored.velocity[2], 345);
+    BOOST_CHECK_EQUAL(restored.viewangles[1], 90);
+    BOOST_CHECK_EQUAL(restored.delta_angles[1], 42);
+    BOOST_CHECK_EQUAL(restored.commandTime, 3000);
+    BOOST_CHECK_EQUAL(restored.pm_flags, 17);
+    BOOST_CHECK_EQUAL(restored.pm_time, 25);
+    BOOST_CHECK_EQUAL(restored.groundEntityNum, 1023);
+    BOOST_CHECK_EQUAL(restored.fd.forcePower, 37);
+    BOOST_CHECK_EQUAL(restored.fd.forcePowersActive, 1 << FP_SPEED);
+    BOOST_CHECK_EQUAL(restored.fd.forcePowerDuration[FP_SPEED], 3500);
+    BOOST_CHECK_EQUAL(restored.fd.forcePowerDebounce[FP_LEVITATION], 3200);
+    BOOST_CHECK_EQUAL(restored.fd.forcePowerRegenDebounceTime, 3300);
+    BOOST_CHECK_EQUAL(restored.fd.forceJumpZStart, 91);
+    BOOST_CHECK_EQUAL(restored.fd.forceJumpCharge, 7);
+    BOOST_CHECK_EQUAL(restored.lastOnGround, 2900);
+    BOOST_CHECK_EQUAL(restored.duelTime, 777);
+    BOOST_CHECK_EQUAL(movement.movementStyle, 4);
+    BOOST_CHECK_EQUAL(movement.checkpoints, 5);
+    BOOST_CHECK_EQUAL(movement.courseID, 6);
+}
+
+// Catches savepos becoming unavailable immediately after spawn or with rewind zero.
+BOOST_AUTO_TEST_CASE(flying_respawn_manual_without_history_uses_saved_pose)
+{
+    FlyingHistory h;
+    BOOST_REQUIRE(G_FlyingRespawn_Configure(&h.state, 1500, 0, 0));
+    flyingRespawnMovement_t movement = {};
+    movement.origin[0] = 42;
+    BOOST_REQUIRE(G_FlyingRespawn_CaptureManual(&h.state, 1000, &movement));
+    G_FlyingRespawn_ResetRun(&h.state, 2000);
+    BOOST_REQUIRE(G_FlyingRespawn_BeginManualReplay(&h.state, 3000, qtrue));
+    BOOST_CHECK_EQUAL(h.state.replay.selection.snapshot.movement.origin[0], 42);
+    BOOST_CHECK(G_FlyingRespawn_FinishManualReplay(&h.state, 3000, qtrue));
+}
+
+// Catches positive-release captures losing their approach when the rolling ring expires.
+BOOST_AUTO_TEST_CASE(flying_respawn_manual_shared_capture_owns_pending_automatic_input)
+{
+    FlyingHistory h;
+    BOOST_REQUIRE(G_FlyingRespawn_Configure(&h.state, 100, 0, 0));
+    flyingRespawnMovement_t movement = {};
+    movement.commandTime = 1000;
+    G_FlyingRespawn_RecordState(&h.state, 1000, &movement);
+    usercmd_t cmd = {};
+    cmd.serverTime = movement.commandTime = 1100;
+    G_FlyingRespawn_RecordRawCmd(&h.state, 1100, &cmd);
+    BOOST_REQUIRE(G_FlyingRespawn_CaptureAutomaticStart(&h.state, 1100, &movement, 100, 2000));
+    BOOST_CHECK(h.state.automaticCheckpoint.pending);
+    BOOST_CHECK(!h.state.automaticCheckpoint.valid);
+    for (int time = 1101; time <= 3100; ++time) {
+        cmd.serverTime = movement.commandTime = time;
+        G_FlyingRespawn_RecordRawCmd(&h.state, time, &cmd);
+        G_FlyingRespawn_RecordState(&h.state, time, &movement);
+    }
+    BOOST_REQUIRE(G_FlyingRespawn_CaptureAutomaticHandoff(&h.state, 3100, &movement));
+    BOOST_CHECK(h.state.automaticCheckpoint.valid);
+    BOOST_CHECK(!h.state.automaticCheckpoint.pending);
+    BOOST_CHECK_EQUAL(h.state.automaticCheckpoint.start.serverTime, 1000);
+    BOOST_CHECK_EQUAL(h.state.automaticCheckpoint.commandCount, 2001);
+    BOOST_CHECK_EQUAL(h.state.automaticCheckpoint.commands[0].cmd.serverTime, 1100);
+    BOOST_CHECK_EQUAL(h.state.automaticCheckpoint.commands[2000].cmd.serverTime, 3100);
+    G_FlyingRespawn_ResetRun(&h.state, 4000);
+    BOOST_CHECK(!h.state.automaticCheckpoint.valid);
+    BOOST_CHECK(h.state.automaticCheckpoint.commands == nullptr);
+}
+
+// Catches stale pre-save movement replacing the saved pose when rewind is zero.
+BOOST_AUTO_TEST_CASE(flying_respawn_manual_zero_rewind_restores_exact_saved_pose)
+{
+    FlyingHistory h;
+    BOOST_REQUIRE(G_FlyingRespawn_Configure(&h.state, 0, 0, 0));
+    flyingRespawnMovement_t movement = {};
+    movement.origin[0] = 10;
+    G_FlyingRespawn_RecordState(&h.state, 1000, &movement);
+    movement.origin[0] = 42; // a map action since the last completed command
+    BOOST_REQUIRE(G_FlyingRespawn_CaptureManual(&h.state, 1000, &movement));
+    BOOST_REQUIRE(G_FlyingRespawn_BeginManualReplay(&h.state, 2000, qtrue));
+    BOOST_CHECK_EQUAL(h.state.replay.selection.snapshot.movement.origin[0], 42);
+    BOOST_CHECK(G_FlyingRespawn_FinishManualReplay(&h.state, 2000, qtrue));
+}
+
+// Catches reconfiguration discarding bookmarks, replay contaminating live history, or double frees.
+BOOST_AUTO_TEST_CASE(flying_respawn_manual_owner_survives_configuration_and_disposes_safely)
+{
+    FlyingHistory h;
+    BOOST_REQUIRE(G_FlyingRespawn_Configure(&h.state, 100, 0, 0));
+    flyingRespawnMovement_t movement = {};
+    movement.commandTime = 1000;
+    G_FlyingRespawn_RecordState(&h.state, 1000, &movement);
+    usercmd_t cmd = {};
+    cmd.serverTime = movement.commandTime = 1100;
+    cmd.forwardmove = 17;
+    G_FlyingRespawn_RecordRawCmd(&h.state, 1100, &cmd);
+    BOOST_REQUIRE(G_FlyingRespawn_CaptureManual(&h.state, 1100, &movement));
+    BOOST_REQUIRE(G_FlyingRespawn_Configure(&h.state, 1500, 0, 1));
+    BOOST_REQUIRE(G_FlyingRespawn_BeginManualReplay(&h.state, 2000, qtrue));
+    const auto generation = h.state.historyGeneration;
+    cmd.forwardmove = 127;
+    G_FlyingRespawn_RecordRawCmd(&h.state, 2100, &cmd);
+    G_FlyingRespawn_RecordState(&h.state, 2100, &movement);
+    BOOST_CHECK_EQUAL(h.state.commandCount, 0);
+    BOOST_CHECK_EQUAL(h.state.stateCount, 0);
+    BOOST_CHECK_EQUAL(h.state.historyGeneration, generation);
+    BOOST_CHECK(!G_FlyingRespawn_CaptureManual(&h.state, 2100, &movement));
+    flyingRespawnRawCmd_t raw = {};
+    BOOST_REQUIRE(G_FlyingRespawn_NextManualCmd(&h.state, 2100, &raw));
+    BOOST_CHECK_EQUAL(raw.cmd.forwardmove, 17);
+    G_FlyingRespawn_FreeClient(&h.state);
+    BOOST_CHECK(!h.state.manualSave.valid);
+    BOOST_CHECK(h.state.manualSave.commands == nullptr);
+    BOOST_CHECK(h.state.rawCommands == nullptr);
+    G_FlyingRespawn_FreeClient(&h.state);
 }

@@ -5911,6 +5911,107 @@ void G_CheckClientTimeouts ( gentity_t *ent )
 	}
 }
 
+
+/* These hooks see only real player commands; substituted replay commands never re-enter history. */
+static qboolean FlyingRespawnPlayer(const gentity_t *ent)
+{
+	return ent->client && ent->s.number < MAX_CLIENTS && ent->s.eType != ET_NPC &&
+		ent->client->pers.connected == CON_CONNECTED &&
+		ent->client->sess.sessionTeam != TEAM_SPECTATOR;
+}
+
+void G_FlyingRespawn_CaptureMovement(gentity_t *ent, flyingRespawnMovement_t *movement)
+{
+	G_FlyingRespawn_ReadMovement(movement, &ent->client->ps, ent->client->sess.movementStyle,
+		ent->client->pers.stats.checkpoints, ent->client->pers.stats.courseID);
+}
+
+void G_FlyingRespawn_RestoreMovement(gentity_t *ent, const flyingRespawnSnapshot_t *snapshot, int timeOffset)
+{
+	gclient_t *client = ent->client;
+	G_FlyingRespawn_WriteMovement(&client->ps, &snapshot->movement, timeOffset);
+	client->sess.movementStyle = snapshot->movement.movementStyle;
+	client->pers.stats.checkpoints = snapshot->movement.checkpoints;
+	client->pers.stats.courseID = snapshot->movement.courseID;
+	/* Force limits remain owned by practice/maxforce, as with the old respos command. */
+	if (client->ps.fd.forcePower > client->ps.fd.forcePowerMax)
+		client->ps.fd.forcePower = client->ps.fd.forcePowerMax;
+	client->ps.eFlags ^= EF_TELEPORT_BIT;
+	VectorCopy(client->ps.origin, ent->r.currentOrigin);
+	VectorCopy(client->ps.origin, client->oldOrigin);
+	client->oldFlags = client->ps.eFlags;
+	trap->LinkEntity((sharedEntity_t *)ent);
+}
+
+qboolean G_FlyingRespawn_StartManualReplay(gentity_t *ent)
+{
+	flyingRespawnState_t *state = &ent->client->pers.flyingRespawn;
+	if (!G_FlyingRespawn_BeginManualReplay(state, level.time, ent->client->pers.practice)) return qfalse;
+	state->replay.liveCmd = ent->client->pers.cmd;
+	state->replay.hasLiveCmd = qtrue;
+	G_FlyingRespawn_RestoreMovement(ent, &state->replay.selection.snapshot,
+		level.time - state->replay.selection.snapshot.serverTime);
+	if (G_FlyingRespawn_FinishManualReplay(state, level.time, ent->client->pers.practice))
+		G_FlyingRespawn_ManualTimerHandoff(ent);
+	return qtrue;
+}
+
+static void FlyingRespawnRawInput(gentity_t *ent)
+{
+	flyingRespawnState_t *state;
+	if (!FlyingRespawnPlayer(ent)) return;
+	state = &ent->client->pers.flyingRespawn;
+	if (state->replay.active) {
+		state->replay.liveCmd = ent->client->pers.cmd;
+		state->replay.hasLiveCmd = qtrue;
+		return;
+	}
+	/* Run-start integration owns snapshotted defaults once its secondary segment runs. */
+	if (!state->historyCapacity || !state->secondaryRunning) {
+		if (!G_FlyingRespawn_Configure(state, g_flyingRespawnRewindMs.integer,
+			g_flyingRespawnReleaseOffsetMs.integer, g_flyingRespawnTestMode.integer)) return;
+	}
+	G_FlyingRespawn_RecordRawCmd(state, level.time, &ent->client->pers.cmd);
+}
+
+static void FlyingRespawnPostMovement(gentity_t *ent)
+{
+	flyingRespawnMovement_t movement;
+	flyingRespawnState_t *state;
+	if (!FlyingRespawnPlayer(ent)) return;
+	state = &ent->client->pers.flyingRespawn;
+	if (state->replay.active) return;
+	G_FlyingRespawn_CaptureMovement(ent, &movement);
+	G_FlyingRespawn_RecordState(state, level.time, &movement);
+	G_FlyingRespawn_CaptureAutomaticHandoff(state, level.time, &movement);
+}
+
+static void FlyingRespawnThink(gentity_t *ent)
+{
+	flyingRespawnState_t *state = &ent->client->pers.flyingRespawn;
+	flyingRespawnRawCmd_t raw;
+	if (state->replay.active && state->replay.manualReplay) {
+		if (!ent->client->pers.practice || ent->health <= 0 || ent->client->noclip ||
+			ent->client->sess.sessionTeam == TEAM_SPECTATOR) {
+			state->replay.active = qfalse;
+			if (state->replay.hasLiveCmd) ent->client->pers.cmd = state->replay.liveCmd;
+			return;
+		}
+		while (G_FlyingRespawn_NextManualCmd(state, level.time, &raw)) {
+			ent->client->pers.cmd = raw.cmd;
+			ent->client->pers.cmd.serverTime += state->replay.startServerTime - state->replay.selection.snapshot.serverTime;
+			ClientThink_real(ent);
+		}
+		if (!G_FlyingRespawn_FinishManualReplay(state, level.time, ent->client->pers.practice)) return;
+		G_FlyingRespawn_ManualTimerHandoff(ent);
+		if (state->replay.hasLiveCmd) ent->client->pers.cmd = state->replay.liveCmd;
+		/* Preserve held input; only its timestamp is normalized for the next legal step. */
+		ent->client->pers.cmd.serverTime = level.time > ent->client->ps.commandTime ? level.time : ent->client->ps.commandTime + 1;
+	}
+	ClientThink_real(ent);
+	FlyingRespawnPostMovement(ent);
+}
+
 /*
 ==================
 ClientThink
@@ -5934,6 +6035,8 @@ void ClientThink( int clientNum, usercmd_t *ucmd ) {
 	{
 		ent->client->pers.cmd = *ucmd; //Somehow this crashes the server if you try to board a vehicle without it having spawned yet...? somtimes?
 	}
+
+	FlyingRespawnRawInput(ent);
 
 /* 	This was moved to clientthink_real, but since its sort of a risky change i left it here for
     now as a more concrete reference - BSD
@@ -5962,12 +6065,12 @@ void ClientThink( int clientNum, usercmd_t *ucmd ) {
 	}
 */
 	if ( !(ent->r.svFlags & SVF_BOT) && !g_synchronousClients.integer ) {
-		ClientThink_real( ent );
+		FlyingRespawnThink( ent );
 	}
 	// vehicles are clients and when running synchronous they still need to think here
 	// so special case them.
 	else if ( clientNum >= MAX_CLIENTS ) {
-		ClientThink_real( ent );
+		FlyingRespawnThink( ent );
 	}
 
 /*	This was moved to clientthink_real, but since its sort of a risky change i left it here for
@@ -6010,11 +6113,16 @@ static void ForceClientUpdate(gentity_t *ent) {
 	//Get rid of deadstops caused by lag (set their upmove to their last upmove) ..apparently this was really annoying for some people with bad net
 	//Still fixes the problem of lagging through triggers, or freezing midair etc..
 
-	ClientThink_real( ent );
+	FlyingRespawnThink( ent );
 }
 
 void G_RunClient( gentity_t *ent ) {
 	qboolean forceUpdateRate = qfalse;
+
+	if (ent->client->pers.flyingRespawn.replay.active && ent->client->pers.flyingRespawn.replay.manualReplay) {
+		FlyingRespawnThink(ent);
+		return;
+	}
 
 	//If racemode , do forceclientupdaterate hardcoded at like 4/5 hz ?
 
@@ -6100,7 +6208,7 @@ void G_RunClient( gentity_t *ent ) {
 		return;
 	}
 	ent->client->pers.cmd.serverTime = level.time;
-	ClientThink_real( ent );
+	FlyingRespawnThink( ent );
 }
 
 
