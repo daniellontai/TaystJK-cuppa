@@ -3781,17 +3781,17 @@ void ClientThink_real( gentity_t *ent ) {
 	
 	if (client->ps.stats[STAT_RACEMODE]) {//Is this really needed..
 		if (client->ps.stats[STAT_MOVEMENTSTYLE] == MV_OCPM) {
-			ucmd->serverTime = ((ucmd->serverTime + 7) / 8) * 8;
+			ucmd->serverTime = G_FlyingRespawn_QuantizeCmdTime(&client->pers.flyingRespawn, ucmd->serverTime, 8);
 		}
 		else {
 			if (msec < 3)
-				ucmd->serverTime = ((ucmd->serverTime + 2) / 3) * 3;//Integer math was making this bad, but is this even really needed? I guess for 125fps bhop height it is?
+				ucmd->serverTime = G_FlyingRespawn_QuantizeCmdTime(&client->pers.flyingRespawn, ucmd->serverTime, 3);//Integer math was making this bad, but is this even really needed? I guess for 125fps bhop height it is?
 			else if (msec > 16 && client->pers.practice)
-				ucmd->serverTime = ((ucmd->serverTime + 15) / 16) * 16;
+				ucmd->serverTime = G_FlyingRespawn_QuantizeCmdTime(&client->pers.flyingRespawn, ucmd->serverTime, 16);
 		}
 	}
 	else if (pmove_fixed.integer || client->pers.pmoveFixed)
-		ucmd->serverTime = ((ucmd->serverTime + pmove_msec.integer-1) / pmove_msec.integer) * pmove_msec.integer;
+		ucmd->serverTime = G_FlyingRespawn_QuantizeCmdTime(&client->pers.flyingRespawn, ucmd->serverTime, pmove_msec.integer);
 
 	if ((client->sess.sessionTeam != TEAM_SPECTATOR) && !client->ps.stats[STAT_RACEMODE] && ((g_movementStyle.integer >= MV_SIEGE && g_movementStyle.integer <= MV_WSW) || g_movementStyle.integer == MV_SP || g_movementStyle.integer == MV_SLICK || g_movementStyle.integer == MV_TRIBES || g_movementStyle.integer == MV_SURF)) { //Ok,, this should be like every frame, right??
 		client->sess.movementStyle = g_movementStyle.integer;
@@ -5956,14 +5956,50 @@ qboolean G_FlyingRespawn_StartManualReplay(gentity_t *ent)
 	return qtrue;
 }
 
+static void FlyingRespawnCountdown(gentity_t *ent)
+{
+	int remaining = ent->client->pers.flyingRespawn.replay.releaseServerTime - level.time;
+	if (remaining > 0)
+		trap->SendServerCommand(ent - g_entities, va("cp \"^3%.1f\"", remaining / 1000.0f));
+}
+
+qboolean G_FlyingRespawn_StartCheckpointReplay(gentity_t *ent)
+{
+	flyingRespawnState_t *state = &ent->client->pers.flyingRespawn;
+	flyingRespawnSnapshot_t contact;
+	/* The enable cvar gates a new playback only; an active playback keeps its deadline. */
+	if (state->replay.active) {
+		if (!G_FlyingRespawn_HandleSecondPress(state, level.time, &contact)) return qfalse;
+		G_FlyingRespawn_RestoreMovement(ent, &contact, 0);
+		FlyingRespawnCountdown(ent);
+		return qtrue;
+	}
+	if (!G_FlyingRespawn_BeginCheckpointReplay(state, level.time, g_enableFlyingRespawn.integer != 0)) return qfalse;
+	G_FlyingRespawn_BufferLiveCmd(state, &ent->client->pers.cmd);
+	G_FlyingRespawn_RestoreMovement(ent, &state->replay.selection.snapshot,
+		level.time - state->replay.selection.snapshot.serverTime);
+	FlyingRespawnCountdown(ent);
+	return qtrue;
+}
+
+qboolean G_FlyingRespawn_StartTestReplay(gentity_t *ent, int durationMs)
+{
+	flyingRespawnState_t *state = &ent->client->pers.flyingRespawn;
+	if (g_flyingRespawnTestMode.integer != 1 || !G_FlyingRespawn_BeginTestReplay(state, level.time, durationMs)) return qfalse;
+	G_FlyingRespawn_BufferLiveCmd(state, &ent->client->pers.cmd);
+	G_FlyingRespawn_RestoreMovement(ent, &state->replay.selection.snapshot,
+		level.time - state->replay.selection.snapshot.serverTime);
+	FlyingRespawnCountdown(ent);
+	return qtrue;
+}
+
 static void FlyingRespawnRawInput(gentity_t *ent)
 {
 	flyingRespawnState_t *state;
 	if (!FlyingRespawnPlayer(ent)) return;
 	state = &ent->client->pers.flyingRespawn;
 	if (state->replay.active) {
-		state->replay.liveCmd = ent->client->pers.cmd;
-		state->replay.hasLiveCmd = qtrue;
+		G_FlyingRespawn_BufferLiveCmd(state, &ent->client->pers.cmd);
 		return;
 	}
 	/* Run-start integration owns snapshotted defaults once its secondary segment runs. */
@@ -5989,24 +6025,39 @@ static void FlyingRespawnPostMovement(gentity_t *ent)
 static void FlyingRespawnThink(gentity_t *ent)
 {
 	flyingRespawnState_t *state = &ent->client->pers.flyingRespawn;
-	flyingRespawnRawCmd_t raw;
-	if (state->replay.active && state->replay.manualReplay) {
-		if (!ent->client->pers.practice || ent->health <= 0 || ent->client->noclip ||
+	if (state->replay.active) {
+		flyingRespawnMovement_t actual;
+		qboolean staticReplay = state->replay.staticReplay;
+		if ((state->replay.manualReplay && !ent->client->pers.practice) ||
+			(!state->replay.manualReplay && (!ent->client->pers.stats.startTime || !ent->client->sess.raceMode)) ||
+			ent->health <= 0 || ent->client->noclip ||
 			ent->client->sess.sessionTeam == TEAM_SPECTATOR) {
-			state->replay.active = qfalse;
-			if (state->replay.hasLiveCmd) ent->client->pers.cmd = state->replay.liveCmd;
+			G_FlyingRespawn_CancelReplay(state, level.time, &ent->client->pers.cmd);
 			return;
 		}
-		while (G_FlyingRespawn_NextManualCmd(state, level.time, &raw)) {
-			ent->client->pers.cmd = raw.cmd;
-			ent->client->pers.cmd.serverTime += state->replay.startServerTime - state->replay.selection.snapshot.serverTime;
+		while (G_FlyingRespawn_OverrideCmd(state, level.time, &ent->client->pers.cmd)) {
 			ClientThink_real(ent);
 		}
-		if (!G_FlyingRespawn_FinishManualReplay(state, level.time, ent->client->pers.practice)) return;
-		G_FlyingRespawn_ManualTimerHandoff(ent);
-		if (state->replay.hasLiveCmd) ent->client->pers.cmd = state->replay.liveCmd;
-		/* Preserve held input; only its timestamp is normalized for the next legal step. */
-		ent->client->pers.cmd.serverTime = level.time > ent->client->ps.commandTime ? level.time : ent->client->ps.commandTime + 1;
+		if (state->replay.manualReplay) {
+			if (!G_FlyingRespawn_FinishManualReplay(state, level.time, ent->client->pers.practice)) return;
+			G_FlyingRespawn_ManualTimerHandoff(ent);
+			if (state->replay.hasLiveCmd) ent->client->pers.cmd = state->replay.liveCmd;
+			ent->client->pers.cmd.serverTime = level.time > ent->client->ps.commandTime ? level.time : ent->client->ps.commandTime + 1;
+		} else {
+			G_FlyingRespawn_CaptureMovement(ent, &actual);
+			if (!G_FlyingRespawn_Advance(state, level.time, &actual, &ent->client->pers.cmd)) {
+				FlyingRespawnCountdown(ent);
+				return;
+			}
+			if (state->replay.mismatchCount)
+				trap->SendServerCommand(ent - g_entities, "print \"^3Flying respawn replay mismatch; this run will be invalid at finish.\n\"");
+			if (state->replay.testReplay)
+				trap->SendServerCommand(ent - g_entities, va("print \"Replay test: %d mismatches, origin error %.6f, velocity error %.6f.\n\"",
+					state->replay.mismatchCount, state->replay.maxOriginError, state->replay.maxVelocityError));
+			/* Static waiting runs no movement. Begin its first live step at this tick. */
+			if (staticReplay) ent->client->ps.commandTime = level.time - 1;
+			trap->SendServerCommand(ent - g_entities, "cp \"^2GO!\"");
+		}
 	}
 	/* Capture the actual invocation, after synchronous/forced timestamp and input choices.
 	 * Receipt history stays untouched; coalesced receipts are never replayed as extra steps. */
@@ -6123,7 +6174,7 @@ static void ForceClientUpdate(gentity_t *ent) {
 void G_RunClient( gentity_t *ent ) {
 	qboolean forceUpdateRate = qfalse;
 
-	if (ent->client->pers.flyingRespawn.replay.active && ent->client->pers.flyingRespawn.replay.manualReplay) {
+	if (ent->client->pers.flyingRespawn.replay.active) {
 		FlyingRespawnThink(ent);
 		return;
 	}

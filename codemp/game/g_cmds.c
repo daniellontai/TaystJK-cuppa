@@ -7286,6 +7286,56 @@ static void Cmd_Savepos_f(gentity_t *ent)
 	trap->SendServerCommand(ent - g_entities, "print \"Position saved.\n\"");
 }
 
+static qboolean FlyingRespawnCommandPlayer(gentity_t *ent)
+{
+	return ent->client && ent->client->pers.connected == CON_CONNECTED &&
+		ent->client->sess.raceMode && ent->client->sess.sessionTeam == TEAM_FREE &&
+		!(ent->r.svFlags & SVF_BOT) && ent->s.eType != ET_NPC &&
+		ent->health > 0 && !ent->client->noclip;
+}
+
+static void Cmd_Respawn_f(gentity_t *ent)
+{
+	flyingRespawnState_t *state;
+	if (!FlyingRespawnCommandPlayer(ent)) {
+		trap->SendServerCommand(ent - g_entities, "print \"respawn requires an alive racer outside noclip.\n\"");
+		return;
+	}
+	state = &ent->client->pers.flyingRespawn;
+	if (!state->replay.active && !ent->client->pers.stats.startTime) {
+		trap->SendServerCommand(ent - g_entities, "print \"respawn requires an active run.\n\"");
+		return;
+	}
+	if (!state->replay.active && !g_enableFlyingRespawn.integer) {
+		trap->SendServerCommand(ent - g_entities, "print \"Flying respawn is disabled.\n\"");
+		return;
+	}
+	if (!state->replay.active && state->automaticCheckpoint.pending) {
+		trap->SendServerCommand(ent - g_entities, "print \"Checkpoint replay is not ready yet.\n\"");
+		return;
+	}
+	if (!G_FlyingRespawn_StartCheckpointReplay(ent))
+		trap->SendServerCommand(ent - g_entities, "print \"No checkpoint replay is available.\n\"");
+}
+
+static void Cmd_Replaytest_f(gentity_t *ent)
+{
+	char arg[32], *end;
+	long duration;
+	if (!FlyingRespawnCommandPlayer(ent) || !ent->client->pers.stats.startTime || g_flyingRespawnTestMode.integer != 1) {
+		trap->SendServerCommand(ent - g_entities, "print \"replaytest requires an active run and g_flyingRespawnTestMode 1.\n\"");
+		return;
+	}
+	trap->Argv(1, arg, sizeof(arg));
+	duration = strtol(arg, &end, 10);
+	if (trap->Argc() != 2 || !*arg || *end || duration < 0 || duration > FLYING_RESPAWN_MAX_TEST_MS) {
+		trap->SendServerCommand(ent - g_entities, "print \"Usage: replaytest <milliseconds: 0-30000>\n\"");
+		return;
+	}
+	if (!G_FlyingRespawn_StartTestReplay(ent, (int)duration))
+		trap->SendServerCommand(ent - g_entities, "print \"Replay test unavailable: wait for enough recorded history.\n\"");
+}
+
 static void Cmd_Respos_f(gentity_t *ent)
 {
 	if (!ent->client) return;
@@ -9211,6 +9261,8 @@ command_t commands[] = {
 	{ "register",			Cmd_ACRegister_f,			CMD_NOINTERMISSION },
 
 
+	{ "replaytest",			Cmd_Replaytest_f,			CMD_NOINTERMISSION },
+	{ "respawn",				Cmd_Respawn_f,				CMD_NOINTERMISSION },
 	{ "respos",				Cmd_Respos_f,				CMD_NOINTERMISSION },
 
 	{ "rfind",				Cmd_DFFind_f,				CMD_NOINTERMISSION },

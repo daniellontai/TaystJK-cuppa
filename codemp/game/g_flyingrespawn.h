@@ -64,7 +64,7 @@ typedef struct {
 } flyingRespawnSelection_t;
 
 typedef struct {
-	qboolean active, testReplay, manualReplay;
+	qboolean active, testReplay, manualReplay, staticReplay;
 	qboolean checkpointTouched;
 	flyingRespawnSelection_t selection;
 	int commandCursor, startServerTime, releaseServerTime;
@@ -72,6 +72,8 @@ typedef struct {
 	float maxOriginError, maxVelocityError;
 	usercmd_t liveCmd;
 	qboolean hasLiveCmd;
+	flyingRespawnMovement_t expectedMovement;
+	int expectedSecondaryMs;
 } flyingRespawnReplay_t;
 
 typedef struct {
@@ -93,7 +95,7 @@ typedef struct {
 	/* Brushes may overlap: each contact gap must survive touches of other entities. */
 	byte checkpointContactSeen[MAX_GENTITIES];
 	int checkpointTouchTimes[MAX_GENTITIES];
-	qboolean runInvalid, mismatch;
+	qboolean runInvalid, mismatch, testReplayUsed;
 	flyingRespawnReplay_t replay;
 } flyingRespawnState_t;
 
@@ -121,6 +123,16 @@ qboolean G_FlyingRespawn_SelectHistory(const flyingRespawnState_t *state, int ta
 qboolean G_FlyingRespawn_SelectExecutionHistory(const flyingRespawnState_t *state, int targetServerTime, int endServerTime, flyingRespawnSelection_t *selection);
 qboolean G_FlyingRespawn_GetSelectedCmd(const flyingRespawnState_t *state, const flyingRespawnSelection_t *selection, int index, flyingRespawnRawCmd_t *cmd);
 qboolean G_FlyingRespawn_BeginTestReplay(flyingRespawnState_t *state, int serverTime, int durationMs);
+qboolean G_FlyingRespawn_BeginCheckpointReplay(flyingRespawnState_t *state, int serverTime, qboolean enabled);
+void G_FlyingRespawn_BufferLiveCmd(flyingRespawnState_t *state, const usercmd_t *cmd);
+/* Only returns recorded movement steps when they are due; live input stays buffered. */
+qboolean G_FlyingRespawn_OverrideCmd(flyingRespawnState_t *state, int serverTime, usercmd_t *cmd);
+/* Returns true once at GO, after validating the pre-live state and installing live input. */
+qboolean G_FlyingRespawn_Advance(flyingRespawnState_t *state, int serverTime, const flyingRespawnMovement_t *actual, usercmd_t *cmd);
+/* Returns a ready-to-install contact snapshot with already shifted absolute timestamps. */
+qboolean G_FlyingRespawn_HandleSecondPress(flyingRespawnState_t *state, int serverTime, flyingRespawnSnapshot_t *contact);
+int G_FlyingRespawn_QuantizeCmdTime(const flyingRespawnState_t *state, int commandTime, int quantumMs);
+qboolean G_FlyingRespawn_CancelReplay(flyingRespawnState_t *state, int serverTime, usercmd_t *cmd);
 void G_FlyingRespawn_ReadMovement(flyingRespawnMovement_t *movement, const playerState_t *ps, int movementStyle, int checkpoints, int courseID);
 void G_FlyingRespawn_WriteMovement(playerState_t *ps, const flyingRespawnMovement_t *movement, int timeOffset);
 qboolean G_FlyingRespawn_CaptureManual(flyingRespawnState_t *state, int serverTime, const flyingRespawnMovement_t *movement);

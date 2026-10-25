@@ -3,6 +3,7 @@
 
 #include <errno.h>
 #include <limits.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -130,7 +131,7 @@ void G_FlyingRespawn_ResetRun(flyingRespawnState_t *state, int serverTime)
 	memset(&state->replay, 0, sizeof(state->replay));
 	state->respawnCount = 0;
 	memset(state->checkpointContactSeen, 0, sizeof(state->checkpointContactSeen));
-	state->runInvalid = state->mismatch = qfalse;
+	state->runInvalid = state->mismatch = state->testReplayUsed = qfalse;
 	state->commandHead = state->commandCount = state->stateHead = state->stateCount = 0;
 	state->executionHead = state->executionCount = 0;
 	state->commandDroppedThrough = state->stateDroppedThrough = INT_MIN;
@@ -346,15 +347,187 @@ qboolean G_FlyingRespawn_GetSelectedCmd(const flyingRespawnState_t *state, const
 	return qtrue;
 }
 
+static void FR_ShiftMovement(flyingRespawnMovement_t *movement, int offset)
+{
+	playerState_t ps;
+	memset(&ps, 0, sizeof(ps));
+	G_FlyingRespawn_WriteMovement(&ps, movement, offset);
+	G_FlyingRespawn_ReadMovement(movement, &ps, movement->movementStyle, movement->checkpoints, movement->courseID);
+}
+
 qboolean G_FlyingRespawn_BeginTestReplay(flyingRespawnState_t *state, int serverTime, int durationMs)
 {
 	flyingRespawnSelection_t selection;
+	int i;
+	const flyingRespawnSnapshot_t *end = NULL;
 	if (!state->testMode || state->replay.active || durationMs < 0 || durationMs > FLYING_RESPAWN_MAX_TEST_MS || (int64_t)serverTime - durationMs < INT_MIN) return qfalse;
 	if (!G_FlyingRespawn_SelectExecutionHistory(state, serverTime - durationMs, serverTime, &selection)) return qfalse;
+	if ((int64_t)serverTime - selection.snapshot.serverTime > FLYING_RESPAWN_MAX_TEST_MS) return qfalse;
+	if ((int64_t)serverTime + serverTime - selection.snapshot.serverTime > INT_MAX) return qfalse;
+	for (i = 0; i < state->stateCount; ++i) {
+		const flyingRespawnSnapshot_t *snapshot = &state->movementStates[FR_Index(state->stateHead, i, state->historyCapacity)];
+		if (snapshot->serverTime > serverTime) break;
+		end = snapshot;
+	}
+	if (!end) return qfalse;
 	memset(&state->replay, 0, sizeof(state->replay));
 	state->replay.active = state->replay.testReplay = qtrue;
 	state->replay.selection = selection;
 	state->replay.startServerTime = serverTime;
+	state->replay.releaseServerTime = serverTime + serverTime - selection.snapshot.serverTime;
+	state->replay.expectedMovement = end->movement;
+	FR_ShiftMovement(&state->replay.expectedMovement, serverTime - selection.snapshot.serverTime);
+	state->replay.expectedSecondaryMs = G_FlyingRespawn_GetSecondaryElapsed(state, serverTime);
+	state->secondaryBaseMs = state->replay.expectedSecondaryMs;
+	state->secondaryRunning = qfalse;
+	state->runInvalid = state->testReplayUsed = qtrue;
+	return qtrue;
+}
+
+qboolean G_FlyingRespawn_BeginCheckpointReplay(flyingRespawnState_t *state, int time, qboolean enabled)
+{
+	flyingRespawnCapture_t *capture = &state->automaticCheckpoint;
+	int64_t duration = (int64_t)capture->handoff.serverTime - capture->start.serverTime;
+	if (!enabled || state->replay.active || !capture->valid || capture->pending || duration < 0 ||
+		(int64_t)time + duration > INT_MAX) return qfalse;
+	memset(&state->replay, 0, sizeof(state->replay));
+	state->replay.active = qtrue;
+	state->replay.selection.snapshot = capture->start;
+	state->replay.selection.endServerTime = capture->handoff.serverTime;
+	state->replay.selection.commandCount = capture->commandCount;
+	state->replay.startServerTime = time;
+	state->replay.releaseServerTime = time + (int)duration;
+	state->replay.expectedMovement = capture->handoff.movement;
+	FR_ShiftMovement(&state->replay.expectedMovement, time - capture->start.serverTime);
+	state->replay.expectedSecondaryMs = capture->secondaryElapsedMs;
+	state->secondaryBaseMs = capture->secondaryElapsedMs;
+	state->secondaryRunning = qfalse;
+	if (state->respawnCount < INT_MAX) state->respawnCount++;
+	/* A zero-duration capture starts at the post-contact state already. */
+	state->replay.checkpointTouched = capture->start.serverTime >= capture->snapshot.serverTime;
+	return qtrue;
+}
+
+void G_FlyingRespawn_BufferLiveCmd(flyingRespawnState_t *state, const usercmd_t *cmd)
+{
+	if (!state->replay.active || !cmd) return;
+	state->replay.liveCmd = *cmd;
+	state->replay.hasLiveCmd = qtrue;
+}
+
+int G_FlyingRespawn_QuantizeCmdTime(const flyingRespawnState_t *state, int time, int quantum)
+{
+	int64_t offset = state->replay.active ?
+		(int64_t)state->replay.startServerTime - state->replay.selection.snapshot.serverTime : 0;
+	int64_t rounded;
+	if (quantum < 1) return time;
+	/* Quantize on the source clock, then relocate. Otherwise an offset changes
+	 * fixed-pmove step sizes even though the execution stream is identical. */
+	rounded = (((int64_t)time - offset + quantum - 1) / quantum) * quantum + offset;
+	if (rounded > INT_MAX) return INT_MAX;
+	return rounded < INT_MIN ? INT_MIN : (int)rounded;
+}
+
+qboolean G_FlyingRespawn_CancelReplay(flyingRespawnState_t *state, int time, usercmd_t *cmd)
+{
+	if (!state->replay.active || !cmd) return qfalse;
+	if (state->replay.hasLiveCmd) *cmd = state->replay.liveCmd;
+	else memset(cmd, 0, sizeof(*cmd));
+	cmd->serverTime = time;
+	state->replay.active = qfalse;
+	return qtrue;
+}
+
+qboolean G_FlyingRespawn_OverrideCmd(flyingRespawnState_t *state, int time, usercmd_t *cmd)
+{
+	flyingRespawnReplay_t *replay = &state->replay;
+	flyingRespawnRawCmd_t next;
+	if (!cmd || !replay->active || replay->staticReplay || replay->commandCursor >= replay->selection.commandCount) return qfalse;
+	if (replay->manualReplay) {
+		if (!G_FlyingRespawn_NextManualCmd(state, time, &next)) return qfalse;
+	} else {
+		if (replay->testReplay) {
+			if (!G_FlyingRespawn_GetSelectedCmd(state, &replay->selection, replay->commandCursor, &next)) return qfalse;
+		} else next = state->automaticCheckpoint.commands[replay->commandCursor];
+		if ((int64_t)time - replay->startServerTime < (int64_t)next.serverTime - replay->selection.snapshot.serverTime) return qfalse;
+		replay->commandCursor++;
+	}
+	*cmd = next.cmd;
+	cmd->serverTime += replay->startServerTime - replay->selection.snapshot.serverTime;
+	return qtrue;
+}
+
+static void FR_MarkStaticContact(flyingRespawnState_t *state, int time)
+{
+	int entity = state->automaticCheckpoint.checkpointEntityNum;
+	if (entity >= 0 && entity < MAX_GENTITIES) {
+		state->checkpointContactSeen[entity] = 1;
+		state->checkpointTouchTimes[entity] = time;
+	}
+}
+
+qboolean G_FlyingRespawn_HandleSecondPress(flyingRespawnState_t *state, int time, flyingRespawnSnapshot_t *contact)
+{
+	flyingRespawnReplay_t *replay = &state->replay;
+	if (!contact || !replay->active || replay->manualReplay || replay->testReplay || replay->staticReplay) return qfalse;
+	*contact = state->automaticCheckpoint.snapshot;
+	FR_ShiftMovement(&contact->movement, time - contact->serverTime);
+	contact->serverTime = time;
+	memset(contact->movement.velocity, 0, sizeof(contact->movement.velocity));
+	G_FlyingRespawn_ApplyExpectedCheckpointProgress(state, &contact->movement);
+	replay->staticReplay = qtrue;
+	replay->expectedMovement = contact->movement;
+	replay->commandCursor = replay->selection.commandCount;
+	FR_MarkStaticContact(state, time);
+	return qtrue;
+}
+
+static qboolean FR_MovementMatches(flyingRespawnReplay_t *replay, const flyingRespawnMovement_t *actual)
+{
+	flyingRespawnMovement_t a = *actual, expected = replay->expectedMovement;
+	int i;
+	float originError = 0, velocityError = 0;
+	qboolean matches = qtrue;
+	for (i = 0; i < 3; ++i) {
+		float origin = actual->origin[i] - expected.origin[i];
+		float velocity = actual->velocity[i] - expected.velocity[i];
+		float angle = remainderf(actual->viewangles[i] - expected.viewangles[i], 360.0f);
+		originError += origin * origin;
+		velocityError += velocity * velocity;
+		if (!isfinite(angle) || fabsf(angle) > 0.1f) matches = qfalse;
+		/* These use tolerances; the remaining discrete/Force/movement/progress fields are exact. */
+		a.origin[i] = expected.origin[i] = 0;
+		a.velocity[i] = expected.velocity[i] = 0;
+		a.viewangles[i] = expected.viewangles[i] = 0;
+	}
+	originError = sqrtf(originError);
+	velocityError = sqrtf(velocityError);
+	if (originError > replay->maxOriginError) replay->maxOriginError = originError;
+	if (velocityError > replay->maxVelocityError) replay->maxVelocityError = velocityError;
+	if (!isfinite(originError) || !isfinite(velocityError) || originError > 0.125f || velocityError > 0.125f) matches = qfalse;
+	/* ReadMovement zeroes padding. Compare named groups through canonical player state
+	 * serialization so callers' struct padding cannot affect validation. */
+	FR_ShiftMovement(&a, 0);
+	FR_ShiftMovement(&expected, 0);
+	return matches && memcmp(&a, &expected, sizeof(a)) == 0;
+}
+
+qboolean G_FlyingRespawn_Advance(flyingRespawnState_t *state, int time, const flyingRespawnMovement_t *actual, usercmd_t *cmd)
+{
+	flyingRespawnReplay_t *replay = &state->replay;
+	if (!actual || !cmd || !replay->active || replay->manualReplay || time < replay->releaseServerTime ||
+		replay->commandCursor < replay->selection.commandCount) return qfalse;
+	if (!FR_MovementMatches(replay, actual) || G_FlyingRespawn_GetSecondaryElapsed(state, time) != replay->expectedSecondaryMs ||
+		(!replay->testReplay && !replay->checkpointTouched)) {
+		replay->mismatchCount++;
+		state->mismatch = state->runInvalid = qtrue;
+	}
+	if (replay->hasLiveCmd) *cmd = replay->liveCmd;
+	else memset(cmd, 0, sizeof(*cmd));
+	cmd->serverTime = time > actual->commandTime ? time : actual->commandTime + 1;
+	G_FlyingRespawn_ResetSecondarySegment(state, time, replay->expectedSecondaryMs);
+	if (replay->staticReplay) FR_MarkStaticContact(state, time);
+	replay->active = qfalse;
 	return qtrue;
 }
 

@@ -9,6 +9,220 @@ struct FlyingHistory {
     ~FlyingHistory() { G_FlyingRespawn_FreeClient(&state); }
 };
 
+struct FlyingPlayback : FlyingHistory {
+    FlyingPlayback() {
+        BOOST_REQUIRE(G_FlyingRespawn_OnTimerStart(&state, 1000, 100, 100, 1, 100));
+        flyingRespawnMovement_t m = {};
+        usercmd_t cmd = {};
+        m.commandTime = 1100;
+        m.origin[0] = 10;
+        G_FlyingRespawn_RecordState(&state, 1100, &m);
+        m.commandTime = cmd.serverTime = 1200;
+        m.origin[0] = 20; m.velocity[0] = 100; m.viewangles[YAW] = 45;
+        m.forcePower = 80; m.checkpoints = 3; m.courseID = 7;
+        cmd.forwardmove = 37;
+        G_FlyingRespawn_RecordExecutionCmd(&state, 1200, &cmd);
+        G_FlyingRespawn_RecordState(&state, 1200, &m);
+        flyingRespawnCheckpointConfig_t config = {};
+        BOOST_REQUIRE(G_FlyingRespawn_OnCheckpointTouch(&state, 1200, 20, &config, &m));
+        m.commandTime = cmd.serverTime = 1300;
+        m.origin[0] = 30; m.velocity[0] = 120; m.forcePower = 75; m.viewangles[YAW] = 90;
+        cmd.upmove = 127;
+        G_FlyingRespawn_RecordExecutionCmd(&state, 1300, &cmd);
+        G_FlyingRespawn_RecordState(&state, 1300, &m);
+        BOOST_REQUIRE(G_FlyingRespawn_CaptureAutomaticHandoff(&state, 1300, &m));
+    }
+};
+
+// Catches bypassing the enable/pending gate, replaying live input, or releasing before all execution steps.
+BOOST_AUTO_TEST_CASE(flying_respawn_playback_gate_commands_and_exact_handoff)
+{
+    FlyingPlayback h;
+    BOOST_CHECK(!G_FlyingRespawn_BeginCheckpointReplay(&h.state, 2000, qfalse));
+    h.state.automaticCheckpoint.pending = qtrue;
+    BOOST_CHECK(!G_FlyingRespawn_BeginCheckpointReplay(&h.state, 2000, qtrue));
+    h.state.automaticCheckpoint.pending = qfalse;
+    BOOST_REQUIRE(G_FlyingRespawn_BeginCheckpointReplay(&h.state, 2000, qtrue));
+    BOOST_CHECK_EQUAL(h.state.replay.selection.snapshot.movement.origin[0], 10);
+    BOOST_CHECK_EQUAL(h.state.respawnCount, 1);
+    BOOST_CHECK_EQUAL(h.state.replay.releaseServerTime, 2200);
+    BOOST_CHECK_EQUAL(G_FlyingRespawn_GetSecondaryElapsed(&h.state, 2199), 200);
+    usercmd_t live = {}, command = {};
+    live.forwardmove = live.upmove = 127; live.angles[YAW] = 12345;
+    G_FlyingRespawn_BufferLiveCmd(&h.state, &live);
+    BOOST_CHECK(!G_FlyingRespawn_OverrideCmd(&h.state, 2099, &command));
+    BOOST_REQUIRE(G_FlyingRespawn_OverrideCmd(&h.state, 2100, &command));
+    BOOST_CHECK_EQUAL(command.serverTime, 2100);
+    BOOST_CHECK_EQUAL(command.forwardmove, 37);
+    BOOST_CHECK_EQUAL(command.upmove, 0);
+    BOOST_CHECK(!G_FlyingRespawn_OverrideCmd(&h.state, 2199, &command));
+    flyingRespawnMovement_t actual = h.state.automaticCheckpoint.handoff.movement;
+    actual.commandTime = 2200;
+    h.state.replay.checkpointTouched = qtrue;
+    BOOST_CHECK(!G_FlyingRespawn_Advance(&h.state, 2200, &actual, &command));
+    BOOST_REQUIRE(G_FlyingRespawn_OverrideCmd(&h.state, 2200, &command));
+    BOOST_CHECK_EQUAL(command.upmove, 127);
+    BOOST_REQUIRE(G_FlyingRespawn_Advance(&h.state, 2200, &actual, &command));
+    BOOST_CHECK(!h.state.replay.active);
+    BOOST_CHECK(!h.state.runInvalid);
+    BOOST_CHECK_EQUAL(command.forwardmove, 127);
+    BOOST_CHECK_EQUAL(command.upmove, 127);
+    BOOST_CHECK_EQUAL(command.angles[YAW], 12345);
+    BOOST_CHECK_EQUAL(command.serverTime, 2201);
+    BOOST_CHECK_EQUAL(h.state.secondaryBaseMs, 200);
+    BOOST_CHECK_EQUAL(h.state.secondarySegmentStart, 2200);
+    BOOST_CHECK_EQUAL(G_FlyingRespawn_GetSecondaryElapsed(&h.state, 2250), 250);
+    BOOST_CHECK(!G_FlyingRespawn_Advance(&h.state, 2200, &actual, &command));
+}
+
+// Catches restoring post-release state for static mode, moving the deadline/count, or losing contact debounce.
+BOOST_AUTO_TEST_CASE(flying_respawn_playback_second_press_uses_static_contact)
+{
+    FlyingPlayback h;
+    BOOST_REQUIRE(G_FlyingRespawn_BeginCheckpointReplay(&h.state, 2000, qtrue));
+    flyingRespawnSnapshot_t contact = {};
+    BOOST_REQUIRE(G_FlyingRespawn_HandleSecondPress(&h.state, 2050, &contact));
+    BOOST_CHECK_EQUAL(contact.movement.origin[0], 20);
+    BOOST_CHECK_EQUAL(contact.movement.velocity[0], 0);
+    BOOST_CHECK_EQUAL(contact.movement.forcePower, 80);
+    BOOST_CHECK_EQUAL(contact.movement.viewangles[YAW], 45);
+    BOOST_CHECK_EQUAL(contact.movement.commandTime, 2050);
+    BOOST_CHECK_EQUAL(h.state.replay.releaseServerTime, 2200);
+    BOOST_CHECK_EQUAL(h.state.respawnCount, 1);
+    BOOST_CHECK_EQUAL(h.state.checkpointContactSeen[20], 1);
+    BOOST_CHECK_EQUAL(h.state.checkpointTouchTimes[20], 2050);
+    usercmd_t command = {};
+    BOOST_CHECK(!G_FlyingRespawn_OverrideCmd(&h.state, 2200, &command));
+    BOOST_CHECK(!G_FlyingRespawn_HandleSecondPress(&h.state, 2100, &contact));
+    BOOST_CHECK(!G_FlyingRespawn_Advance(&h.state, 2199, &contact.movement, &command));
+    BOOST_REQUIRE(G_FlyingRespawn_Advance(&h.state, 2200, &contact.movement, &command));
+    BOOST_CHECK(!h.state.runInvalid);
+    BOOST_CHECK_EQUAL(G_FlyingRespawn_GetSecondaryElapsed(&h.state, 2200), 200);
+    BOOST_CHECK_EQUAL(h.state.checkpointTouchTimes[20], 2200);
+}
+
+// Catches omitted angle/Force/progress/clock/contact validation or preventing control after a mismatch.
+BOOST_AUTO_TEST_CASE(flying_respawn_playback_mismatch_invalidates_but_hands_off)
+{
+    for (int field = 0; field < 7; ++field) {
+        FlyingPlayback h;
+        BOOST_REQUIRE(G_FlyingRespawn_BeginCheckpointReplay(&h.state, 2000, qtrue));
+        usercmd_t command = {};
+        while (G_FlyingRespawn_OverrideCmd(&h.state, 2200, &command)) {}
+        flyingRespawnMovement_t actual = h.state.automaticCheckpoint.handoff.movement;
+        actual.commandTime = 2200;
+        h.state.replay.checkpointTouched = qtrue;
+        if (field == 0) actual.origin[0] += 5;
+        if (field == 1) actual.velocity[0] += 5;
+        if (field == 2) actual.viewangles[YAW] += 5;
+        if (field == 3) actual.forcePower--;
+        if (field == 4) actual.checkpoints--;
+        if (field == 5) h.state.secondaryBaseMs++;
+        if (field == 6) h.state.replay.checkpointTouched = qfalse;
+        BOOST_REQUIRE(G_FlyingRespawn_Advance(&h.state, 2200, &actual, &command));
+        BOOST_CHECK(h.state.mismatch);
+        BOOST_CHECK(G_FlyingRespawn_IsRunInvalid(&h.state));
+        BOOST_CHECK(!h.state.replay.active);
+    }
+}
+
+// Catches test replay using receipt commands, failing to finish, changing captures/count, or remaining submittable.
+BOOST_AUTO_TEST_CASE(flying_respawn_playback_test_mode_has_no_run_result)
+{
+    FlyingHistory h;
+    BOOST_REQUIRE(G_FlyingRespawn_Configure(&h.state, 0, 0, 1));
+    flyingRespawnMovement_t actual = {};
+    usercmd_t command = {};
+    G_FlyingRespawn_RecordState(&h.state, 1000, &actual);
+    command.serverTime = actual.commandTime = 31000;
+    command.forwardmove = 37;
+    G_FlyingRespawn_RecordExecutionCmd(&h.state, 31000, &command);
+    G_FlyingRespawn_RecordState(&h.state, 31000, &actual);
+    BOOST_CHECK(!G_FlyingRespawn_BeginTestReplay(&h.state, 31000, 30001));
+    BOOST_REQUIRE(G_FlyingRespawn_BeginTestReplay(&h.state, 31000, 30000));
+    BOOST_CHECK_EQUAL(h.state.replay.releaseServerTime, 61000);
+    BOOST_CHECK(!G_FlyingRespawn_OverrideCmd(&h.state, 60999, &command));
+    BOOST_REQUIRE(G_FlyingRespawn_OverrideCmd(&h.state, 61000, &command));
+    BOOST_CHECK_EQUAL(command.forwardmove, 37);
+    actual.commandTime = 61000;
+    BOOST_REQUIRE(G_FlyingRespawn_Advance(&h.state, 61000, &actual, &command));
+    BOOST_CHECK_EQUAL(h.state.respawnCount, 0);
+    BOOST_CHECK(!h.state.automaticCheckpoint.valid);
+    BOOST_CHECK(G_FlyingRespawn_IsRunInvalid(&h.state));
+    BOOST_CHECK(h.state.testReplayUsed);
+    BOOST_CHECK(!h.state.mismatch);
+}
+
+// Catches a sampled predecessor making a requested 30-second test run longer than the hard cap.
+BOOST_AUTO_TEST_CASE(flying_respawn_playback_test_predecessor_cannot_exceed_thirty_seconds)
+{
+    FlyingHistory h;
+    BOOST_REQUIRE(G_FlyingRespawn_Configure(&h.state, 0, 0, 1));
+    flyingRespawnMovement_t actual = {};
+    G_FlyingRespawn_RecordState(&h.state, 999, &actual);
+    G_FlyingRespawn_RecordState(&h.state, 31000, &actual);
+    BOOST_CHECK(!G_FlyingRespawn_BeginTestReplay(&h.state, 31000, 30000));
+    BOOST_CHECK(!h.state.replay.active);
+    BOOST_CHECK(!h.state.testReplayUsed);
+}
+
+// Catches applying the held live command (including angles) before validation in static mode.
+BOOST_AUTO_TEST_CASE(flying_respawn_playback_static_pre_live_angles_and_force_are_validated)
+{
+    for (int field = 0; field < 5; ++field) {
+        FlyingPlayback h;
+        BOOST_REQUIRE(G_FlyingRespawn_BeginCheckpointReplay(&h.state, 2000, qtrue));
+        flyingRespawnSnapshot_t contact = {};
+        BOOST_REQUIRE(G_FlyingRespawn_HandleSecondPress(&h.state, 2050, &contact));
+        usercmd_t live = {};
+        live.forwardmove = live.upmove = 127; live.angles[YAW] = 30000;
+        G_FlyingRespawn_BufferLiveCmd(&h.state, &live);
+        if (field == 0) contact.movement.viewangles[YAW] = 90;
+        if (field == 1) contact.movement.forcePower = 75;
+        if (field == 2) contact.movement.velocity[0] = 100;
+        if (field == 3) contact.movement.movementStyle++;
+        if (field == 4) contact.movement.courseID++;
+        BOOST_REQUIRE(G_FlyingRespawn_Advance(&h.state, 2200, &contact.movement, &live));
+        BOOST_CHECK(h.state.mismatch);
+        BOOST_CHECK_EQUAL(live.angles[YAW], 30000);
+        BOOST_CHECK_EQUAL(live.forwardmove, 127);
+        BOOST_CHECK_EQUAL(live.upmove, 127);
+    }
+}
+
+// Catches resampling a recorded step on a different fixed-pmove clock phase after relocation.
+BOOST_AUTO_TEST_CASE(flying_respawn_playback_keeps_source_command_quantization_phase)
+{
+    FlyingPlayback h;
+    BOOST_REQUIRE(G_FlyingRespawn_BeginCheckpointReplay(&h.state, 2000, qtrue));
+    // The replay offset is 900. Source 1211 rounds to 1216, hence relocated 2116.
+    BOOST_CHECK_EQUAL(G_FlyingRespawn_QuantizeCmdTime(&h.state, 2111, 16), 2116);
+    BOOST_CHECK_EQUAL(G_FlyingRespawn_QuantizeCmdTime(&h.state, 2111, 8), 2116);
+    BOOST_CHECK_EQUAL(G_FlyingRespawn_QuantizeCmdTime(&h.state, 2111, 3), 2112);
+    h.state.replay.active = qfalse;
+    BOOST_CHECK_EQUAL(G_FlyingRespawn_QuantizeCmdTime(&h.state, 2111, 16), 2112);
+}
+
+// Catches aborting only manual replay, retaining forced input, or resetting timer state on cancellation.
+BOOST_AUTO_TEST_CASE(flying_respawn_playback_cancellation_returns_latest_live_input)
+{
+    FlyingPlayback h;
+    BOOST_REQUIRE(G_FlyingRespawn_BeginCheckpointReplay(&h.state, 2000, qtrue));
+    usercmd_t command = {}, live = {};
+    live.forwardmove = 127; live.upmove = 127; live.angles[YAW] = 12345;
+    G_FlyingRespawn_BufferLiveCmd(&h.state, &live);
+    BOOST_REQUIRE(G_FlyingRespawn_CancelReplay(&h.state, 2050, &command));
+    BOOST_CHECK(!h.state.replay.active);
+    BOOST_CHECK_EQUAL(command.forwardmove, 127);
+    BOOST_CHECK_EQUAL(command.upmove, 127);
+    BOOST_CHECK_EQUAL(command.angles[YAW], 12345);
+    BOOST_CHECK_EQUAL(command.serverTime, 2050);
+    BOOST_CHECK_EQUAL(h.state.respawnCount, 1);
+    BOOST_CHECK_EQUAL(h.state.secondaryBaseMs, 200);
+    BOOST_CHECK(!h.state.secondaryRunning);
+    BOOST_CHECK(!G_FlyingRespawn_CancelReplay(&h.state, 2051, &command));
+}
+
 // Catches selecting the newest state instead of the last state preceding rewind.
 BOOST_AUTO_TEST_CASE(flying_respawn_history_selects_by_server_time)
 {
