@@ -249,6 +249,7 @@ BOOST_AUTO_TEST_CASE(flying_respawn_playback_frame_input_is_recorded_and_noncons
     BOOST_CHECK_EQUAL(command.forwardmove, 0);
     BOOST_CHECK_EQUAL(command.upmove, 0);
     BOOST_CHECK_EQUAL(h.state.replay.liveCmd.upmove, -127);
+    BOOST_CHECK_EQUAL(command.serverTime, 2199);
 }
 
 // Catches selecting the newest state instead of the last state preceding rewind.

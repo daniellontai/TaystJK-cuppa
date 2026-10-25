@@ -7,6 +7,7 @@
 void TimerStart(gentity_t *, gentity_t *, trace_t *);
 void TimerStop(gentity_t *, gentity_t *, trace_t *);
 void WP_ForcePowersUpdate(gentity_t *, usercmd_t *);
+void G_RunFrame(int);
 extern gclient_t g_clients[MAX_CLIENTS];
 
 static gameImport_t imports;
@@ -21,6 +22,11 @@ static void Userinfo(int client, char *buffer, int size) { (void)client; if (siz
 static void Serverinfo(char *buffer, int size) { if (size) buffer[0] = 0; }
 static qboolean InPVS(const vec3_t a, const vec3_t b) { (void)a; (void)b; return qtrue; }
 static void LinkEntity(sharedEntity_t *entity) { (void)entity; }
+static void Noop(void) {}
+static void UpdateCvar(vmCvar_t *cvar) { (void)cvar; }
+static void SetCvar(const char *name, const char *value) { (void)name; (void)value; }
+static qboolean Maintain(int entity) { (void)entity; return qtrue; }
+static void Usercmd(int client, usercmd_t *cmd) { (void)client; memset(cmd, 0, sizeof(*cmd)); }
 static qboolean Contact(const vec3_t mins, const vec3_t maxs, const sharedEntity_t *entity, int capsule)
 {
     (void)mins; (void)maxs; (void)entity; (void)capsule;
@@ -47,6 +53,11 @@ static gentity_t *Player(void)
     imports.LinkEntity = LinkEntity;
     imports.ICARUS_FreeEnt = LinkEntity;
     imports.EntityContact = Contact;
+    imports.Cvar_Update = UpdateCvar;
+    imports.Cvar_Set = SetCvar;
+    imports.ROFF_UpdateEntities = Noop;
+    imports.ICARUS_MaintainTaskManager = Maintain;
+    imports.GetUsercmd = Usercmd;
     trap = &imports;
     level.time = 1000;
     level.gametype = GT_FFA;
@@ -55,6 +66,9 @@ static gentity_t *Player(void)
     level.maxclients = 1;
     g_forceRegenTime.integer = 500;
     g_fixTimerOOB.integer = 0;
+    g_timeouttospec.integer = 0;
+    sv_fps.integer = 20;
+    sv_fps.value = 20;
     player->client = &g_clients[0];
     player->inuse = qtrue;
     player->health = 100;
@@ -98,7 +112,7 @@ static void StaticForceWait(void)
     CHECK(player->client->ps.fd.forcePowerRegenDebounceTime == 2575);
     G_FlyingRespawn_CaptureMovement(player, &movement);
     CHECK(G_FlyingRespawn_Advance(state, 2550, &movement, &player->client->pers.cmd));
-    G_FlyingRespawn_ReleaseStaticForce(state, 2550, &player->client->ps);
+    G_FlyingRespawn_ReleaseStaticForce(state, 2550, &player->client->ps, &player->client->jetPackDebReduce);
     CHECK(!state->mismatch);
     CHECK(player->client->ps.fd.forcePowerRegenDebounceTime == 2625);
     level.time = 2550;
@@ -189,12 +203,99 @@ static void ReplayTimerBrushes(void)
     G_FlyingRespawn_FreeClient(state);
 }
 
+static void StaticTribesServerFrames(void)
+{
+    puts("Running static Tribes through G_RunFrame"); fflush(stdout);
+    gentity_t *player = Player();
+    flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
+    flyingRespawnMovement_t movement;
+    flyingRespawnCheckpointConfig_t config = {0};
+    int frame;
+    level.maxclients = 0; /* isolate entity/frame resources from end-of-frame prediction */
+    player->client->sess.movementStyle = MV_TRIBES;
+    player->client->ps.stats[STAT_MOVEMENTSTYLE] = MV_TRIBES;
+    player->client->ps.eFlags |= EF_JETPACK_ACTIVE;
+    player->client->ps.jetpackFuel = 100;
+    player->client->overheatRechargeDebReduce = 3000;
+    player->client->jetPackDebReduce = 1275;
+    CHECK(G_FlyingRespawn_OnTimerStart(state, 1000, 0, 500, 0, 0));
+    player->client->ps.commandTime = 1200;
+    G_FlyingRespawn_CaptureMovement(player, &movement);
+    CHECK(G_FlyingRespawn_OnCheckpointTouch(state, 1200, 20, &config, &movement));
+    CHECK(G_FlyingRespawn_CaptureAutomaticHandoff(state, 1700, &movement));
+    CHECK(G_FlyingRespawn_BeginCheckpointReplay(state, 2000, qtrue));
+    level.time = 2050;
+    CHECK(G_FlyingRespawn_StartCheckpointReplay(player));
+    for (frame = 2100; frame < 2500; frame += 50)
+        G_RunFrame(frame);
+    CHECK(player->client->ps.fd.forcePower == 80);
+    CHECK(state->replay.active);
+    CHECK(player->client->jetPackDebReduce == 2575);
+    G_FlyingRespawn_CaptureMovement(player, &movement);
+    CHECK(G_FlyingRespawn_Advance(state, 2550, &movement, &player->client->pers.cmd));
+    G_FlyingRespawn_ReleaseStaticForce(state, 2550, &player->client->ps, &player->client->jetPackDebReduce);
+    CHECK(!state->mismatch);
+    CHECK(player->client->jetPackDebReduce == 2625);
+    /* Keep normal movement idle while checking the real post-GO resource path. */
+    player->client->ps.commandTime = 2700;
+    G_RunFrame(2620);
+    CHECK(player->client->ps.fd.forcePower == 80);
+    CHECK(player->client->jetPackDebReduce == 2625);
+    G_RunFrame(2650);
+    CHECK(player->client->ps.fd.forcePower == 76);
+    CHECK(player->client->jetPackDebReduce == 2850);
+    G_FlyingRespawn_FreeClient(state);
+}
+
+static void StaticServerFrameTimeout(void)
+{
+    puts("Running static input timeout through G_RunFrame"); fflush(stdout);
+    gentity_t *player = Player();
+    flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
+    flyingRespawnMovement_t movement;
+    flyingRespawnCheckpointConfig_t config = {0};
+    level.maxclients = 0;
+    CHECK(G_FlyingRespawn_OnTimerStart(state, 1000, 0, 500, 0, 0));
+    G_FlyingRespawn_CaptureMovement(player, &movement);
+    CHECK(G_FlyingRespawn_OnCheckpointTouch(state, 1200, 20, &config, &movement));
+    CHECK(G_FlyingRespawn_CaptureAutomaticHandoff(state, 1700, &movement));
+    CHECK(G_FlyingRespawn_BeginCheckpointReplay(state, 100000, qtrue));
+    level.time = 100050;
+    CHECK(G_FlyingRespawn_StartCheckpointReplay(player));
+    CHECK(player->client->pers.cmd.serverTime == 100050);
+    /* A zero timestamp already proves the regression; avoid entering unrelated
+     * spectator spawn/teardown in that known-broken pre-fix state. */
+    if (player->client->pers.cmd.serverTime) {
+        usercmd_t live = {0};
+        g_timeouttospec.integer = 1;
+        G_RunFrame(100100);
+        CHECK(player->client->sess.sessionTeam == TEAM_FREE);
+        CHECK(state->replay.active);
+        live.serverTime = 100140;
+        live.forwardmove = live.upmove = 127;
+        live.angles[YAW] = 12345;
+        ClientThink(0, &live);
+        CHECK(player->client->pers.cmd.serverTime == 100100);
+        CHECK(player->client->pers.cmd.forwardmove == 0);
+        CHECK(state->replay.liveCmd.serverTime == 100140);
+        CHECK(state->replay.liveCmd.forwardmove == 127);
+        CHECK(state->replay.liveCmd.upmove == 127);
+        CHECK(state->replay.liveCmd.angles[YAW] == 12345);
+        G_RunFrame(100150);
+        CHECK(player->client->sess.sessionTeam == TEAM_FREE);
+        CHECK(state->replay.active);
+    }
+    G_FlyingRespawn_FreeClient(state);
+}
+
 int main(void)
 {
     StaticForceWait();
     FlyingFrameInput();
     ReplayTimerBrushes();
+    StaticTribesServerFrames();
+    StaticServerFrameTimeout();
     if (failures) fprintf(stderr, "%d integration assertions failed\n", failures);
-    else puts("3 flying-respawn integration cases passed");
+    else puts("5 flying-respawn integration cases passed");
     return failures ? 1 : 0;
 }

@@ -5924,12 +5924,14 @@ void G_FlyingRespawn_CaptureMovement(gentity_t *ent, flyingRespawnMovement_t *mo
 {
 	G_FlyingRespawn_ReadMovement(movement, &ent->client->ps, ent->client->sess.movementStyle,
 		ent->client->pers.stats.checkpoints, ent->client->pers.stats.courseID);
+	movement->jetPackDebReduce = ent->client->jetPackDebReduce;
 }
 
 void G_FlyingRespawn_RestoreMovement(gentity_t *ent, const flyingRespawnSnapshot_t *snapshot, int timeOffset)
 {
 	gclient_t *client = ent->client;
 	G_FlyingRespawn_WriteMovement(&client->ps, &snapshot->movement, timeOffset);
+	client->jetPackDebReduce = G_FlyingRespawn_GetJetpackDeadline(&snapshot->movement, timeOffset);
 	client->sess.movementStyle = snapshot->movement.movementStyle;
 	client->pers.stats.checkpoints = snapshot->movement.checkpoints;
 	client->pers.stats.courseID = snapshot->movement.courseID;
@@ -6062,7 +6064,7 @@ static void FlyingRespawnThink(gentity_t *ent)
 					state->replay.mismatchCount, state->replay.maxOriginError, state->replay.maxVelocityError));
 			/* Static waiting runs no movement. Begin its first live step at this tick. */
 			if (staticReplay) {
-				G_FlyingRespawn_ReleaseStaticForce(state, level.time, &ent->client->ps);
+				G_FlyingRespawn_ReleaseStaticForce(state, level.time, &ent->client->ps, &ent->client->jetPackDebReduce);
 				ent->client->ps.commandTime = level.time - 1;
 			}
 			trap->SendServerCommand(ent - g_entities, "cp \"^2GO!\"");

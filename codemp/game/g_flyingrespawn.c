@@ -352,9 +352,16 @@ qboolean G_FlyingRespawn_GetSelectedCmd(const flyingRespawnState_t *state, const
 static void FR_ShiftMovement(flyingRespawnMovement_t *movement, int offset)
 {
 	playerState_t ps;
+	int jetPackDebReduce = G_FlyingRespawn_GetJetpackDeadline(movement, offset);
 	memset(&ps, 0, sizeof(ps));
 	G_FlyingRespawn_WriteMovement(&ps, movement, offset);
 	G_FlyingRespawn_ReadMovement(movement, &ps, movement->movementStyle, movement->checkpoints, movement->courseID);
+	movement->jetPackDebReduce = jetPackDebReduce;
+}
+
+int G_FlyingRespawn_GetJetpackDeadline(const flyingRespawnMovement_t *movement, int offset)
+{
+	return movement->jetPackDebReduce ? FR_ShiftTime(movement->jetPackDebReduce, offset) : 0;
 }
 
 static usercmd_t FR_StartCmd(const flyingRespawnState_t *state, int time)
@@ -484,6 +491,8 @@ qboolean G_FlyingRespawn_FrameCmd(flyingRespawnState_t *state, int time, usercmd
 	if (!cmd || !replay->active) return qtrue;
 	if (replay->staticReplay) {
 		memset(cmd, 0, sizeof(*cmd));
+		/* Frame consumers still use this timestamp for liveness/timeout checks. */
+		cmd->serverTime = time;
 		return qfalse;
 	}
 	*cmd = replay->frameCmd;
@@ -510,7 +519,7 @@ static void FR_MarkStaticContact(flyingRespawnState_t *state, int time)
 	}
 }
 
-void G_FlyingRespawn_ReleaseStaticForce(const flyingRespawnState_t *state, int time, playerState_t *ps)
+void G_FlyingRespawn_ReleaseStaticForce(const flyingRespawnState_t *state, int time, playerState_t *ps, int *jetPackDebReduce)
 {
 	int i, late = time - state->replay.releaseServerTime;
 	if (!ps || state->replay.active || !state->replay.staticReplay || late <= 0) return;
@@ -520,6 +529,7 @@ void G_FlyingRespawn_ReleaseStaticForce(const flyingRespawnState_t *state, int t
 	}
 	if (ps->fd.forcePowerRegenDebounceTime) ps->fd.forcePowerRegenDebounceTime = FR_ShiftTime(ps->fd.forcePowerRegenDebounceTime, late);
 	if (ps->fd.forceJumpAddTime) ps->fd.forceJumpAddTime = FR_ShiftTime(ps->fd.forceJumpAddTime, late);
+	if (jetPackDebReduce && *jetPackDebReduce) *jetPackDebReduce = FR_ShiftTime(*jetPackDebReduce, late);
 }
 
 qboolean G_FlyingRespawn_HandleSecondPress(flyingRespawnState_t *state, int time, flyingRespawnSnapshot_t *contact)
@@ -538,6 +548,7 @@ qboolean G_FlyingRespawn_HandleSecondPress(flyingRespawnState_t *state, int time
 	}
 	if (contact->movement.forcePowerRegenDebounceTime) contact->movement.forcePowerRegenDebounceTime = FR_ShiftTime(contact->movement.forcePowerRegenDebounceTime, remaining);
 	if (contact->movement.forceJumpAddTime) contact->movement.forceJumpAddTime = FR_ShiftTime(contact->movement.forceJumpAddTime, remaining);
+	contact->movement.jetPackDebReduce = G_FlyingRespawn_GetJetpackDeadline(&contact->movement, remaining);
 	contact->serverTime = time;
 	memset(contact->movement.velocity, 0, sizeof(contact->movement.velocity));
 	G_FlyingRespawn_ApplyExpectedCheckpointProgress(state, &contact->movement);

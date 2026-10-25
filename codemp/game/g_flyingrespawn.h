@@ -25,6 +25,7 @@ typedef struct {
 	float speed;
 	vec3_t moveDir;
 	int checkpoints, courseID;
+	int jetPackDebReduce; /* Client-owned absolute Tribes Force-drain deadline. */
 } flyingRespawnMovement_t;
 
 typedef struct {
@@ -130,7 +131,8 @@ void G_FlyingRespawn_BufferLiveCmd(flyingRespawnState_t *state, const usercmd_t 
 /* Non-consuming authoritative input for frame consumers; false freezes static Force. */
 qboolean G_FlyingRespawn_FrameCmd(flyingRespawnState_t *state, int serverTime, usercmd_t *cmd);
 /* Preserve static Force timer intervals if the first GO tick is after its deadline. */
-void G_FlyingRespawn_ReleaseStaticForce(const flyingRespawnState_t *state, int serverTime, playerState_t *ps);
+void G_FlyingRespawn_ReleaseStaticForce(const flyingRespawnState_t *state, int serverTime, playerState_t *ps, int *jetPackDebReduce);
+int G_FlyingRespawn_GetJetpackDeadline(const flyingRespawnMovement_t *movement, int timeOffset);
 /* Only returns recorded movement steps when they are due; live input stays buffered. */
 qboolean G_FlyingRespawn_OverrideCmd(flyingRespawnState_t *state, int serverTime, usercmd_t *cmd);
 /* Returns true once at GO, after validating the pre-live state and installing live input. */
