@@ -5925,6 +5925,10 @@ void G_FlyingRespawn_CaptureMovement(gentity_t *ent, flyingRespawnMovement_t *mo
 	G_FlyingRespawn_ReadMovement(movement, &ent->client->ps, ent->client->sess.movementStyle,
 		ent->client->pers.stats.checkpoints, ent->client->pers.stats.courseID);
 	movement->jetPackDebReduce = ent->client->jetPackDebReduce;
+	movement->jetPackDebRecharge = ent->client->jetPackDebRecharge;
+	movement->overheatRechargeDebReduce = ent->client->overheatRechargeDebReduce;
+	movement->fjDidJump = ent->client->fjDidJump;
+	movement->jetPackOn = ent->client->jetPackOn;
 }
 
 void G_FlyingRespawn_RestoreMovement(gentity_t *ent, const flyingRespawnSnapshot_t *snapshot, int timeOffset)
@@ -5932,6 +5936,10 @@ void G_FlyingRespawn_RestoreMovement(gentity_t *ent, const flyingRespawnSnapshot
 	gclient_t *client = ent->client;
 	G_FlyingRespawn_WriteMovement(&client->ps, &snapshot->movement, timeOffset);
 	client->jetPackDebReduce = G_FlyingRespawn_GetJetpackDeadline(&snapshot->movement, timeOffset);
+	client->jetPackDebRecharge = G_FlyingRespawn_ShiftDeadline(snapshot->movement.jetPackDebRecharge, timeOffset);
+	client->overheatRechargeDebReduce = G_FlyingRespawn_ShiftDeadline(snapshot->movement.overheatRechargeDebReduce, timeOffset);
+	client->fjDidJump = snapshot->movement.fjDidJump;
+	client->jetPackOn = snapshot->movement.jetPackOn;
 	client->sess.movementStyle = snapshot->movement.movementStyle;
 	client->pers.stats.checkpoints = snapshot->movement.checkpoints;
 	client->pers.stats.courseID = snapshot->movement.courseID;
@@ -5962,9 +5970,13 @@ qboolean G_FlyingRespawn_StartManualReplay(gentity_t *ent)
 
 static void FlyingRespawnCountdown(gentity_t *ent)
 {
-	int remaining = ent->client->pers.flyingRespawn.replay.releaseServerTime - level.time;
-	if (remaining > 0)
-		trap->SendServerCommand(ent - g_entities, va("cp \"^3%.1f\"", remaining / 1000.0f));
+	const flyingRespawnReplay_t *replay = &ent->client->pers.flyingRespawn.replay;
+	int64_t duration = (int64_t)replay->releaseServerTime - replay->startServerTime;
+	int64_t remaining = (int64_t)replay->releaseServerTime - level.time;
+	if (remaining > 0 && duration > 0) {
+		int count = (int)((remaining * 3 + duration - 1) / duration);
+		trap->SendServerCommand(ent - g_entities, va("cp \"^3%d\"", count > 3 ? 3 : count));
+	}
 }
 
 qboolean G_FlyingRespawn_StartCheckpointReplay(gentity_t *ent)
@@ -6064,8 +6076,16 @@ static void FlyingRespawnThink(gentity_t *ent)
 					state->replay.mismatchCount, state->replay.maxOriginError, state->replay.maxVelocityError));
 			/* Static waiting runs no movement. Begin its first live step at this tick. */
 			if (staticReplay) {
+				int late = level.time - state->replay.releaseServerTime;
 				G_FlyingRespawn_ReleaseStaticForce(state, level.time, &ent->client->ps, &ent->client->jetPackDebReduce);
+				if (late > 0) {
+					ent->client->jetPackDebRecharge = G_FlyingRespawn_ShiftDeadline(ent->client->jetPackDebRecharge, late);
+					ent->client->overheatRechargeDebReduce = G_FlyingRespawn_ShiftDeadline(ent->client->overheatRechargeDebReduce, late);
+				}
 				ent->client->ps.commandTime = level.time - 1;
+				/* Seed after static deadline/command-time normalization, before live movement. */
+				G_FlyingRespawn_CaptureMovement(ent, &actual);
+				G_FlyingRespawn_RecordHandoff(state, level.time, &actual);
 			}
 			trap->SendServerCommand(ent - g_entities, "cp \"^2GO!\"");
 		}

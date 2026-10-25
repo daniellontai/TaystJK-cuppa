@@ -34,6 +34,104 @@ struct FlyingPlayback : FlyingHistory {
     }
 };
 
+// A later checkpoint must never pair the failed route's pose with post-GO input.
+BOOST_AUTO_TEST_CASE(flying_respawn_successive_checkpoint_rewinds_only_continuous_history)
+{
+    for (int stationary = 0; stationary < 2; ++stationary) {
+        FlyingPlayback h;
+        flyingRespawnMovement_t failed = {};
+        failed.origin[0] = 999;
+        failed.commandTime = 2050;
+        G_FlyingRespawn_RecordState(&h.state, 2050, &failed);
+        BOOST_REQUIRE(G_FlyingRespawn_BeginCheckpointReplay(&h.state, 2100, qtrue));
+        usercmd_t cmd = {};
+        flyingRespawnMovement_t actual = h.state.automaticCheckpoint.handoff.movement;
+        actual.commandTime = 2300;
+        if (stationary) {
+            flyingRespawnSnapshot_t contact = {};
+            BOOST_REQUIRE(G_FlyingRespawn_HandleSecondPress(&h.state, 2150, &contact));
+            actual = contact.movement;
+        } else {
+            while (G_FlyingRespawn_OverrideCmd(&h.state, 2300, &cmd)) {}
+            G_FlyingRespawn_ApplyExpectedCheckpointProgress(&h.state, &actual);
+        }
+        BOOST_REQUIRE(G_FlyingRespawn_Advance(&h.state, 2300, &actual, &cmd));
+        const float goOrigin = actual.origin[0];
+        actual.origin[0] += 5;
+        actual.commandTime = cmd.serverTime = 2350;
+        cmd.forwardmove = 41;
+        G_FlyingRespawn_RecordExecutionCmd(&h.state, 2350, &cmd);
+        G_FlyingRespawn_RecordState(&h.state, 2350, &actual);
+        flyingRespawnCheckpointConfig_t config = {};
+        config.hasRelease = qtrue;
+        BOOST_REQUIRE(G_FlyingRespawn_OnCheckpointTouch(&h.state, 2350, 21, &config, &actual));
+        BOOST_CHECK_EQUAL(h.state.automaticCheckpoint.start.serverTime, 2300);
+        BOOST_CHECK_EQUAL(h.state.automaticCheckpoint.start.movement.origin[0], goOrigin);
+        BOOST_REQUIRE_EQUAL(h.state.automaticCheckpoint.commandCount, 1);
+        BOOST_CHECK_EQUAL(h.state.automaticCheckpoint.commands[0].cmd.forwardmove, 41);
+        BOOST_REQUIRE(G_FlyingRespawn_BeginCheckpointReplay(&h.state, 3000, qtrue));
+        BOOST_CHECK_EQUAL(h.state.replay.releaseServerTime, 3050);
+        BOOST_REQUIRE(G_FlyingRespawn_OverrideCmd(&h.state, 3050, &cmd));
+        actual.commandTime = 3050;
+        G_FlyingRespawn_ApplyExpectedCheckpointProgress(&h.state, &actual);
+        BOOST_REQUIRE(G_FlyingRespawn_Advance(&h.state, 3050, &actual, &cmd));
+        BOOST_CHECK(!h.state.mismatch);
+        BOOST_CHECK_EQUAL(h.state.respawnCount, 2);
+    }
+}
+
+// A checkpoint inside the first GO command must include that same-tick movement.
+BOOST_AUTO_TEST_CASE(flying_respawn_checkpoint_on_first_go_step_keeps_that_command)
+{
+    FlyingPlayback h;
+    BOOST_REQUIRE(G_FlyingRespawn_BeginCheckpointReplay(&h.state, 2100, qtrue));
+    usercmd_t cmd = {};
+    while (G_FlyingRespawn_OverrideCmd(&h.state, 2300, &cmd)) {}
+    flyingRespawnMovement_t actual = h.state.automaticCheckpoint.handoff.movement;
+    actual.commandTime = 2300;
+    G_FlyingRespawn_ApplyExpectedCheckpointProgress(&h.state, &actual);
+    BOOST_REQUIRE(G_FlyingRespawn_Advance(&h.state, 2300, &actual, &cmd));
+    // The finish of the first live movement touches a checkpoint before post-movement recording.
+    cmd.serverTime = actual.commandTime = 2301;
+    cmd.forwardmove = 53;
+    G_FlyingRespawn_RecordExecutionCmd(&h.state, 2300, &cmd);
+    actual.origin[0] = 31;
+    flyingRespawnCheckpointConfig_t config = {};
+    config.hasRelease = qtrue;
+    BOOST_REQUIRE(G_FlyingRespawn_OnCheckpointTouch(&h.state, 2300, 21, &config, &actual));
+    BOOST_REQUIRE_EQUAL(h.state.automaticCheckpoint.commandCount, 1);
+    BOOST_REQUIRE(G_FlyingRespawn_BeginCheckpointReplay(&h.state, 3000, qtrue));
+    BOOST_REQUIRE(G_FlyingRespawn_OverrideCmd(&h.state, 3000, &cmd));
+    BOOST_CHECK_EQUAL(cmd.forwardmove, 53);
+    actual.commandTime = 3001;
+    G_FlyingRespawn_ApplyExpectedCheckpointProgress(&h.state, &actual);
+    BOOST_REQUIRE(G_FlyingRespawn_Advance(&h.state, 3000, &actual, &cmd));
+    BOOST_CHECK(!h.state.mismatch);
+}
+
+// Diagnostic static playback uses its own endpoint, never an unrelated map capture.
+BOOST_AUTO_TEST_CASE(flying_respawn_test_second_press_uses_synthetic_contact)
+{
+    FlyingPlayback h;
+    BOOST_REQUIRE(G_FlyingRespawn_BeginTestReplay(&h.state, 1300, 200));
+    flyingRespawnSnapshot_t contact = {};
+    BOOST_REQUIRE(G_FlyingRespawn_HandleSecondPress(&h.state, 1350, &contact));
+    BOOST_CHECK_EQUAL(contact.movement.origin[0], 30);
+    BOOST_CHECK_EQUAL(contact.movement.velocity[0], 0);
+    BOOST_CHECK_EQUAL(contact.movement.forcePower, 75);
+    BOOST_CHECK_EQUAL(h.state.replay.releaseServerTime, 1500);
+    BOOST_CHECK_EQUAL(h.state.automaticCheckpoint.snapshot.movement.origin[0], 20);
+    usercmd_t live = {};
+    live.forwardmove = live.upmove = 127;
+    G_FlyingRespawn_BufferLiveCmd(&h.state, &live);
+    BOOST_REQUIRE(G_FlyingRespawn_Advance(&h.state, 1500, &contact.movement, &live));
+    BOOST_CHECK_EQUAL(live.upmove, 127);
+    BOOST_CHECK_EQUAL(live.forwardmove, 127);
+    BOOST_CHECK_EQUAL(h.state.respawnCount, 0);
+    BOOST_CHECK(h.state.testReplayUsed);
+    BOOST_CHECK(!h.state.mismatch);
+}
+
 // Catches bypassing the enable/pending gate, replaying live input, or releasing before all execution steps.
 BOOST_AUTO_TEST_CASE(flying_respawn_playback_gate_commands_and_exact_handoff)
 {

@@ -1660,6 +1660,7 @@ void TimerStart(gentity_t *trigger, gentity_t *player, trace_t *trace) {//JAPRO 
 					duelAgainst->client->pers.stats.coopStarted = qfalse; //turn off their coop so they cant end the race?
 					duelAgainst->client->pers.keepDemo = qfalse;
 					duelAgainst->client->ps.duelTime = player->client->ps.duelTime;
+					FlyingRespawnTimerStart(duelAgainst);
 
 
 #if 0
@@ -1713,6 +1714,20 @@ void PrintRaceTime(char *username, char *playername, char *message, char *style,
 void IntegerToRaceName(int style, char *styleString, size_t styleStringSize);
 void TimeToString(int duration_ms, char *timeStr, size_t strSize);
 void G_AddRaceTime(char *account, char *courseName, int duration_ms, int style, int topspeed, int average, int clientNum, int awesomenoise, int worldrecordnoise); //should this be extern?
+static qboolean FlyingRespawnFinishPending(const gentity_t *player)
+{
+	const gclient_t *client = player->client;
+	if (client->pers.flyingRespawn.replay.active) return qtrue;
+#if _COOP
+	if (client->sess.raceMode && client->ps.duelInProgress &&
+		client->ps.duelIndex >= 0 && client->ps.duelIndex < MAX_CLIENTS) {
+		const gclient_t *partner = g_entities[client->ps.duelIndex].client;
+		if (partner && partner->sess.raceMode && partner->pers.flyingRespawn.replay.active) return qtrue;
+	}
+#endif
+	return qfalse;
+}
+
 void TimerStop(gentity_t *trigger, gentity_t *player, trace_t *trace) {//JAPRO Timers
 	if (!player->client)
 		return;
@@ -1724,7 +1739,7 @@ void TimerStop(gentity_t *trigger, gentity_t *player, trace_t *trace) {//JAPRO T
 		return;
 	if (player->client->ps.pm_type != PM_NORMAL && player->client->ps.pm_type != PM_FLOAT && player->client->ps.pm_type != PM_FREEZE && player->client->ps.pm_type != PM_JETPACK)
 		return;
-	if (player->client->pers.flyingRespawn.replay.active) {
+	if (FlyingRespawnFinishPending(player)) {
 		/* Finish targets may affect the route. No timing, output, or result is
 		 * allowed while playback still owns movement. Keep the normal route gates. */
 		if ((trigger->spawnflags & (1 << 7)) &&

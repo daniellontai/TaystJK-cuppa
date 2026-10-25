@@ -318,6 +318,204 @@ static int Scalar(sqlite3 *db, const char *sql)
     return value;
 }
 
+/* Restoring the failed attempt's cooldowns/resources would change the replay trajectory. */
+static void MovementResources(void)
+{
+    puts("Running movement resource restore and mismatch validation");
+    for (int field = 0; field < 11; ++field) {
+        gentity_t *player = Player();
+        flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
+        flyingRespawnMovement_t movement;
+        flyingRespawnCheckpointConfig_t config = {0};
+        playerState_t *ps = &player->client->ps;
+        CHECK(G_FlyingRespawn_OnTimerStart(state, 1000, 0, 0, 0, 0));
+        ps->commandTime = 1200;
+        ps->stats[STAT_DASHTIME] = 701;
+        ps->stats[STAT_WJTIME] = 302;
+        ps->stats[STAT_JUMPTIME] = 203;
+        ps->jetpackFuel = 37;
+        ps->eFlags = EF_JETPACK_ACTIVE | EF_JETPACK | EF_JETPACK_FLAMING;
+        ps->groundTime = 1050;
+        player->client->fjDidJump = qtrue;
+        player->client->jetPackOn = qtrue;
+        player->client->jetPackDebRecharge = 1350;
+        player->client->overheatRechargeDebReduce = 1400;
+        ps->fd.forceRageRecoveryTime = 1500;
+        G_FlyingRespawn_CaptureMovement(player, &movement);
+        CHECK(G_FlyingRespawn_OnCheckpointTouch(state, 1200, 20, &config, &movement));
+        ps->stats[STAT_DASHTIME] = ps->stats[STAT_WJTIME] = ps->stats[STAT_JUMPTIME] = 0;
+        ps->jetpackFuel = 1;
+        ps->eFlags = EF_TALK;
+        ps->groundTime = 1999;
+        player->client->fjDidJump = qfalse;
+        player->client->jetPackOn = qfalse;
+        player->client->jetPackDebRecharge = player->client->overheatRechargeDebReduce = 0;
+        ps->fd.forceRageRecoveryTime = 0;
+        level.time = 2000;
+        g_enableFlyingRespawn.integer = 1;
+        CHECK(G_FlyingRespawn_StartCheckpointReplay(player));
+        CHECK(ps->stats[STAT_DASHTIME] == 701);
+        CHECK(ps->stats[STAT_WJTIME] == 302);
+        CHECK(ps->stats[STAT_JUMPTIME] == 203);
+        CHECK(ps->jetpackFuel == 37);
+        CHECK((ps->eFlags & (EF_JETPACK_ACTIVE | EF_JETPACK | EF_JETPACK_FLAMING)) ==
+            (EF_JETPACK_ACTIVE | EF_JETPACK | EF_JETPACK_FLAMING));
+        CHECK(ps->eFlags & EF_TALK); /* unrelated network flags remain live */
+        CHECK(ps->groundTime == 1850);
+        CHECK(player->client->fjDidJump);
+        CHECK(player->client->jetPackOn);
+        CHECK(player->client->jetPackDebRecharge == 2150);
+        CHECK(player->client->overheatRechargeDebReduce == 2200);
+        CHECK(ps->fd.forceRageRecoveryTime == 2300);
+        if (field == 0) ps->stats[STAT_DASHTIME]++;
+        if (field == 1) ps->stats[STAT_WJTIME]++;
+        if (field == 2) ps->stats[STAT_JUMPTIME]++;
+        if (field == 3) ps->jetpackFuel++;
+        if (field == 4) ps->eFlags ^= EF_JETPACK_ACTIVE;
+        if (field == 5) ps->groundTime++;
+        if (field == 6) player->client->fjDidJump = !player->client->fjDidJump;
+        if (field == 7) player->client->jetPackDebRecharge++;
+        if (field == 8) player->client->overheatRechargeDebReduce++;
+        if (field == 9) ps->fd.forceRageRecoveryTime++;
+        if (field == 10) player->client->jetPackOn = !player->client->jetPackOn;
+        G_FlyingRespawn_CaptureMovement(player, &movement);
+        CHECK(G_FlyingRespawn_Advance(state, 2000, &movement, &player->client->pers.cmd));
+        CHECK(state->runInvalid && state->mismatch);
+        CHECK(player->client->pers.stats.startTime == 777);
+        CHECK(player->client->pers.stats.startLevelTime == 888);
+        CHECK(ps->duelTime == 999);
+        G_FlyingRespawn_FreeClient(state);
+    }
+}
+
+/* Exercises the actual frame resource consumers while static playback owns state. */
+static void StaticJetpackResources(void)
+{
+    puts("Running static jetpack resources through G_RunFrame");
+    for (int tribes = 0; tribes < 2; ++tribes) {
+        gentity_t *player = Player();
+        flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
+        flyingRespawnMovement_t movement;
+        flyingRespawnCheckpointConfig_t config = {0};
+        level.maxclients = 0;
+        player->client->sess.movementStyle = tribes ? MV_TRIBES : MV_JETPACK;
+        player->client->ps.stats[STAT_MOVEMENTSTYLE] = player->client->sess.movementStyle;
+        player->client->ps.eFlags = EF_JETPACK_ACTIVE;
+        player->client->ps.jetpackFuel = 37;
+        player->client->ps.speed = 250;
+        player->client->ps.commandTime = 1200;
+        player->client->ps.groundTime = 1100;
+        player->client->jetPackDebReduce = 1275;
+        player->client->jetPackDebRecharge = 1300;
+        player->client->overheatRechargeDebReduce = 1350;
+        CHECK(G_FlyingRespawn_OnTimerStart(state, 1000, 0, 500, 0, 0));
+        G_FlyingRespawn_CaptureMovement(player, &movement);
+        CHECK(G_FlyingRespawn_OnCheckpointTouch(state, 1200, 20, &config, &movement));
+        CHECK(G_FlyingRespawn_CaptureAutomaticHandoff(state, 1700, &movement));
+        CHECK(G_FlyingRespawn_BeginCheckpointReplay(state, 2000, qtrue));
+        level.time = 2050;
+        CHECK(G_FlyingRespawn_StartCheckpointReplay(player));
+        for (int frame = 2100; frame < 2500; frame += 50) G_RunFrame(frame);
+        CHECK(player->client->ps.jetpackFuel == 37);
+        CHECK(player->client->ps.fd.forcePower == 80);
+        /* Execute the real late handoff, stopping before unrelated collision imports. */
+        player->client->pers.connected = CON_CONNECTING;
+        level.time = 2550;
+        ClientThink(0, NULL);
+        CHECK(!state->replay.active && !state->mismatch);
+        CHECK(player->client->ps.groundTime == 2450);
+        CHECK(player->client->jetPackDebReduce == 2625);
+        CHECK(player->client->jetPackDebRecharge == 2650);
+        CHECK(player->client->overheatRechargeDebReduce == 2700);
+        CHECK(state->movementStates[state->stateHead].movement.commandTime == 2549);
+        CHECK(state->movementStates[state->stateHead].movement.jetPackDebRecharge == 2650);
+        G_FlyingRespawn_FreeClient(state);
+    }
+}
+
+static gentity_t *CoopPartner(gentity_t *player)
+{
+    gentity_t *partner = &g_entities[1];
+    partner->inuse = qtrue;
+    partner->health = 100;
+    partner->client = &g_clients[1];
+    *partner->client = *player->client;
+    G_FlyingRespawn_InitClient(&partner->client->pers.flyingRespawn);
+    level.maxclients = 2;
+    for (int i = 0; i < 2; ++i) {
+        g_clients[i].ps.clientNum = i;
+        g_clients[i].ps.duelInProgress = qtrue;
+        g_clients[i].ps.duelIndex = 1 - i;
+        g_clients[i].sess.movementStyle = g_clients[i].ps.stats[STAT_MOVEMENTSTYLE] = MV_COOP_JKA;
+    }
+    return partner;
+}
+
+/* The start brush starts the partner's official run too; its feature state must follow. */
+static void CoopTimerStartReset(void)
+{
+    puts("Running co-op timer-start feature reset");
+    gentity_t *player = Player(), *partner = CoopPartner(player), *start = &g_entities[MAX_CLIENTS];
+    flyingRespawnState_t *state = &partner->client->pers.flyingRespawn;
+    flyingRespawnMovement_t movement = {0};
+    flyingRespawnCheckpointConfig_t config = {0};
+    CHECK(G_FlyingRespawn_OnTimerStart(state, 100, 0, 0, 0, 0));
+    CHECK(G_FlyingRespawn_CaptureManual(state, 200, &movement));
+    CHECK(G_FlyingRespawn_OnCheckpointTouch(state, 200, 20, &config, &movement));
+    CHECK(G_FlyingRespawn_BeginCheckpointReplay(state, 300, qtrue));
+    state->runInvalid = state->mismatch = state->testReplayUsed = qtrue;
+    state->respawnCount = 4;
+    g_flyingRespawnRewindMs.integer = 1500;
+    g_flyingRespawnReleaseOffsetMs.integer = 150;
+    g_flyingRespawnTestMode.integer = 1;
+    level.time = 5000;
+    start->inuse = qtrue;
+    start->wait = 1;
+    TimerStart(start, player, NULL);
+    CHECK(partner->client->pers.stats.startTime == player->client->pers.stats.startTime);
+    CHECK(!state->runInvalid && !state->mismatch && !state->testReplayUsed);
+    CHECK(!state->automaticCheckpoint.valid && !state->automaticCheckpoint.pending);
+    CHECK(!state->replay.active && state->respawnCount == 0);
+    CHECK(state->rewindMs == 1500 && state->releaseOffsetMs == 150 && state->testMode);
+    CHECK(G_FlyingRespawn_GetSecondaryElapsed(state, 5050) == 50);
+    CHECK(state->manualSave.valid);
+    G_FlyingRespawn_FreeClient(state);
+    G_FlyingRespawn_FreeClient(&player->client->pers.flyingRespawn);
+}
+
+/* Check output at thirds of a 1.5-second replay, including the unchanged static deadline. */
+static void ProgressCountdown(void)
+{
+    puts("Running progress countdown and GO output");
+    gentity_t *player = Player();
+    flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
+    flyingRespawnMovement_t movement;
+    flyingRespawnCheckpointConfig_t config = {0};
+    usercmd_t live = {0};
+    CHECK(G_FlyingRespawn_OnTimerStart(state, 1000, 0, 1500, 0, 0));
+    G_FlyingRespawn_CaptureMovement(player, &movement);
+    CHECK(G_FlyingRespawn_OnCheckpointTouch(state, 1200, 20, &config, &movement));
+    CHECK(G_FlyingRespawn_CaptureAutomaticHandoff(state, 2700, &movement));
+    level.time = 4000;
+    g_enableFlyingRespawn.integer = 1;
+    CHECK(G_FlyingRespawn_StartCheckpointReplay(player));
+    CHECK(commandsSent == 1 && !strcmp(sent[0].text, "cp \"^33\""));
+    level.time = 4500;
+    CHECK(G_FlyingRespawn_StartCheckpointReplay(player));
+    CHECK(commandsSent == 2 && !strcmp(sent[1].text, "cp \"^32\""));
+    level.time = 5000;
+    ClientThink(0, &live);
+    CHECK(commandsSent == 3 && !strcmp(sent[2].text, "cp \"^31\""));
+    CHECK(state->replay.releaseServerTime == 5500);
+    /* Isolate presentation/handoff from collision and renderer imports after GO. */
+    player->client->pers.connected = CON_CONNECTING;
+    level.time = 5500;
+    ClientThink(0, &live);
+    CHECK(!state->replay.active && !state->mismatch);
+    CHECK(commandsSent == 4 && !strcmp(sent[3].text, "cp \"^2GO!\""));
+    G_FlyingRespawn_FreeClient(state);
+}
+
 /* Catches public-format/audience changes and secondary time leaking to spectators. */
 static void FinishPublicPrivate(void)
 {
@@ -497,6 +695,58 @@ static void FinishCoopEligibility(void)
     }
 }
 
+/* A shared result cannot be committed until both replay handoffs have validated. */
+static void FinishCoopActiveReplay(void)
+{
+    puts("Running co-op finish deferred through partner validation");
+    for (int mismatch = 0; mismatch < 2; ++mismatch) {
+        for (int owner = 0; owner < 2; ++owner) {
+            gentity_t *player = Player();
+            CoopPartner(player);
+            gentity_t *finish = &g_entities[MAX_CLIENTS];
+            flyingRespawnState_t *state = &g_clients[owner].pers.flyingRespawn;
+            flyingRespawnMovement_t movement = {0};
+            flyingRespawnCheckpointConfig_t config = {0};
+            usercmd_t cmd = {0};
+            sqlite3 *db = NULL;
+            level.time = level.frameStartTime = 5000;
+            g_stepSlideFix.integer = g_smoothClients.integer = 1;
+            timescale.value = 1.0f;
+            for (int i = 0; i < 2; ++i) {
+                g_clients[i].pers.cmd.serverTime = 5000;
+                Q_strncpyz(g_clients[i].pers.userName, i ? "booster" : "runner", sizeof(g_clients[i].pers.userName));
+            }
+            CHECK(G_FlyingRespawn_OnTimerStart(state, 1000, 0, 0, 0, 0));
+            movement.commandTime = 1200;
+            CHECK(G_FlyingRespawn_OnCheckpointTouch(state, 1200, 20, &config, &movement));
+            CHECK(G_FlyingRespawn_BeginCheckpointReplay(state, 5000, qtrue));
+            InitGameAccountStuff();
+            CHECK(sqlite3_open("./data.db", &db) == SQLITE_OK);
+            CHECK(sqlite3_exec(db, "DELETE FROM LocalRun; DELETE FROM LocalRunInvalid; DELETE FROM LocalSecretCourseRun; DELETE FROM LocalSecretCourse", NULL, NULL, NULL) == SQLITE_OK);
+            finish->inuse = qtrue;
+            finish->wait = 1;
+            commandsSent = 0;
+            TimerStop(finish, player, NULL);
+            CHECK(g_clients[0].pers.stats.startTime == 777 && g_clients[1].pers.stats.startTime == 777);
+            CHECK(g_clients[0].ps.duelTime == 999 && g_clients[1].ps.duelTime == 999);
+            CHECK(Scalar(db, "SELECT count(*) FROM LocalRun") == 0);
+            CHECK(Scalar(db, "SELECT count(*) FROM LocalRunInvalid") == 0);
+            CHECK(commandsSent == 0);
+            movement.commandTime = 5000;
+            movement.origin[0] = mismatch ? 10 : 0;
+            CHECK(G_FlyingRespawn_Advance(state, 5000, &movement, &cmd));
+            CHECK(state->runInvalid == mismatch);
+            TimerStop(finish, player, NULL);
+            CHECK(Scalar(db, "SELECT count(*) FROM LocalRun") == (mismatch ? 0 : 2));
+            CHECK(Scalar(db, "SELECT count(*) FROM LocalRunInvalid") == (mismatch ? 2 : 0));
+            CHECK(!g_clients[0].pers.stats.startTime && !g_clients[1].pers.stats.startTime);
+            sqlite3_close(db);
+            G_FlyingRespawn_FreeClient(&g_clients[0].pers.flyingRespawn);
+            G_FlyingRespawn_FreeClient(&g_clients[1].pers.flyingRespawn);
+        }
+    }
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 2 || strcmp(argv[1], "finish")) {
@@ -505,12 +755,17 @@ int main(int argc, char **argv)
         ReplayTimerBrushes();
         StaticTribesServerFrames();
         StaticServerFrameTimeout();
+        MovementResources();
+        StaticJetpackResources();
+        CoopTimerStartReset();
+        ProgressCountdown();
     }
     FinishPublicPrivate();
     FinishPersistence();
     FinishHelp();
     FinishCoopEligibility();
+    FinishCoopActiveReplay();
     if (failures) fprintf(stderr, "%d integration assertions failed\n", failures);
-    else puts(argc > 1 ? "4 flying-respawn finish integration cases passed" : "9 flying-respawn integration cases passed");
+    else puts(argc > 1 ? "5 flying-respawn finish integration cases passed" : "14 flying-respawn integration cases passed");
     return failures ? 1 : 0;
 }

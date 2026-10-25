@@ -4085,12 +4085,14 @@ void G_RunFrame( int levelTime ) {
 
 #endif
 #if 1
-			if (ent->client->sess.movementStyle == MV_TRIBES) {//Tribes jetpack
+			if (ent->client->pers.flyingRespawn.replay.active && ent->client->pers.flyingRespawn.replay.staticReplay) {
+				/* Static playback freezes fuel, Force drain, and recharge deadlines until GO. */
+			}
+			else if (ent->client->sess.movementStyle == MV_TRIBES) {//Tribes jetpack
 				if (ent->client->ps.eFlags & EF_JETPACK_ACTIVE) {
 					/* Tribes drains Force here, before WP_ForcePowersUpdate. Static
 					 * playback owns both the frozen Force value and its drain deadline. */
-					if (!(ent->client->pers.flyingRespawn.replay.active && ent->client->pers.flyingRespawn.replay.staticReplay) &&
-						ent->client->jetPackDebReduce < level.time)
+					if (ent->client->jetPackDebReduce < level.time)
 					{
 						if (ent->client->pers.tribesClass == 3 ) //Heavy
 							ent->client->ps.fd.forcePower -= 8;

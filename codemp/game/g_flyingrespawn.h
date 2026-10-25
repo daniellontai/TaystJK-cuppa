@@ -19,6 +19,8 @@ typedef struct {
 	int forcePowersActive, forcePowerSelected, forceButtonNeedRelease;
 	int forcePowerDebounce[NUM_FORCE_POWERS], forcePowerDuration[NUM_FORCE_POWERS];
 	int forcePowerRegenDebounceTime, forceJumpAddTime;
+	int forceRageRecoveryTime, groundTime;
+	int dashTime, wallJumpTime, jumpTime, jetpackFuel, jetpackFlags;
 	float forceJumpZStart, forceJumpCharge;
 	int legsAnim, legsTimer, torsoAnim, torsoTimer;
 	int pmType, bobCycle, movementDir, lastOnGround, gravity, basespeed;
@@ -26,6 +28,8 @@ typedef struct {
 	vec3_t moveDir;
 	int checkpoints, courseID;
 	int jetPackDebReduce; /* Client-owned absolute Tribes Force-drain deadline. */
+	int jetPackDebRecharge, overheatRechargeDebReduce;
+	qboolean fjDidJump, jetPackOn;
 } flyingRespawnMovement_t;
 
 typedef struct {
@@ -76,6 +80,7 @@ typedef struct {
 	usercmd_t frameCmd;
 	qboolean hasLiveCmd;
 	flyingRespawnMovement_t expectedMovement;
+	flyingRespawnSnapshot_t syntheticContact;
 	int expectedSecondaryMs;
 } flyingRespawnReplay_t;
 
@@ -90,6 +95,8 @@ typedef struct {
 	int commandDroppedThrough, stateDroppedThrough;
 	int executionHead, executionCount, executionDroppedThrough;
 	unsigned int historyGeneration;
+	int historyContinuousSince; /* Rewind may shorten at the most recent replay handoff. */
+	qboolean historyBoundaryBeforeMovement;
 	int rewindMs, releaseOffsetMs, retentionMs;
 	qboolean testMode;
 	qboolean secondaryRunning;
@@ -122,6 +129,8 @@ qboolean G_FlyingRespawn_ApplyExpectedCheckpointProgress(flyingRespawnState_t *s
 void G_FlyingRespawn_RecordRawCmd(flyingRespawnState_t *state, int serverTime, const usercmd_t *cmd);
 void G_FlyingRespawn_RecordExecutionCmd(flyingRespawnState_t *state, int serverTime, const usercmd_t *cmd);
 void G_FlyingRespawn_RecordState(flyingRespawnState_t *state, int serverTime, const flyingRespawnMovement_t *movement);
+/* Start a continuous stream immediately before the first live movement at GO. */
+void G_FlyingRespawn_RecordHandoff(flyingRespawnState_t *state, int serverTime, const flyingRespawnMovement_t *movement);
 qboolean G_FlyingRespawn_SelectHistory(const flyingRespawnState_t *state, int targetServerTime, int endServerTime, flyingRespawnSelection_t *selection);
 qboolean G_FlyingRespawn_SelectExecutionHistory(const flyingRespawnState_t *state, int targetServerTime, int endServerTime, flyingRespawnSelection_t *selection);
 qboolean G_FlyingRespawn_GetSelectedCmd(const flyingRespawnState_t *state, const flyingRespawnSelection_t *selection, int index, flyingRespawnRawCmd_t *cmd);
@@ -133,6 +142,7 @@ qboolean G_FlyingRespawn_FrameCmd(flyingRespawnState_t *state, int serverTime, u
 /* Preserve static Force timer intervals if the first GO tick is after its deadline. */
 void G_FlyingRespawn_ReleaseStaticForce(const flyingRespawnState_t *state, int serverTime, playerState_t *ps, int *jetPackDebReduce);
 int G_FlyingRespawn_GetJetpackDeadline(const flyingRespawnMovement_t *movement, int timeOffset);
+int G_FlyingRespawn_ShiftDeadline(int deadline, int timeOffset);
 /* Only returns recorded movement steps when they are due; live input stays buffered. */
 qboolean G_FlyingRespawn_OverrideCmd(flyingRespawnState_t *state, int serverTime, usercmd_t *cmd);
 /* Returns true once at GO, after validating the pre-live state and installing live input. */
