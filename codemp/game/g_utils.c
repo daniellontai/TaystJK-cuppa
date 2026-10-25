@@ -1416,6 +1416,16 @@ gentity_t *G_PlayEffect(int fxID, vec3_t org, vec3_t ang)
 	return te;
 }
 
+gentity_t *G_PlayEffectForEntity(gentity_t *source, int fxID, vec3_t org, vec3_t ang)
+{
+	gentity_t	*te;
+
+	te = G_PlayEffect(fxID, org, ang);
+	G_CopyClientBroadcastAudience(te, source);
+
+	return te;
+}
+
 /*
 =============
 G_PlayEffectID
@@ -1436,6 +1446,16 @@ gentity_t *G_PlayEffectID(const int fxID, vec3_t org, vec3_t ang)
 	{ //play off this dir by default then.
 		te->s.angles[1] = 1;
 	}
+
+	return te;
+}
+
+gentity_t *G_PlayEffectIDForEntity(gentity_t *source, int fxID, vec3_t org, vec3_t ang)
+{
+	gentity_t	*te;
+
+	te = G_PlayEffectID(fxID, org, ang);
+	G_CopyClientBroadcastAudience(te, source);
 
 	return te;
 }
