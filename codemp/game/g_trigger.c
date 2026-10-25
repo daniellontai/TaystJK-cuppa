@@ -1450,6 +1450,48 @@ static void FlyingRespawnTimerStart(gentity_t *player)
 		g_flyingRespawnTestMode.integer, mapRewindMs);
 }
 
+static void TimerStartRouteEffects(gentity_t *trigger, gentity_t *player, qboolean replay)
+{
+	if (player->client->ps.m_iVehicleNum) { //We are in a vehicle, so use the trigger on that instead maybe? or both..
+		gentity_t *ourVeh = &g_entities[player->client->ps.m_iVehicleNum];
+		if (ourVeh->inuse && ourVeh->client) //just to be safe
+			multi_trigger(trigger, ourVeh);
+	}
+
+	multi_trigger(trigger, player); //Let it have a target, so it can point to restricts.  Move this up here, so swoops can activate it for proper swoop teleporting?
+
+	if (!replay && trigger->noise_index) //Only play on leaving trigger..?
+		G_RaceSound( player, CHAN_AUTO, trigger->noise_index, RS_TIMER_START );//could just use player instead of trigger->activator ?   How do we make this so only the activator hears it?
+
+	if (trigger->spawnflags & 1) {//set speed to speed value, keep our direction the same
+		vec3_t hVel;
+		hVel[0] = player->client->ps.velocity[0];
+		hVel[1] = player->client->ps.velocity[1];
+		hVel[2] = 0;
+		VectorScale(player->client->ps.velocity, (trigger->speed * (player->client->ps.basespeed / 250.0f)) / VectorLength(hVel), player->client->ps.velocity);
+	}
+	else if (trigger->spawnflags & 2) {//set speed to speed value, keep our direction the same
+		vec3_t hVel;
+		hVel[0] = player->client->ps.velocity[0];
+		hVel[1] = player->client->ps.velocity[1];
+		hVel[2] = 0;
+		if (VectorLength(hVel) > trigger->speed) {
+			VectorScale(player->client->ps.velocity, (trigger->speed) / VectorLength(hVel), player->client->ps.velocity);
+		}
+	}
+	else if (trigger->spawnflags & 4 && (player->client->sess.movementStyle == MV_CPM || player->client->sess.movementStyle == MV_OCPM  || player->client->sess.movementStyle == MV_PJK || player->client->sess.movementStyle == MV_WSW ||
+		player->client->sess.movementStyle == MV_RJCPM || player->client->sess.movementStyle == MV_SWOOP)) {//set speed to speed value, keep our direction the same
+		vec3_t hVel;
+		hVel[0] = player->client->ps.velocity[0];
+		hVel[1] = player->client->ps.velocity[1];
+		hVel[2] = 0;
+		if (VectorLength(hVel) > (trigger->speed * (player->client->ps.basespeed / 250.0f))) {
+			VectorScale(player->client->ps.velocity, (trigger->speed * (player->client->ps.basespeed / 250.0f)) / VectorLength(hVel), player->client->ps.velocity);
+		}
+	}
+
+}
+
 void TimerStart(gentity_t *trigger, gentity_t *player, trace_t *trace) {//JAPRO Timers
 	int lessTime;
 	char userinfo[MAX_INFO_STRING];
@@ -1481,6 +1523,15 @@ void TimerStart(gentity_t *trigger, gentity_t *player, trace_t *trace) {//JAPRO 
 	if (player->client->pers.stats.lastResetTime == level.time) //Dont allow a starttimer to start in the same frame as a resettimer (called from noclip or amtele)
 		return;
 	if (player->client->sess.raceMode && g_fixTimerOOB.integer && !trap->InPVS(player->client->ps.origin, player->client->ps.origin)) { //Check if they are OOB (not in a PVS?)
+		return;
+	}
+
+	if (player->client->pers.flyingRespawn.replay.active) {
+		/* Reproduce route targets/speed and course progress without restarting
+		 * either clock, replacing the checkpoint owner, or touching demo/result state. */
+		TimerStartRouteEffects(trigger, player, qtrue);
+		player->client->pers.stats.checkpoints = 0;
+		player->client->pers.stats.courseID = trigger->courseID;
 		return;
 	}
 
@@ -1524,43 +1575,7 @@ void TimerStart(gentity_t *trigger, gentity_t *player, trace_t *trace) {//JAPRO 
 	//player->client->lastStartTime = level.time;
 	player->client->pers.keepDemo = qfalse;
 
-	if (player->client->ps.m_iVehicleNum) { //We are in a vehicle, so use the trigger on that instead maybe? or both..
-		gentity_t *ourVeh = &g_entities[player->client->ps.m_iVehicleNum];	
-		if (ourVeh->inuse && ourVeh->client) //just to be safe
-			multi_trigger(trigger, ourVeh);
-	}
-
-	multi_trigger(trigger, player); //Let it have a target, so it can point to restricts.  Move this up here, so swoops can activate it for proper swoop teleporting?
-
-	if (trigger->noise_index) //Only play on leaving trigger..?
-		G_RaceSound( player, CHAN_AUTO, trigger->noise_index, RS_TIMER_START );//could just use player instead of trigger->activator ?   How do we make this so only the activator hears it?
-
-	if (trigger->spawnflags & 1) {//set speed to speed value, keep our direction the same
-		vec3_t hVel;
-		hVel[0] = player->client->ps.velocity[0];
-		hVel[1] = player->client->ps.velocity[1];
-		hVel[2] = 0;
-		VectorScale(player->client->ps.velocity, (trigger->speed * (player->client->ps.basespeed / 250.0f)) / VectorLength(hVel), player->client->ps.velocity);
-	}
-	else if (trigger->spawnflags & 2) {//set speed to speed value, keep our direction the same
-		vec3_t hVel;
-		hVel[0] = player->client->ps.velocity[0];
-		hVel[1] = player->client->ps.velocity[1];
-		hVel[2] = 0;
-		if (VectorLength(hVel) > trigger->speed) {
-			VectorScale(player->client->ps.velocity, (trigger->speed) / VectorLength(hVel), player->client->ps.velocity);
-		}
-	}
-	else if (trigger->spawnflags & 4 && (player->client->sess.movementStyle == MV_CPM || player->client->sess.movementStyle == MV_OCPM  || player->client->sess.movementStyle == MV_PJK || player->client->sess.movementStyle == MV_WSW ||
-		player->client->sess.movementStyle == MV_RJCPM || player->client->sess.movementStyle == MV_SWOOP)) {//set speed to speed value, keep our direction the same
-		vec3_t hVel;
-		hVel[0] = player->client->ps.velocity[0];
-		hVel[1] = player->client->ps.velocity[1];
-		hVel[2] = 0;
-		if (VectorLength(hVel) > (trigger->speed * (player->client->ps.basespeed / 250.0f))) {
-			VectorScale(player->client->ps.velocity, (trigger->speed * (player->client->ps.basespeed / 250.0f)) / VectorLength(hVel), player->client->ps.velocity);
-		}
-	}
+	TimerStartRouteEffects(trigger, player, qfalse);
 
 	player->client->pers.startLag = GetTimeMS() - level.frameStartTime + level.time - player->client->pers.cmd.serverTime; //use level.previousTime?
 	//trap->SendServerCommand( player-g_entities, va("chat \"startlag: %i\"", player->client->pers.startLag));
@@ -1709,6 +1724,16 @@ void TimerStop(gentity_t *trigger, gentity_t *player, trace_t *trace) {//JAPRO T
 		return;
 	if (player->client->ps.pm_type != PM_NORMAL && player->client->ps.pm_type != PM_FLOAT && player->client->ps.pm_type != PM_FREEZE && player->client->ps.pm_type != PM_JETPACK)
 		return;
+	if (player->client->pers.flyingRespawn.replay.active) {
+		/* Finish targets may affect the route. No timing, output, or result is
+		 * allowed while playback still owns movement. Keep the normal route gates. */
+		if ((trigger->spawnflags & (1 << 7)) &&
+			(trigger->objective & player->client->pers.stats.checkpoints) != trigger->objective) return;
+		if ((trigger->spawnflags & (1 << 8)) && trigger->courseID &&
+			trigger->courseID != player->client->pers.stats.courseID) return;
+		multi_trigger(trigger, player);
+		return;
+	}
 	if (player->client->sess.raceMode && g_fixTimerOOB.integer > 1 && !trap->InPVS(player->client->ps.origin, player->client->ps.origin)) { //Check if they are OOB (not in a PVS?)
 			player->client->pers.stats.startLevelTime = 0;
 			player->client->pers.stats.startTime = 0;

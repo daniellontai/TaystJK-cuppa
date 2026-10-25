@@ -8,6 +8,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+static int FR_ShiftTime(int time, int offset);
+
 static int FR_Index(int head, int offset, int capacity)
 {
 	return (int)(((size_t)head + offset) % capacity);
@@ -355,6 +357,19 @@ static void FR_ShiftMovement(flyingRespawnMovement_t *movement, int offset)
 	G_FlyingRespawn_ReadMovement(movement, &ps, movement->movementStyle, movement->checkpoints, movement->courseID);
 }
 
+static usercmd_t FR_StartCmd(const flyingRespawnState_t *state, int time)
+{
+	usercmd_t cmd;
+	int i;
+	memset(&cmd, 0, sizeof(cmd));
+	for (i = 0; i < state->executionCount; ++i) {
+		const flyingRespawnRawCmd_t *entry = &state->executionCommands[FR_Index(state->executionHead, i, state->historyCapacity)];
+		if (entry->serverTime > time) break;
+		cmd = entry->cmd;
+	}
+	return cmd;
+}
+
 qboolean G_FlyingRespawn_BeginTestReplay(flyingRespawnState_t *state, int serverTime, int durationMs)
 {
 	flyingRespawnSelection_t selection;
@@ -374,6 +389,8 @@ qboolean G_FlyingRespawn_BeginTestReplay(flyingRespawnState_t *state, int server
 	state->replay.active = state->replay.testReplay = qtrue;
 	state->replay.selection = selection;
 	state->replay.startServerTime = serverTime;
+	state->replay.frameCmd = FR_StartCmd(state, selection.snapshot.serverTime);
+	state->replay.frameCmd.serverTime = FR_ShiftTime(state->replay.frameCmd.serverTime, serverTime - selection.snapshot.serverTime);
 	state->replay.releaseServerTime = serverTime + serverTime - selection.snapshot.serverTime;
 	state->replay.expectedMovement = end->movement;
 	FR_ShiftMovement(&state->replay.expectedMovement, serverTime - selection.snapshot.serverTime);
@@ -396,6 +413,8 @@ qboolean G_FlyingRespawn_BeginCheckpointReplay(flyingRespawnState_t *state, int 
 	state->replay.selection.endServerTime = capture->handoff.serverTime;
 	state->replay.selection.commandCount = capture->commandCount;
 	state->replay.startServerTime = time;
+	state->replay.frameCmd = capture->startCmd;
+	state->replay.frameCmd.serverTime = FR_ShiftTime(state->replay.frameCmd.serverTime, time - capture->start.serverTime);
 	state->replay.releaseServerTime = time + (int)duration;
 	state->replay.expectedMovement = capture->handoff.movement;
 	FR_ShiftMovement(&state->replay.expectedMovement, time - capture->start.serverTime);
@@ -454,6 +473,31 @@ qboolean G_FlyingRespawn_OverrideCmd(flyingRespawnState_t *state, int time, user
 	}
 	*cmd = next.cmd;
 	cmd->serverTime += replay->startServerTime - replay->selection.snapshot.serverTime;
+	replay->frameCmd = *cmd;
+	return qtrue;
+}
+
+qboolean G_FlyingRespawn_FrameCmd(flyingRespawnState_t *state, int time, usercmd_t *cmd)
+{
+	flyingRespawnReplay_t *replay = &state->replay;
+	int i;
+	if (!cmd || !replay->active) return qtrue;
+	if (replay->staticReplay) {
+		memset(cmd, 0, sizeof(*cmd));
+		return qfalse;
+	}
+	*cmd = replay->frameCmd;
+	/* Synchronous frame consumers run before movement. Inspect due source input
+	 * without consuming any step or ever consulting the buffered live command. */
+	for (i = replay->commandCursor; i < replay->selection.commandCount; ++i) {
+		flyingRespawnRawCmd_t next;
+		if (replay->testReplay) {
+			if (!G_FlyingRespawn_GetSelectedCmd(state, &replay->selection, i, &next)) break;
+		} else next = (replay->manualReplay ? state->manualSave.commands : state->automaticCheckpoint.commands)[i];
+		if ((int64_t)time - replay->startServerTime < (int64_t)next.serverTime - replay->selection.snapshot.serverTime) break;
+		*cmd = next.cmd;
+		cmd->serverTime = FR_ShiftTime(cmd->serverTime, replay->startServerTime - replay->selection.snapshot.serverTime);
+	}
 	return qtrue;
 }
 
@@ -466,12 +510,34 @@ static void FR_MarkStaticContact(flyingRespawnState_t *state, int time)
 	}
 }
 
+void G_FlyingRespawn_ReleaseStaticForce(const flyingRespawnState_t *state, int time, playerState_t *ps)
+{
+	int i, late = time - state->replay.releaseServerTime;
+	if (!ps || state->replay.active || !state->replay.staticReplay || late <= 0) return;
+	for (i = 0; i < NUM_FORCE_POWERS; ++i) {
+		if (ps->fd.forcePowerDebounce[i]) ps->fd.forcePowerDebounce[i] = FR_ShiftTime(ps->fd.forcePowerDebounce[i], late);
+		if (ps->fd.forcePowerDuration[i]) ps->fd.forcePowerDuration[i] = FR_ShiftTime(ps->fd.forcePowerDuration[i], late);
+	}
+	if (ps->fd.forcePowerRegenDebounceTime) ps->fd.forcePowerRegenDebounceTime = FR_ShiftTime(ps->fd.forcePowerRegenDebounceTime, late);
+	if (ps->fd.forceJumpAddTime) ps->fd.forceJumpAddTime = FR_ShiftTime(ps->fd.forceJumpAddTime, late);
+}
+
 qboolean G_FlyingRespawn_HandleSecondPress(flyingRespawnState_t *state, int time, flyingRespawnSnapshot_t *contact)
 {
 	flyingRespawnReplay_t *replay = &state->replay;
+	int i, remaining;
 	if (!contact || !replay->active || replay->manualReplay || replay->testReplay || replay->staticReplay) return qfalse;
 	*contact = state->automaticCheckpoint.snapshot;
 	FR_ShiftMovement(&contact->movement, time - contact->serverTime);
+	/* Force cannot run while held. Keep each source timer's remaining interval
+	 * relative to GO, rather than letting the static waiting period expire it. */
+	remaining = replay->releaseServerTime > time ? replay->releaseServerTime - time : 0;
+	for (i = 0; i < NUM_FORCE_POWERS; ++i) {
+		if (contact->movement.forcePowerDebounce[i]) contact->movement.forcePowerDebounce[i] = FR_ShiftTime(contact->movement.forcePowerDebounce[i], remaining);
+		if (contact->movement.forcePowerDuration[i]) contact->movement.forcePowerDuration[i] = FR_ShiftTime(contact->movement.forcePowerDuration[i], remaining);
+	}
+	if (contact->movement.forcePowerRegenDebounceTime) contact->movement.forcePowerRegenDebounceTime = FR_ShiftTime(contact->movement.forcePowerRegenDebounceTime, remaining);
+	if (contact->movement.forceJumpAddTime) contact->movement.forceJumpAddTime = FR_ShiftTime(contact->movement.forceJumpAddTime, remaining);
 	contact->serverTime = time;
 	memset(contact->movement.velocity, 0, sizeof(contact->movement.velocity));
 	G_FlyingRespawn_ApplyExpectedCheckpointProgress(state, &contact->movement);
@@ -622,6 +688,7 @@ static qboolean FR_FreezeHistory(const flyingRespawnState_t *state, int serverTi
 	if (rewindMs < 0 || (int64_t)serverTime - rewindMs < INT_MIN ||
 		!G_FlyingRespawn_SelectExecutionHistory(state, serverTime - rewindMs, serverTime, &selection)) return qfalse;
 	capture->start = selection.snapshot;
+	capture->startCmd = FR_StartCmd(state, capture->start.serverTime);
 	for (i = 0; i < selection.commandCount; ++i) {
 		if (!G_FlyingRespawn_GetSelectedCmd(state, &selection, i, &cmd) || !FR_AppendCapture(capture, &cmd)) {
 			FR_ClearCapture(capture);
@@ -640,6 +707,7 @@ qboolean G_FlyingRespawn_CaptureManual(flyingRespawnState_t *state, int time, co
 		/* A bookmark made before a full approach exists remains an ordinary saved pose. */
 		capture.start.serverTime = time;
 		capture.start.movement = *movement;
+		capture.startCmd = FR_StartCmd(state, time);
 	}
 	capture.snapshot.serverTime = time;
 	capture.snapshot.movement = *movement;
@@ -661,6 +729,8 @@ qboolean G_FlyingRespawn_BeginManualReplay(flyingRespawnState_t *state, int time
 	state->replay.selection.endServerTime = capture->snapshot.serverTime;
 	state->replay.selection.commandCount = capture->commandCount;
 	state->replay.startServerTime = time;
+	state->replay.frameCmd = capture->startCmd;
+	state->replay.frameCmd.serverTime = FR_ShiftTime(state->replay.frameCmd.serverTime, time - capture->start.serverTime);
 	state->replay.releaseServerTime = time + (int)duration;
 	return qtrue;
 }
@@ -698,6 +768,7 @@ qboolean G_FlyingRespawn_CaptureAutomaticStart(flyingRespawnState_t *state, int 
 	} else {
 		capture.start.serverTime = time;
 		capture.start.movement = *movement;
+		capture.startCmd = FR_StartCmd(state, time);
 	}
 	capture.snapshot.serverTime = time;
 	capture.snapshot.movement = *movement;

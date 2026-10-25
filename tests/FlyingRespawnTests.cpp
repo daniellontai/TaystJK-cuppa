@@ -223,6 +223,34 @@ BOOST_AUTO_TEST_CASE(flying_respawn_playback_cancellation_returns_latest_live_in
     BOOST_CHECK(!G_FlyingRespawn_CancelReplay(&h.state, 2051, &command));
 }
 
+// Catches frame consumers seeing buffered live input or advancing the movement cursor themselves.
+BOOST_AUTO_TEST_CASE(flying_respawn_playback_frame_input_is_recorded_and_nonconsuming)
+{
+    FlyingPlayback h;
+    BOOST_REQUIRE(G_FlyingRespawn_BeginCheckpointReplay(&h.state, 2000, qtrue));
+    usercmd_t command = {}, live = {};
+    live.forwardmove = -127; live.upmove = -127;
+    G_FlyingRespawn_BufferLiveCmd(&h.state, &live);
+    BOOST_REQUIRE(G_FlyingRespawn_FrameCmd(&h.state, 2100, &command));
+    BOOST_CHECK_EQUAL(command.forwardmove, 37);
+    BOOST_CHECK_EQUAL(command.upmove, 0);
+    BOOST_CHECK_EQUAL(command.serverTime, 2100);
+    BOOST_CHECK_EQUAL(h.state.replay.commandCursor, 0);
+    BOOST_REQUIRE(G_FlyingRespawn_OverrideCmd(&h.state, 2100, &command));
+    BOOST_REQUIRE(G_FlyingRespawn_FrameCmd(&h.state, 2150, &command));
+    BOOST_CHECK_EQUAL(command.forwardmove, 37);
+    BOOST_CHECK_EQUAL(h.state.replay.commandCursor, 1);
+    BOOST_REQUIRE(G_FlyingRespawn_FrameCmd(&h.state, 2200, &command));
+    BOOST_CHECK_EQUAL(command.upmove, 127);
+    BOOST_CHECK_EQUAL(h.state.replay.commandCursor, 1);
+    flyingRespawnSnapshot_t contact = {};
+    BOOST_REQUIRE(G_FlyingRespawn_HandleSecondPress(&h.state, 2150, &contact));
+    BOOST_CHECK(!G_FlyingRespawn_FrameCmd(&h.state, 2199, &command));
+    BOOST_CHECK_EQUAL(command.forwardmove, 0);
+    BOOST_CHECK_EQUAL(command.upmove, 0);
+    BOOST_CHECK_EQUAL(h.state.replay.liveCmd.upmove, -127);
+}
+
 // Catches selecting the newest state instead of the last state preceding rewind.
 BOOST_AUTO_TEST_CASE(flying_respawn_history_selects_by_server_time)
 {

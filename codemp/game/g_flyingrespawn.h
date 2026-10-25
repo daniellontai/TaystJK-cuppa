@@ -47,6 +47,7 @@ typedef struct {
 	int checkpointEntityNum;
 	flyingRespawnSnapshot_t snapshot;
 	flyingRespawnSnapshot_t start, handoff;
+	usercmd_t startCmd;
 	/* Frozen applied commands, separate from the immutable raw receipt ring. */
 	flyingRespawnRawCmd_t *commands;
 	int commandCount, commandCapacity;
@@ -71,6 +72,7 @@ typedef struct {
 	int mismatchCount;
 	float maxOriginError, maxVelocityError;
 	usercmd_t liveCmd;
+	usercmd_t frameCmd;
 	qboolean hasLiveCmd;
 	flyingRespawnMovement_t expectedMovement;
 	int expectedSecondaryMs;
@@ -125,6 +127,10 @@ qboolean G_FlyingRespawn_GetSelectedCmd(const flyingRespawnState_t *state, const
 qboolean G_FlyingRespawn_BeginTestReplay(flyingRespawnState_t *state, int serverTime, int durationMs);
 qboolean G_FlyingRespawn_BeginCheckpointReplay(flyingRespawnState_t *state, int serverTime, qboolean enabled);
 void G_FlyingRespawn_BufferLiveCmd(flyingRespawnState_t *state, const usercmd_t *cmd);
+/* Non-consuming authoritative input for frame consumers; false freezes static Force. */
+qboolean G_FlyingRespawn_FrameCmd(flyingRespawnState_t *state, int serverTime, usercmd_t *cmd);
+/* Preserve static Force timer intervals if the first GO tick is after its deadline. */
+void G_FlyingRespawn_ReleaseStaticForce(const flyingRespawnState_t *state, int serverTime, playerState_t *ps);
 /* Only returns recorded movement steps when they are due; live input stays buffered. */
 qboolean G_FlyingRespawn_OverrideCmd(flyingRespawnState_t *state, int serverTime, usercmd_t *cmd);
 /* Returns true once at GO, after validating the pre-live state and installing live input. */

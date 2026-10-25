@@ -5947,12 +5947,14 @@ qboolean G_FlyingRespawn_StartManualReplay(gentity_t *ent)
 {
 	flyingRespawnState_t *state = &ent->client->pers.flyingRespawn;
 	if (!G_FlyingRespawn_BeginManualReplay(state, level.time, ent->client->pers.practice)) return qfalse;
-	state->replay.liveCmd = ent->client->pers.cmd;
-	state->replay.hasLiveCmd = qtrue;
+	G_FlyingRespawn_BufferLiveCmd(state, &ent->client->pers.cmd);
+	G_FlyingRespawn_FrameCmd(state, level.time, &ent->client->pers.cmd);
 	G_FlyingRespawn_RestoreMovement(ent, &state->replay.selection.snapshot,
 		level.time - state->replay.selection.snapshot.serverTime);
-	if (G_FlyingRespawn_FinishManualReplay(state, level.time, ent->client->pers.practice))
+	if (G_FlyingRespawn_FinishManualReplay(state, level.time, ent->client->pers.practice)) {
 		G_FlyingRespawn_ManualTimerHandoff(ent);
+		if (state->replay.hasLiveCmd) ent->client->pers.cmd = state->replay.liveCmd;
+	}
 	return qtrue;
 }
 
@@ -5970,12 +5972,14 @@ qboolean G_FlyingRespawn_StartCheckpointReplay(gentity_t *ent)
 	/* The enable cvar gates a new playback only; an active playback keeps its deadline. */
 	if (state->replay.active) {
 		if (!G_FlyingRespawn_HandleSecondPress(state, level.time, &contact)) return qfalse;
+		G_FlyingRespawn_FrameCmd(state, level.time, &ent->client->pers.cmd);
 		G_FlyingRespawn_RestoreMovement(ent, &contact, 0);
 		FlyingRespawnCountdown(ent);
 		return qtrue;
 	}
 	if (!G_FlyingRespawn_BeginCheckpointReplay(state, level.time, g_enableFlyingRespawn.integer != 0)) return qfalse;
 	G_FlyingRespawn_BufferLiveCmd(state, &ent->client->pers.cmd);
+	G_FlyingRespawn_FrameCmd(state, level.time, &ent->client->pers.cmd);
 	G_FlyingRespawn_RestoreMovement(ent, &state->replay.selection.snapshot,
 		level.time - state->replay.selection.snapshot.serverTime);
 	FlyingRespawnCountdown(ent);
@@ -5987,6 +5991,7 @@ qboolean G_FlyingRespawn_StartTestReplay(gentity_t *ent, int durationMs)
 	flyingRespawnState_t *state = &ent->client->pers.flyingRespawn;
 	if (g_flyingRespawnTestMode.integer != 1 || !G_FlyingRespawn_BeginTestReplay(state, level.time, durationMs)) return qfalse;
 	G_FlyingRespawn_BufferLiveCmd(state, &ent->client->pers.cmd);
+	G_FlyingRespawn_FrameCmd(state, level.time, &ent->client->pers.cmd);
 	G_FlyingRespawn_RestoreMovement(ent, &state->replay.selection.snapshot,
 		level.time - state->replay.selection.snapshot.serverTime);
 	FlyingRespawnCountdown(ent);
@@ -6000,6 +6005,7 @@ static void FlyingRespawnRawInput(gentity_t *ent)
 	state = &ent->client->pers.flyingRespawn;
 	if (state->replay.active) {
 		G_FlyingRespawn_BufferLiveCmd(state, &ent->client->pers.cmd);
+		G_FlyingRespawn_FrameCmd(state, level.time, &ent->client->pers.cmd);
 		return;
 	}
 	/* Run-start integration owns snapshotted defaults once its secondary segment runs. */
@@ -6055,7 +6061,10 @@ static void FlyingRespawnThink(gentity_t *ent)
 				trap->SendServerCommand(ent - g_entities, va("print \"Replay test: %d mismatches, origin error %.6f, velocity error %.6f.\n\"",
 					state->replay.mismatchCount, state->replay.maxOriginError, state->replay.maxVelocityError));
 			/* Static waiting runs no movement. Begin its first live step at this tick. */
-			if (staticReplay) ent->client->ps.commandTime = level.time - 1;
+			if (staticReplay) {
+				G_FlyingRespawn_ReleaseStaticForce(state, level.time, &ent->client->ps);
+				ent->client->ps.commandTime = level.time - 1;
+			}
 			trap->SendServerCommand(ent - g_entities, "cp \"^2GO!\"");
 		}
 	}

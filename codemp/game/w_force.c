@@ -5641,6 +5641,12 @@ void WP_ForcePowersUpdate( gentity_t *self, usercmd_t *ucmd )
 		return;
 	}
 
+	/* Frame Force runs before movement substitution. It must see the replay's
+	 * authoritative input too; static waiting owns its frozen Force state. */
+	if (!G_FlyingRespawn_FrameCmd(&self->client->pers.flyingRespawn, level.time, ucmd))
+		return;
+	if (self->client->pers.flyingRespawn.replay.active) self->client->pers.cmd = *ucmd;
+
 	if (self->client->ps.pm_flags & PMF_FOLLOW)
 	{ //not a "real" game client, it's a spectator following someone
 		return;
