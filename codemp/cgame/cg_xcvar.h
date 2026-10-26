@@ -191,6 +191,7 @@ XCVAR_DEF( cg_minimapScale,						"1",	NULL,					CVAR_NONE )
 XCVAR_DEF( cg_drawHud,							"1",	NULL,					CVAR_ARCHIVE )
 
 XCVAR_DEF( cg_predictKnockback,					"0",	NULL,					0 )
+XCVAR_DEF( cg_flyingRespawnDebug,				"0",	NULL,					CVAR_NONE )
 
 XCVAR_DEF( cp_pluginDisable,					"7680",	NULL,					CVAR_ARCHIVE|CVAR_USERINFO ) //opt out of JA+'s holstered saber (512), ledge grab (1024) and new primary (2048) and alt (4096) DFAs by default, to avoid missing JA+ animations
 XCVAR_DEF( cp_altDimAlpha,						"40",	NULL,					CVAR_ARCHIVE ) //opacity (0-255) of JA+ players in the other alternate dimension

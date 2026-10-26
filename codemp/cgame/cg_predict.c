@@ -35,6 +35,9 @@ static	centity_t	*cg_solidEntities[MAX_ENTITIES_IN_SNAPSHOT];
 static	int			cg_numTriggerEntities;
 static	centity_t	*cg_triggerEntities[MAX_ENTITIES_IN_SNAPSHOT];
 
+static	qboolean	cg_flyingRespawnPredictionActive;
+static	int		cg_flyingRespawnLastEFlags = -1;
+
 //is this client piloting this veh?
 static QINLINE qboolean CG_Piloting(int vehNum)
 {
@@ -1054,9 +1057,26 @@ void CG_PredictPlayerState( void ) {
 		}
 	}
 
+	if ( cg_flyingRespawnLastEFlags != cg.snap->ps.eFlags ) {
+		if ( cg_flyingRespawnDebug.integer )
+			trap->Print( "^3Flying respawn diagnostic: snapshot eFlags=0x%08x marker=%d\n",
+				cg.snap->ps.eFlags, ( cg.snap->ps.eFlags & EF_FLYING_RESPAWN ) ? 1 : 0 );
+		cg_flyingRespawnLastEFlags = cg.snap->ps.eFlags;
+	}
+
 	if ( cg.snap->ps.eFlags & EF_FLYING_RESPAWN ) {
+		if ( !cg_flyingRespawnPredictionActive ) {
+			if ( cg_flyingRespawnDebug.integer )
+				trap->Print( "^3Flying respawn prediction: authoritative snapshots active\n" );
+			cg_flyingRespawnPredictionActive = qtrue;
+		}
 		CG_InterpolatePlayerState( qfalse );
 		return;
+	}
+	if ( cg_flyingRespawnPredictionActive ) {
+		if ( cg_flyingRespawnDebug.integer )
+			trap->Print( "^3Flying respawn prediction: local prediction resumed\n" );
+		cg_flyingRespawnPredictionActive = qfalse;
 	}
 
 	// demo playback just copies the moves
