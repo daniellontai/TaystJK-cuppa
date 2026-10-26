@@ -327,6 +327,7 @@ static void MovementResources(void)
         flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
         flyingRespawnMovement_t movement;
         flyingRespawnCheckpointConfig_t config = {0};
+        usercmd_t live = {0};
         playerState_t *ps = &player->client->ps;
         CHECK(G_FlyingRespawn_OnTimerStart(state, 1000, 0, 0, 0, 0));
         ps->commandTime = 1200;
@@ -397,6 +398,7 @@ static void StaticJetpackResources(void)
         flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
         flyingRespawnMovement_t movement;
         flyingRespawnCheckpointConfig_t config = {0};
+        usercmd_t live = {0};
         level.maxclients = 0;
         player->client->sess.movementStyle = tribes ? MV_TRIBES : MV_JETPACK;
         player->client->ps.stats[STAT_MOVEMENTSTYLE] = player->client->sess.movementStyle;
@@ -418,11 +420,17 @@ static void StaticJetpackResources(void)
         for (int frame = 2100; frame < 2500; frame += 50) G_RunFrame(frame);
         CHECK(player->client->ps.jetpackFuel == 37);
         CHECK(player->client->ps.fd.forcePower == 80);
+        live.serverTime = 2450;
+        live.forwardmove = 127;
+        live.angles[YAW] = 12345;
+        ClientThink(0, &live);
         /* Execute the real late handoff, stopping before unrelated collision imports. */
         player->client->pers.connected = CON_CONNECTING;
         level.time = 2550;
         ClientThink(0, NULL);
         CHECK(!state->replay.active && !state->mismatch);
+        CHECK(player->client->pers.cmd.forwardmove == 127);
+        CHECK(player->client->ps.delta_angles[YAW] == -12345);
         CHECK(player->client->ps.groundTime == 2450);
         CHECK(player->client->jetPackDebReduce == 2625);
         CHECK(player->client->jetPackDebRecharge == 2650);
@@ -504,6 +512,12 @@ static void ProgressCountdown(void)
     CHECK(G_FlyingRespawn_StartCheckpointReplay(player));
     CHECK(commandsSent == 2 && !strcmp(sent[1].text, "cp \"^32\""));
     level.time = 5000;
+    live.serverTime = 5000;
+    live.forwardmove = 127;
+    live.buttons = BUTTON_ATTACK;
+    live.angles[PITCH] = 1000;
+    live.angles[YAW] = 12345;
+    live.angles[ROLL] = -500;
     ClientThink(0, &live);
     CHECK(commandsSent == 3 && !strcmp(sent[2].text, "cp \"^31\""));
     CHECK(state->replay.releaseServerTime == 5500);
@@ -513,6 +527,11 @@ static void ProgressCountdown(void)
     ClientThink(0, &live);
     CHECK(!state->replay.active && !state->mismatch);
     CHECK(commandsSent == 4 && !strcmp(sent[3].text, "cp \"^2GO!\""));
+    CHECK(player->client->pers.cmd.forwardmove == 127);
+    CHECK(player->client->pers.cmd.buttons == BUTTON_ATTACK);
+    CHECK(player->client->ps.delta_angles[PITCH] == -1000);
+    CHECK(player->client->ps.delta_angles[YAW] == -12345);
+    CHECK(player->client->ps.delta_angles[ROLL] == 500);
     G_FlyingRespawn_FreeClient(state);
 }
 

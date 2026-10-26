@@ -6053,6 +6053,7 @@ static void FlyingRespawnThink(gentity_t *ent)
 	if (state->replay.active) {
 		flyingRespawnMovement_t actual;
 		qboolean staticReplay = state->replay.staticReplay;
+		int i;
 		if ((state->replay.manualReplay && !ent->client->pers.practice) ||
 			(!state->replay.manualReplay && (!ent->client->pers.stats.startTime || !ent->client->sess.raceMode)) ||
 			ent->health <= 0 || ent->client->noclip ||
@@ -6094,6 +6095,8 @@ static void FlyingRespawnThink(gentity_t *ent)
 				G_FlyingRespawn_CaptureMovement(ent, &actual);
 				G_FlyingRespawn_RecordHandoff(state, level.time, &actual);
 			}
+			for (i = 0; i < 3; ++i)
+				ent->client->ps.delta_angles[i] = ANGLE2SHORT(ent->client->ps.viewangles[i]) - ent->client->pers.cmd.angles[i];
 			ent->client->ps.eFlags &= ~EF_FLYING_RESPAWN;
 			trap->SendServerCommand(ent - g_entities, "cp \"^2GO!\"");
 		}
