@@ -1065,6 +1065,7 @@ void CG_PredictPlayerState( void ) {
 	}
 
 	if ( cg.snap->ps.eFlags & EF_FLYING_RESPAWN ) {
+		cg.weaponSelect = cg.snap->ps.weapon;
 		if ( !cg_flyingRespawnPredictionActive ) {
 			if ( cg_flyingRespawnDebug.integer )
 				trap->Print( "^3Flying respawn prediction: authoritative snapshots active\n" );
