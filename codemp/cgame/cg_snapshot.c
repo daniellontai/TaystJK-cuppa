@@ -538,6 +538,11 @@ static void CheckTouchingCheckpoint(clientCheckpoint_t clientCheckpoint) {
 	if (time < 0.001f)
 		time = 0.001f;
 
+	if (cg.snap->ps.eFlags & EF_FLYING_RESPAWN) {
+		cg.lastCheckPointPrintTime = cg.time;
+		return;
+	}
+
 	if (cg.displacementSamples)
 		CG_CenterPrint(va("^2%.3fs^4, avg ^2%i^4u, max ^2%i^4u\n\n\n\n\n\n\n\n\n\n", time, cg.displacement/cg.displacementSamples, cg.maxSpeed), SCREEN_HEIGHT * 0.30, BIGCHAR_WIDTH);
 	else
