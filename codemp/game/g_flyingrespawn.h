@@ -23,6 +23,8 @@ typedef struct {
 	int dashTime, wallJumpTime, jumpTime, jetpackFuel, jetpackFlags;
 	float forceJumpZStart, forceJumpCharge;
 	int legsAnim, legsTimer, torsoAnim, torsoTimer;
+	int weapon, weaponstate, weaponTime, saberMove;
+	int saberAnimLevel, saberDrawAnimLevel, saberAnimLevelBase, saberHolstered;
 	int pmType, bobCycle, movementDir, lastOnGround, gravity, basespeed;
 	float speed;
 	vec3_t moveDir;

@@ -6097,6 +6097,7 @@ static void FlyingRespawnThink(gentity_t *ent)
 			}
 			for (i = 0; i < 3; ++i)
 				ent->client->ps.delta_angles[i] = ANGLE2SHORT(ent->client->ps.viewangles[i]) - ent->client->pers.cmd.angles[i];
+			ent->client->pers.cmd.weapon = ent->client->ps.weapon;
 			ent->client->ps.eFlags &= ~EF_FLYING_RESPAWN;
 			trap->SendServerCommand(ent - g_entities, "cp \"^2GO!\"");
 		}
