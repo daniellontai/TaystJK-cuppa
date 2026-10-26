@@ -803,6 +803,11 @@ qboolean G_FlyingRespawn_CaptureManual(flyingRespawnState_t *state, int time, co
 	return qtrue;
 }
 
+void G_FlyingRespawn_ClearAutomaticCheckpoint(flyingRespawnState_t *state)
+{
+	FR_ClearCapture(&state->automaticCheckpoint);
+}
+
 qboolean G_FlyingRespawn_BeginManualReplay(flyingRespawnState_t *state, int time, qboolean practice)
 {
 	flyingRespawnCapture_t *capture = &state->manualSave;

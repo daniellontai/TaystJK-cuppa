@@ -156,6 +156,7 @@ qboolean G_FlyingRespawn_CancelReplay(flyingRespawnState_t *state, int serverTim
 void G_FlyingRespawn_ReadMovement(flyingRespawnMovement_t *movement, const playerState_t *ps, int movementStyle, int checkpoints, int courseID);
 void G_FlyingRespawn_WriteMovement(playerState_t *ps, const flyingRespawnMovement_t *movement, int timeOffset);
 qboolean G_FlyingRespawn_CaptureManual(flyingRespawnState_t *state, int serverTime, const flyingRespawnMovement_t *movement);
+void G_FlyingRespawn_ClearAutomaticCheckpoint(flyingRespawnState_t *state);
 qboolean G_FlyingRespawn_BeginManualReplay(flyingRespawnState_t *state, int serverTime, qboolean practice);
 qboolean G_FlyingRespawn_NextManualCmd(flyingRespawnState_t *state, int serverTime, flyingRespawnRawCmd_t *cmd);
 /* True once, after all recorded movement ran; caller may then restore the practice timer. */

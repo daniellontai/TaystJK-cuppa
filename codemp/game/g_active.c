@@ -5982,6 +5982,7 @@ qboolean G_FlyingRespawn_StartManualReplay(gentity_t *ent)
 	G_FlyingRespawn_FrameCmd(state, level.time, &ent->client->pers.cmd);
 	G_FlyingRespawn_RestoreMovement(ent, &state->replay.selection.snapshot,
 		level.time - state->replay.selection.snapshot.serverTime);
+	G_FlyingRespawn_ClearAutomaticCheckpoint(state);
 	G_FlyingRespawn_ManualTimerHandoff(ent);
 	FlyingRespawnCountdown(ent);
 	if (G_FlyingRespawn_FinishManualReplay(state, level.time, ent->client->pers.practice)) {
