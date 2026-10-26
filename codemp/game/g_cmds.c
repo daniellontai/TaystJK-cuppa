@@ -7361,7 +7361,6 @@ static void Cmd_Respos_f(gentity_t *ent)
 void G_FlyingRespawn_ManualTimerHandoff(gentity_t *ent)
 {
 	if (!ent->client || !ent->client->pers.practice ||
-		ent->client->pers.flyingRespawn.replay.active ||
 		!ent->client->pers.flyingRespawn.replay.manualReplay) return;
 	if (ent->client->pers.savePosTimerElapsed) {
 		ent->client->pers.stats.startTime           = trap->Milliseconds() - ent->client->pers.savePosTimerElapsed;

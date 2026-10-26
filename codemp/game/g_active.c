@@ -5964,7 +5964,6 @@ static void FlyingRespawnManualRelease(gentity_t *ent)
 		ent->client->ps.delta_angles[i] = ANGLE2SHORT(ent->client->ps.viewangles[i]) - ent->client->pers.cmd.angles[i];
 	ent->client->pers.cmd.weapon = ent->client->ps.weapon;
 	ent->client->ps.eFlags &= ~EF_FLYING_RESPAWN;
-	G_FlyingRespawn_ManualTimerHandoff(ent);
 	ent->client->pers.cmd.serverTime = level.time > ent->client->ps.commandTime ? level.time : ent->client->ps.commandTime + 1;
 }
 
@@ -5983,6 +5982,7 @@ qboolean G_FlyingRespawn_StartManualReplay(gentity_t *ent)
 	G_FlyingRespawn_FrameCmd(state, level.time, &ent->client->pers.cmd);
 	G_FlyingRespawn_RestoreMovement(ent, &state->replay.selection.snapshot,
 		level.time - state->replay.selection.snapshot.serverTime);
+	G_FlyingRespawn_ManualTimerHandoff(ent);
 	FlyingRespawnCountdown(ent);
 	if (G_FlyingRespawn_FinishManualReplay(state, level.time, ent->client->pers.practice)) {
 		FlyingRespawnManualRelease(ent);
