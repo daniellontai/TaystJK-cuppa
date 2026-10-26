@@ -5953,6 +5953,8 @@ void G_FlyingRespawn_RestoreMovement(gentity_t *ent, const flyingRespawnSnapshot
 	trap->LinkEntity((sharedEntity_t *)ent);
 }
 
+static void FlyingRespawnCountdown(gentity_t *ent);
+
 static void FlyingRespawnManualRelease(gentity_t *ent)
 {
 	flyingRespawnState_t *state = &ent->client->pers.flyingRespawn;
@@ -5981,6 +5983,7 @@ qboolean G_FlyingRespawn_StartManualReplay(gentity_t *ent)
 	G_FlyingRespawn_FrameCmd(state, level.time, &ent->client->pers.cmd);
 	G_FlyingRespawn_RestoreMovement(ent, &state->replay.selection.snapshot,
 		level.time - state->replay.selection.snapshot.serverTime);
+	FlyingRespawnCountdown(ent);
 	if (G_FlyingRespawn_FinishManualReplay(state, level.time, ent->client->pers.practice)) {
 		FlyingRespawnManualRelease(ent);
 	}
@@ -6083,7 +6086,10 @@ static void FlyingRespawnThink(gentity_t *ent)
 			ClientThink_real(ent);
 		}
 		if (state->replay.manualReplay) {
-			if (!G_FlyingRespawn_FinishManualReplay(state, level.time, ent->client->pers.practice)) return;
+			if (!G_FlyingRespawn_FinishManualReplay(state, level.time, ent->client->pers.practice)) {
+				FlyingRespawnCountdown(ent);
+				return;
+			}
 			FlyingRespawnManualRelease(ent);
 		} else {
 			G_FlyingRespawn_CaptureMovement(ent, &actual);
