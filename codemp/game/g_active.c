@@ -5957,11 +5957,13 @@ qboolean G_FlyingRespawn_StartManualReplay(gentity_t *ent)
 {
 	flyingRespawnState_t *state = &ent->client->pers.flyingRespawn;
 	if (!G_FlyingRespawn_BeginManualReplay(state, level.time, ent->client->pers.practice)) return qfalse;
+	ent->client->ps.eFlags |= EF_FLYING_RESPAWN;
 	G_FlyingRespawn_BufferLiveCmd(state, &ent->client->pers.cmd);
 	G_FlyingRespawn_FrameCmd(state, level.time, &ent->client->pers.cmd);
 	G_FlyingRespawn_RestoreMovement(ent, &state->replay.selection.snapshot,
 		level.time - state->replay.selection.snapshot.serverTime);
 	if (G_FlyingRespawn_FinishManualReplay(state, level.time, ent->client->pers.practice)) {
+		ent->client->ps.eFlags &= ~EF_FLYING_RESPAWN;
 		G_FlyingRespawn_ManualTimerHandoff(ent);
 		if (state->replay.hasLiveCmd) ent->client->pers.cmd = state->replay.liveCmd;
 	}
@@ -5986,12 +5988,14 @@ qboolean G_FlyingRespawn_StartCheckpointReplay(gentity_t *ent)
 	/* The enable cvar gates a new playback only; an active playback keeps its deadline. */
 	if (state->replay.active) {
 		if (!G_FlyingRespawn_HandleSecondPress(state, level.time, &contact)) return qfalse;
+		ent->client->ps.eFlags |= EF_FLYING_RESPAWN;
 		G_FlyingRespawn_FrameCmd(state, level.time, &ent->client->pers.cmd);
 		G_FlyingRespawn_RestoreMovement(ent, &contact, 0);
 		FlyingRespawnCountdown(ent);
 		return qtrue;
 	}
 	if (!G_FlyingRespawn_BeginCheckpointReplay(state, level.time, g_enableFlyingRespawn.integer != 0)) return qfalse;
+	ent->client->ps.eFlags |= EF_FLYING_RESPAWN;
 	G_FlyingRespawn_BufferLiveCmd(state, &ent->client->pers.cmd);
 	G_FlyingRespawn_FrameCmd(state, level.time, &ent->client->pers.cmd);
 	G_FlyingRespawn_RestoreMovement(ent, &state->replay.selection.snapshot,
@@ -6004,6 +6008,7 @@ qboolean G_FlyingRespawn_StartTestReplay(gentity_t *ent, int durationMs)
 {
 	flyingRespawnState_t *state = &ent->client->pers.flyingRespawn;
 	if (g_flyingRespawnTestMode.integer != 1 || !G_FlyingRespawn_BeginTestReplay(state, level.time, durationMs)) return qfalse;
+	ent->client->ps.eFlags |= EF_FLYING_RESPAWN;
 	G_FlyingRespawn_BufferLiveCmd(state, &ent->client->pers.cmd);
 	G_FlyingRespawn_FrameCmd(state, level.time, &ent->client->pers.cmd);
 	G_FlyingRespawn_RestoreMovement(ent, &state->replay.selection.snapshot,
@@ -6053,6 +6058,7 @@ static void FlyingRespawnThink(gentity_t *ent)
 			ent->health <= 0 || ent->client->noclip ||
 			ent->client->sess.sessionTeam == TEAM_SPECTATOR) {
 			G_FlyingRespawn_CancelReplay(state, level.time, &ent->client->pers.cmd);
+			ent->client->ps.eFlags &= ~EF_FLYING_RESPAWN;
 			return;
 		}
 		while (G_FlyingRespawn_OverrideCmd(state, level.time, &ent->client->pers.cmd)) {
@@ -6060,6 +6066,7 @@ static void FlyingRespawnThink(gentity_t *ent)
 		}
 		if (state->replay.manualReplay) {
 			if (!G_FlyingRespawn_FinishManualReplay(state, level.time, ent->client->pers.practice)) return;
+			ent->client->ps.eFlags &= ~EF_FLYING_RESPAWN;
 			G_FlyingRespawn_ManualTimerHandoff(ent);
 			if (state->replay.hasLiveCmd) ent->client->pers.cmd = state->replay.liveCmd;
 			ent->client->pers.cmd.serverTime = level.time > ent->client->ps.commandTime ? level.time : ent->client->ps.commandTime + 1;
@@ -6087,6 +6094,7 @@ static void FlyingRespawnThink(gentity_t *ent)
 				G_FlyingRespawn_CaptureMovement(ent, &actual);
 				G_FlyingRespawn_RecordHandoff(state, level.time, &actual);
 			}
+			ent->client->ps.eFlags &= ~EF_FLYING_RESPAWN;
 			trap->SendServerCommand(ent - g_entities, "cp \"^2GO!\"");
 		}
 	}
@@ -6204,6 +6212,8 @@ static void ForceClientUpdate(gentity_t *ent) {
 
 void G_RunClient( gentity_t *ent ) {
 	qboolean forceUpdateRate = qfalse;
+	if (!ent->client->pers.flyingRespawn.replay.active)
+		ent->client->ps.eFlags &= ~EF_FLYING_RESPAWN;
 
 	if (ent->client->pers.flyingRespawn.replay.active) {
 		FlyingRespawnThink(ent);
