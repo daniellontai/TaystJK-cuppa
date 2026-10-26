@@ -1011,6 +1011,11 @@ void CG_PredictPlayerState( void ) {
 		}
 	}
 
+	if ( cg.snap->ps.eFlags & EF_FLYING_RESPAWN ) {
+		CG_InterpolatePlayerState( qfalse );
+		return;
+	}
+
 	// demo playback just copies the moves
 	if ( cg.demoPlayback || (cg.snap->ps.pm_flags & PMF_FOLLOW) ) {
 		CG_InterpolatePlayerState( qfalse );
