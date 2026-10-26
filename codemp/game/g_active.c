@@ -5965,6 +5965,7 @@ static void FlyingRespawnManualRelease(gentity_t *ent)
 	ent->client->pers.cmd.weapon = ent->client->ps.weapon;
 	ent->client->ps.eFlags &= ~EF_FLYING_RESPAWN;
 	ent->client->pers.cmd.serverTime = level.time > ent->client->ps.commandTime ? level.time : ent->client->ps.commandTime + 1;
+	trap->SendServerCommand(ent - g_entities, "cp \"^2GO!\"");
 }
 
 qboolean G_FlyingRespawn_StartManualReplay(gentity_t *ent)
