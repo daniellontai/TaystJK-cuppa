@@ -5953,9 +5953,28 @@ void G_FlyingRespawn_RestoreMovement(gentity_t *ent, const flyingRespawnSnapshot
 	trap->LinkEntity((sharedEntity_t *)ent);
 }
 
+static void FlyingRespawnManualRelease(gentity_t *ent)
+{
+	flyingRespawnState_t *state = &ent->client->pers.flyingRespawn;
+	int i;
+	if (state->replay.hasLiveCmd) ent->client->pers.cmd = state->replay.liveCmd;
+	for (i = 0; i < 3; ++i)
+		ent->client->ps.delta_angles[i] = ANGLE2SHORT(ent->client->ps.viewangles[i]) - ent->client->pers.cmd.angles[i];
+	ent->client->pers.cmd.weapon = ent->client->ps.weapon;
+	ent->client->ps.eFlags &= ~EF_FLYING_RESPAWN;
+	G_FlyingRespawn_ManualTimerHandoff(ent);
+	ent->client->pers.cmd.serverTime = level.time > ent->client->ps.commandTime ? level.time : ent->client->ps.commandTime + 1;
+}
+
 qboolean G_FlyingRespawn_StartManualReplay(gentity_t *ent)
 {
 	flyingRespawnState_t *state = &ent->client->pers.flyingRespawn;
+	if (state->replay.active) {
+		if (!state->replay.manualReplay) return qfalse;
+		G_FlyingRespawn_CancelReplay(state, level.time, &ent->client->pers.cmd);
+		FlyingRespawnManualRelease(ent);
+		return qtrue;
+	}
 	if (!G_FlyingRespawn_BeginManualReplay(state, level.time, ent->client->pers.practice)) return qfalse;
 	ent->client->ps.eFlags |= EF_FLYING_RESPAWN;
 	G_FlyingRespawn_BufferLiveCmd(state, &ent->client->pers.cmd);
@@ -5963,9 +5982,7 @@ qboolean G_FlyingRespawn_StartManualReplay(gentity_t *ent)
 	G_FlyingRespawn_RestoreMovement(ent, &state->replay.selection.snapshot,
 		level.time - state->replay.selection.snapshot.serverTime);
 	if (G_FlyingRespawn_FinishManualReplay(state, level.time, ent->client->pers.practice)) {
-		ent->client->ps.eFlags &= ~EF_FLYING_RESPAWN;
-		G_FlyingRespawn_ManualTimerHandoff(ent);
-		if (state->replay.hasLiveCmd) ent->client->pers.cmd = state->replay.liveCmd;
+		FlyingRespawnManualRelease(ent);
 	}
 	return qtrue;
 }
@@ -6067,10 +6084,7 @@ static void FlyingRespawnThink(gentity_t *ent)
 		}
 		if (state->replay.manualReplay) {
 			if (!G_FlyingRespawn_FinishManualReplay(state, level.time, ent->client->pers.practice)) return;
-			ent->client->ps.eFlags &= ~EF_FLYING_RESPAWN;
-			G_FlyingRespawn_ManualTimerHandoff(ent);
-			if (state->replay.hasLiveCmd) ent->client->pers.cmd = state->replay.liveCmd;
-			ent->client->pers.cmd.serverTime = level.time > ent->client->ps.commandTime ? level.time : ent->client->ps.commandTime + 1;
+			FlyingRespawnManualRelease(ent);
 		} else {
 			G_FlyingRespawn_CaptureMovement(ent, &actual);
 			if (!G_FlyingRespawn_Advance(state, level.time, &actual, &ent->client->pers.cmd)) {

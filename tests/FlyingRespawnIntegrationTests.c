@@ -582,6 +582,10 @@ static void FinishPublicPrivate(void)
     CHECK(player->client->pers.stats.startTime == 777);
     CHECK(player->client->pers.stats.startLevelTime == 888);
     CHECK(player->client->ps.duelTime == 999);
+	commandsSent = 0;
+	state->respawnCount = 0;
+	PrintRaceTime(NULL, playerName, NULL, style, 123, 45, time, 0, 0, qfalse, 0, qfalse, qtrue, 0, 0, 0, -1, -1);
+	CHECK(commandsSent == 1);
     G_FlyingRespawn_FreeClient(state);
 }
 

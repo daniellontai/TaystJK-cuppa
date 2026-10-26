@@ -902,6 +902,7 @@ typedef struct clientPersistant_s {
 	// timer snapshot at savepos time (savePosTimerElapsed == 0 means timer was not running)
 	int			savePosTimerElapsed;		// trap->Milliseconds() - stats.startTime
 	int			savePosLevelTimeElapsed;	// level.time - stats.startLevelTime
+	int			savePosNoRespawnElapsed;
 	int			savePosStartLag;
 	float		savePosDisplacement;
 	int			savePosDisplacementSamples;

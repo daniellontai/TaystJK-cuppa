@@ -1615,7 +1615,7 @@ static void PrintFlyingRespawnTime(int clientNum)
 {
 	const flyingRespawnState_t *state = &level.clients[clientNum].pers.flyingRespawn;
 	char elapsed[32];
-	if (!state->secondaryRunning) return;
+	if (!state->secondaryRunning || !state->respawnCount) return;
 	TimeToString(G_FlyingRespawn_GetSecondaryElapsed(state, level.time), elapsed, sizeof(elapsed));
 	trap->SendServerCommand(clientNum, va("print \"^7no-respawn: ^3%s^7 (respawns: %i)\n\"", elapsed, G_FlyingRespawn_GetRespawnCount(state)));
 }

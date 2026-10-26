@@ -7274,6 +7274,7 @@ static void Cmd_Savepos_f(gentity_t *ent)
 	if (ent->client->pers.stats.startTime) {
 		ent->client->pers.savePosTimerElapsed        = trap->Milliseconds() - ent->client->pers.stats.startTime;
 		ent->client->pers.savePosLevelTimeElapsed    = level.time - ent->client->pers.stats.startLevelTime;
+		ent->client->pers.savePosNoRespawnElapsed    = G_FlyingRespawn_GetSecondaryElapsed(&ent->client->pers.flyingRespawn, level.time);
 		ent->client->pers.savePosStartLag            = ent->client->pers.startLag;
 		ent->client->pers.savePosDisplacement        = ent->client->pers.stats.displacement;
 		ent->client->pers.savePosDisplacementSamples = ent->client->pers.stats.displacementSamples;
@@ -7281,6 +7282,7 @@ static void Cmd_Savepos_f(gentity_t *ent)
 		ent->client->pers.savePosCheckpoints         = ent->client->pers.stats.checkpoints;
 	} else {
 		ent->client->pers.savePosTimerElapsed = 0;
+		ent->client->pers.savePosNoRespawnElapsed = 0;
 	}
 
 	ent->client->pers.savePosUsed = qtrue;
@@ -7371,12 +7373,15 @@ void G_FlyingRespawn_ManualTimerHandoff(gentity_t *ent)
 		ent->client->pers.stats.checkpoints         = ent->client->pers.savePosCheckpoints;
 		ent->client->pers.stats.lastCheckpointTime  = 0;
 		ent->client->ps.duelTime                    = level.time - ent->client->pers.savePosLevelTimeElapsed;
+		G_FlyingRespawn_ResetSecondarySegment(&ent->client->pers.flyingRespawn, level.time, ent->client->pers.savePosNoRespawnElapsed);
 	} else {
 		// timer was not running at savepos — clear any run that started after the save
 		// (can't use ResetSpecificPlayerTimers: it clears velocity and overrides force for some styles)
 		ent->client->pers.stats.startTime      = 0;
 		ent->client->pers.stats.startLevelTime = 0;
 		ent->client->ps.duelTime               = 0;
+		ent->client->pers.flyingRespawn.secondaryRunning = qfalse;
+		ent->client->pers.flyingRespawn.secondaryBaseMs = 0;
 	}
 }
 
