@@ -5974,6 +5974,7 @@ qboolean G_FlyingRespawn_StartManualReplay(gentity_t *ent)
 	if (state->replay.active) {
 		if (!state->replay.manualReplay) return qfalse;
 		G_FlyingRespawn_CancelReplay(state, level.time, &ent->client->pers.cmd);
+		G_FlyingRespawn_RestoreMovement(ent, &state->manualSave.snapshot, 0);
 		FlyingRespawnManualRelease(ent);
 		return qtrue;
 	}
