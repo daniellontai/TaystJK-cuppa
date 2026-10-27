@@ -620,7 +620,7 @@ static void FinishPublicPrivate(void)
     PrintRaceTime(NULL, playerName, NULL, style, 123, 45, time, 0, 0, qfalse, 0, qfalse, qtrue, 0, 0, 0, -1, -1);
     CHECK(commandsSent == 2);
     CHECK(sent[0].client == -1);
-    CHECK(!strcmp(sent[0].text, "print \"^2Completed in ^39.500       ^2 max:^3123       ^2 avg:^345        ^2 style:^3jka       ^2 by ^7Runner ^7\n\" dffinish_japro_valid"));
+    CHECK(!strcmp(sent[0].text, "print \"^2Completed (respawns: 2) in ^39.500       ^2 max:^3123       ^2 avg:^345        ^2 style:^3jka       ^2 by ^7Runner ^7\n\" dffinish_japro_valid"));
     CHECK(sent[1].client == 0);
     CHECK(strstr(sent[1].text, "no-respawn") != NULL);
     CHECK(strstr(sent[1].text, "3.500") != NULL);
@@ -632,6 +632,7 @@ static void FinishPublicPrivate(void)
 	state->respawnCount = 0;
 	PrintRaceTime(NULL, playerName, NULL, style, 123, 45, time, 0, 0, qfalse, 0, qfalse, qtrue, 0, 0, 0, -1, -1);
 	CHECK(commandsSent == 1);
+	CHECK(!strcmp(sent[0].text, "print \"^2Completed in ^39.500       ^2 max:^3123       ^2 avg:^345        ^2 style:^3jka       ^2 by ^7Runner ^7\n\" dffinish_japro_valid"));
     G_FlyingRespawn_FreeClient(state);
 }
 

@@ -1622,7 +1622,7 @@ static void PrintFlyingRespawnTime(int clientNum)
 
 void PrintRaceTime(char *username, char *playername, char *message, char *style, int topspeed, int average, char *timeStr, int clientNum, int season_newRank, qboolean spb, int global_newRank, qboolean loggedin, qboolean valid, int season_oldRank, int global_oldRank, float addedScore, int awesomenoise, int worldrecordnoise) {
 	int nameColor, color;
-	char awardString[28] = {0}, messageStr[64] = {0}, nameStr[32] = {0};
+	char awardString[28] = {0}, messageStr[64] = {0}, privateMessageStr[96] = {0}, nameStr[32] = {0};
 	int msgClientExcept = -1;
 	const char* msgTemplate = "", *msgType = "dffinish_japro_normal";
 	qboolean testReplayUsed, respawnInvalid;
@@ -1694,6 +1694,9 @@ void PrintRaceTime(char *username, char *playername, char *message, char *style,
 		else
 			Q_strcat(messageStr, sizeof(messageStr), va(" with %i TPs & %i CPs", level.clients[clientNum].midRunTeleCount, level.clients[clientNum].midRunTeleMarkCount));
 	}
+	Q_strncpyz(privateMessageStr, messageStr, sizeof(privateMessageStr));
+	if (G_FlyingRespawn_GetRespawnCount(&level.clients[clientNum].pers.flyingRespawn))
+		Q_strcat(privateMessageStr, sizeof(privateMessageStr), va(" (respawns: %i)", G_FlyingRespawn_GetRespawnCount(&level.clients[clientNum].pers.flyingRespawn)));
 
 	if (valid) {
 		if (global_newRank == 1) { //was 1 when it shouldnt have been.. ?
@@ -1744,7 +1747,7 @@ void PrintRaceTime(char *username, char *playername, char *message, char *style,
 		// Q_strncpyz(privateTimeStr, timeStr, sizeof(privateTimeStr));
 		trap->SendServerCommand(clientNum, va("cp \"Your time: %s\n\n\n\n\n\n\n\n\n\n\"", timeStr));
 		trap->SendServerCommand(clientNum, va(msgTemplate,
-			messageStr, timeStr, color, topspeed, color, average, color, style, color, nameColor, nameStr, awardString, " ^3(SECRET)", "dffinish_japro_secret_visible"));
+			privateMessageStr, timeStr, color, topspeed, color, average, color, style, color, nameColor, nameStr, awardString, " ^3(SECRET)", "dffinish_japro_secret_visible"));
         Q_strncpyz(timeStr, "SECRET", sizeof(timeStr));
 		topspeed = 0;
 		average = 0;
@@ -1753,7 +1756,7 @@ void PrintRaceTime(char *username, char *playername, char *message, char *style,
     }
 
 	G_SendServerCommandExcept( msgClientExcept, va(msgTemplate,
-				messageStr, timeStr, color, topspeed, color, average, color, style, color, nameColor, nameStr, awardString, "", msgType));
+				SC_IsTimeSecret(fullCourseName) ? messageStr : privateMessageStr, timeStr, color, topspeed, color, average, color, style, color, nameColor, nameStr, awardString, "", msgType));
 	PrintFlyingRespawnTime(clientNum);
 }
 
@@ -4927,16 +4930,16 @@ void Cmd_AccountStats_f(gentity_t *ent) { //Should i bother to cache player stat
 			CALL_SQLITE(finalize(stmt));
 
 			//Recent races
-			sql = "SELECT coursename, style, rank, season_rank, duration_ms, end_time FROM LocalRun WHERE username = ? ORDER BY end_time DESC LIMIT ?, 10";
+			sql = "SELECT coursename, style, rank, season_rank, duration_ms, end_time, respawn_count FROM LocalRun WHERE username = ? ORDER BY end_time DESC LIMIT ?, 10";
 			CALL_SQLITE(prepare_v2(db, sql, strlen(sql) + 1, &stmt, NULL));
 			CALL_SQLITE(bind_text(stmt, 1, username, -1, SQLITE_STATIC));
 			CALL_SQLITE(bind_int(stmt, 2, start));
 
-			trap->SendServerCommand(ent - g_entities, "print \"Recent Races:\n    ^5Course                      Style      Rank    Time         Date\n\""); //Color rank yellow for global, normal for season -fixme match race print scheme
+			trap->SendServerCommand(ent - g_entities, "print \"Recent Races:\n    ^5Course                      Style      Rank    Time         R    Date\n\""); //Color rank yellow for global, normal for season -fixme match race print scheme
 			while (1) {
 				s = sqlite3_step(stmt);
 				if (s == SQLITE_ROW) {
-					char *tmpMsg = NULL;
+					char *tmpMsg = NULL, respawnStr[16];
 					IntegerToRaceName(sqlite3_column_int(stmt, 1), styleStr, sizeof(styleStr));
 
 					// blank out time if course is secret
@@ -4944,7 +4947,10 @@ void Cmd_AccountStats_f(gentity_t *ent) { //Should i bother to cache player stat
 						TimeToString(sqlite3_column_int(stmt, 4), timeStr, sizeof(timeStr));
 					} else {
 						Q_strncpyz(timeStr	, "SECRET", sizeof(timeStr));
+						Q_strncpyz(respawnStr, "-", sizeof(respawnStr));
 					}
+					if (!SC_IsTimeSecret((char*)sqlite3_column_text(stmt, 0)))
+						Com_sprintf(respawnStr, sizeof(respawnStr), "%i", sqlite3_column_int(stmt, 6));
 
 					getDateTime(sqlite3_column_int(stmt, 5), dateStr, sizeof(dateStr));
 
@@ -4954,7 +4960,7 @@ void Cmd_AccountStats_f(gentity_t *ent) { //Should i bother to cache player stat
 					else
 						Com_sprintf(rankStr, sizeof(rankStr), "^3%i^7", sqlite3_column_int(stmt, 3));
 
-					tmpMsg = va("^5%2i^3: ^3%-27s ^3%-10s ^3%-11s ^3%-12s %s\n", row + start, sqlite3_column_text(stmt, 0), styleStr, rankStr, timeStr, dateStr);
+					tmpMsg = va("^5%2i^3: ^3%-27s ^3%-10s ^3%-11s ^3%-12s ^3%-4s %s\n", row + start, sqlite3_column_text(stmt, 0), styleStr, rankStr, timeStr, respawnStr, dateStr);
 					if (strlen(msg) + strlen(tmpMsg) >= sizeof(msg)) {
 						trap->SendServerCommand(ent - g_entities, va("print \"%s\"", msg));
 						msg[0] = '\0';
@@ -6358,12 +6364,12 @@ void Cmd_DFCompare_f(gentity_t *ent) {
 
 		CALL_SQLITE(open(LOCAL_DB_PATH, &db));
 
-		trap->SendServerCommand(ent - g_entities, va("print \"Results for player %s %s (%s%s%s):\n    ^5Coursename                     Style      Their Time   T-Rank  My Time      My Rank\n\"",
+		trap->SendServerCommand(ent - g_entities, va("print \"Results for player %s %s (%s%s%s):\n    ^5Coursename                     Style      Their Time   Their R T-Rank  My Time      My R  My Rank\n\"",
 			theirUsername, inputStyleString, compareOnly ? "compare" : "all", courseFilter[0] ? ", filter " : "", courseFilter[0] ? courseFilter : ""));
 
 		if (compareOnly) {
 			sql =
-				"SELECT their_runs.coursename, their_runs.style, their_runs.duration_ms, their_runs.rank, my_runs.duration_ms, my_runs.rank "
+				"SELECT their_runs.coursename, their_runs.style, their_runs.duration_ms, their_runs.rank, my_runs.duration_ms, my_runs.rank, their_runs.respawn_count, my_runs.respawn_count "
 				"FROM (SELECT * FROM LocalRun WHERE username = ? AND rank != 0 AND invalid = 0 AND (? = -1 OR style = ?) "
 					"AND LOWER(REPLACE(REPLACE(REPLACE(coursename, ' ', ''), '-', ''), '_', '')) LIKE '%' || ? || '%') AS their_runs "
 				"INNER JOIN (SELECT * FROM LocalRun WHERE username = ? AND rank != 0 AND invalid = 0 AND (? = -1 OR style = ?)) AS my_runs "
@@ -6373,7 +6379,7 @@ void Cmd_DFCompare_f(gentity_t *ent) {
 		}
 		else {
 			sql =
-				"SELECT their_runs.coursename, their_runs.style, their_runs.duration_ms, their_runs.rank, my_runs.duration_ms, my_runs.rank "
+				"SELECT their_runs.coursename, their_runs.style, their_runs.duration_ms, their_runs.rank, my_runs.duration_ms, my_runs.rank, their_runs.respawn_count, my_runs.respawn_count "
 				"FROM (SELECT * FROM LocalRun WHERE username = ? AND rank != 0 AND invalid = 0 AND (? = -1 OR style = ?) "
 					"AND LOWER(REPLACE(REPLACE(REPLACE(coursename, ' ', ''), '-', ''), '_', '')) LIKE '%' || ? || '%') AS their_runs "
 				"LEFT JOIN (SELECT * FROM LocalRun WHERE username = ? AND rank != 0 AND invalid = 0 AND (? = -1 OR style = ?)) AS my_runs "
@@ -6398,27 +6404,32 @@ void Cmd_DFCompare_f(gentity_t *ent) {
 			s = sqlite3_step(stmt);
 			if (s == SQLITE_ROW) {
 				char *tmpMsg = NULL;
-				char theirTimeStr[32] = { 0 }, myTimeStr[32] = { 0 }, myRankStr[8] = { 0 };
+				char theirTimeStr[32] = { 0 }, myTimeStr[32] = { 0 }, myRankStr[8] = { 0 }, theirRespawnStr[16] = { 0 }, myRespawnStr[16] = { 0 };
 				char *courseName = (char*)sqlite3_column_text(stmt, 0);
 
 				IntegerToRaceName(sqlite3_column_int(stmt, 1), styleStr, sizeof(styleStr));
 
-				if (SC_IsTimeSecret(courseName) && Q_stricmp(theirUsername, myUsername))
+				if (SC_IsTimeSecret(courseName) && Q_stricmp(theirUsername, myUsername)) {
 					Q_strncpyz(theirTimeStr, "SECRET", sizeof(theirTimeStr));
-				else
+					Q_strncpyz(theirRespawnStr, "-", sizeof(theirRespawnStr));
+				} else {
 					TimeToString(sqlite3_column_int(stmt, 2), theirTimeStr, sizeof(theirTimeStr));
+					Com_sprintf(theirRespawnStr, sizeof(theirRespawnStr), "%i", sqlite3_column_int(stmt, 6));
+				}
 
 				if (sqlite3_column_type(stmt, 4) == SQLITE_NULL) {
 					Q_strncpyz(myTimeStr, "-", sizeof(myTimeStr));
 					Q_strncpyz(myRankStr, "-", sizeof(myRankStr));
+					Q_strncpyz(myRespawnStr, "-", sizeof(myRespawnStr));
 				}
 				else {
 					TimeToString(sqlite3_column_int(stmt, 4), myTimeStr, sizeof(myTimeStr));
 					Com_sprintf(myRankStr, sizeof(myRankStr), "%i", sqlite3_column_int(stmt, 5));
+					Com_sprintf(myRespawnStr, sizeof(myRespawnStr), "%i", sqlite3_column_int(stmt, 7));
 				}
 
-				tmpMsg = va("^5%2i^3: ^3%-30s ^3%-10s ^3%-12s ^3%-7i ^3%-12s ^3%s\n",
-					start + row, courseName, styleStr, theirTimeStr, sqlite3_column_int(stmt, 3), myTimeStr, myRankStr);
+				tmpMsg = va("^5%2i^3: ^3%-30s ^3%-10s ^3%-12s ^3%-8s ^3%-7i ^3%-12s ^3%-5s ^3%s\n",
+					start + row, courseName, styleStr, theirTimeStr, theirRespawnStr, sqlite3_column_int(stmt, 3), myTimeStr, myRespawnStr, myRankStr);
 
 				if (strlen(msg) + strlen(tmpMsg) >= sizeof(msg)) {
 					trap->SendServerCommand(ent - g_entities, va("print \"%s\"", msg));
@@ -6506,37 +6517,40 @@ void Cmd_DFRecent_f(gentity_t *ent) {
 
 		if (style == -1) {
 			if (showSeasons)
-				sql = "SELECT username, coursename, style, rank, duration_ms, end_time, season_rank FROM LocalRun ORDER BY end_time DESC LIMIT ?,10";
+				sql = "SELECT username, coursename, style, rank, duration_ms, end_time, respawn_count, season_rank FROM LocalRun ORDER BY end_time DESC LIMIT ?,10";
 			else
-				sql = "SELECT username, coursename, style, rank, duration_ms, end_time FROM LocalRun WHERE rank != 0 ORDER BY end_time DESC LIMIT ?,10";
+				sql = "SELECT username, coursename, style, rank, duration_ms, end_time, respawn_count FROM LocalRun WHERE rank != 0 ORDER BY end_time DESC LIMIT ?,10";
 			CALL_SQLITE (prepare_v2 (db, sql, strlen (sql) + 1, & stmt, NULL));
 			CALL_SQLITE (bind_int (stmt, 1, start));
 		}
 		else {
 			if (showSeasons)
-				sql = "SELECT username, coursename, style, rank, duration_ms, end_time, season_rank FROM LocalRun WHERE style = ? ORDER BY end_time DESC LIMIT ?,10";
+				sql = "SELECT username, coursename, style, rank, duration_ms, end_time, respawn_count, season_rank FROM LocalRun WHERE style = ? ORDER BY end_time DESC LIMIT ?,10";
 			else
-				sql = "SELECT username, coursename, style, rank, duration_ms, end_time FROM LocalRun WHERE rank != 0 AND style = ? ORDER BY end_time DESC LIMIT ?,10";
+				sql = "SELECT username, coursename, style, rank, duration_ms, end_time, respawn_count FROM LocalRun WHERE rank != 0 AND style = ? ORDER BY end_time DESC LIMIT ?,10";
 			CALL_SQLITE (prepare_v2 (db, sql, strlen (sql) + 1, & stmt, NULL));
 			CALL_SQLITE (bind_int (stmt, 1, style));
 			CALL_SQLITE (bind_int (stmt, 2, start));
 		}
 
 		if (showSeasons)
-			trap->SendServerCommand(ent-g_entities, va("print \"Recent results for %s style (by season):\n    ^5Username           Coursename                     Style       Rank     Time         Date\n\"", inputStyleString));
+			trap->SendServerCommand(ent-g_entities, va("print \"Recent results for %s style (by season):\n    ^5Username           Coursename                     Style       Rank     Time         R    Date\n\"", inputStyleString));
 		else
-			trap->SendServerCommand(ent-g_entities, va("print \"Recent results for %s style:\n    ^5Username           Coursename                     Style       Rank     Time         Date\n\"", inputStyleString));
+			trap->SendServerCommand(ent-g_entities, va("print \"Recent results for %s style:\n    ^5Username           Coursename                     Style       Rank     Time         R    Date\n\"", inputStyleString));
 		
 		while (1) {
 			s = sqlite3_step(stmt);
 			if (s == SQLITE_ROW) {
-				char *tmpMsg = NULL;
+				char *tmpMsg = NULL, respawnStr[16];
 				// blank out time if course is secret
 				if (!SC_IsTimeSecret( (char*)sqlite3_column_text(stmt, 1) )) {
 					TimeToString(sqlite3_column_int(stmt, 4), timeStr, sizeof(timeStr));
 				} else {
 					Q_strncpyz(timeStr, "SECRET", sizeof(timeStr));
+					Q_strncpyz(respawnStr, "-", sizeof(respawnStr));
 				}
+				if (!SC_IsTimeSecret((char*)sqlite3_column_text(stmt, 1)))
+					Com_sprintf(respawnStr, sizeof(respawnStr), "%i", sqlite3_column_int(stmt, 6));
 				
 				getDateTime(sqlite3_column_int(stmt, 5), dateStr, sizeof(dateStr));
 				IntegerToRaceName(sqlite3_column_int(stmt, 2), styleStr, sizeof(styleStr));
@@ -6545,12 +6559,12 @@ void Cmd_DFRecent_f(gentity_t *ent) {
 					if (sqlite3_column_int(stmt, 3))
 						Com_sprintf(rankStr, sizeof(rankStr), "^2%i^7", sqlite3_column_int(stmt, 3));
 					else
-						Com_sprintf(rankStr, sizeof(rankStr), "^3%i^7", sqlite3_column_int(stmt, 6));
+						Com_sprintf(rankStr, sizeof(rankStr), "^3%i^7", sqlite3_column_int(stmt, 7));
 				}
 				else
 					Com_sprintf(rankStr, sizeof(rankStr), "^2%i^7", sqlite3_column_int(stmt, 3));
 
-				tmpMsg = va("^5%2i^3: ^3%-18s ^3%-30s ^3%-11s ^3%-12s ^3%-12s %s\n", start+row, sqlite3_column_text(stmt, 0), sqlite3_column_text(stmt, 1), styleStr, rankStr, timeStr, dateStr);
+				tmpMsg = va("^5%2i^3: ^3%-18s ^3%-30s ^3%-11s ^3%-12s ^3%-12s ^3%-4s %s\n", start+row, sqlite3_column_text(stmt, 0), sqlite3_column_text(stmt, 1), styleStr, rankStr, timeStr, respawnStr, dateStr);
 				if (strlen(msg) + strlen(tmpMsg) >= sizeof(msg)) {
 					trap->SendServerCommand( ent-g_entities, va("print \"%s\"", msg));
 					msg[0] = '\0';
@@ -6730,9 +6744,9 @@ void Cmd_DFTop10_f(gentity_t *ent) {
 		//fix by grouping by username here? and using min() so it shows right one? who knows if that will work
 		//could be cheaper by using where rank != 0 instead of min(duration_ms) but w/e
 		if (season == -1)
-			sql = "SELECT username, MIN(duration_ms) AS duration, topspeed, average, end_time FROM LocalRun WHERE coursename = ? AND style = ? AND invalid = 0 GROUP BY username ORDER BY duration ASC, end_time ASC, average DESC LIMIT ?, 10";
+			sql = "SELECT username, MIN(duration_ms) AS duration, topspeed, average, end_time, respawn_count FROM LocalRun WHERE coursename = ? AND style = ? AND invalid = 0 GROUP BY username ORDER BY duration ASC, end_time ASC, average DESC LIMIT ?, 10";
 		else 
-			sql = "SELECT username, MIN(duration_ms) AS duration, topspeed, average, end_time FROM LocalRun WHERE coursename = ? AND style = ? AND season = ? GROUP BY username ORDER BY duration ASC, end_time ASC, average DESC LIMIT ?, 10";
+			sql = "SELECT username, MIN(duration_ms) AS duration, topspeed, average, end_time, respawn_count FROM LocalRun WHERE coursename = ? AND style = ? AND season = ? GROUP BY username ORDER BY duration ASC, end_time ASC, average DESC LIMIT ?, 10";
 		CALL_SQLITE (prepare_v2 (db, sql, strlen (sql) + 1, & stmt, NULL));
 		CALL_SQLITE (bind_text (stmt, 1, fullCourseName, -1, SQLITE_STATIC));
 		CALL_SQLITE (bind_int (stmt, 2, style));
@@ -6751,13 +6765,13 @@ void Cmd_DFTop10_f(gentity_t *ent) {
 		localtime( &rawtime );
 
 		if (season == -1)
-			trap->SendServerCommand(ent-g_entities, va("print \"Highscore results for %s using %s:\n    ^5Username           Time         Topspeed    Average      Date\n\"", fullCourseName, inputStyleString));
+			trap->SendServerCommand(ent-g_entities, va("print \"Highscore results for %s using %s:\n    ^5Username           Time         Topspeed    Average      R    Date\n\"", fullCourseName, inputStyleString));
 		else
-			trap->SendServerCommand(ent-g_entities, va("print \"Highscore results for %s using %s season %i:\n    ^5Username           Time         Topspeed    Average      Date\n\"", fullCourseName, inputStyleString, season));
+			trap->SendServerCommand(ent-g_entities, va("print \"Highscore results for %s using %s season %i:\n    ^5Username           Time         Topspeed    Average      R    Date\n\"", fullCourseName, inputStyleString, season));
 		while (1) {
 			s = sqlite3_step(stmt);
 			if (s == SQLITE_ROW) {
-				char *tmpMsg = NULL;
+				char *tmpMsg = NULL, respawnStr[16];
 				// blank out time if course is secret
 				if (!SC_IsTimeSecret( fullCourseName ) || !Q_stricmp(ent->client->pers.userName, (char*)sqlite3_column_text(stmt, 0))) {
 					TimeToString(sqlite3_column_int(stmt, 1), timeStr, sizeof(timeStr));
@@ -6767,7 +6781,10 @@ void Cmd_DFTop10_f(gentity_t *ent) {
 					Q_strncpyz(timeStr, "SECRET", sizeof(timeStr));
 					topspeed = 0;
 					average = 0;
+					Q_strncpyz(respawnStr, "-", sizeof(respawnStr));
 				}
+				if (!SC_IsTimeSecret(fullCourseName) || !Q_stricmp(ent->client->pers.userName, (char*)sqlite3_column_text(stmt, 0)))
+					Com_sprintf(respawnStr, sizeof(respawnStr), "%i", sqlite3_column_int(stmt, 5));
 				
 				getDateTime(sqlite3_column_int(stmt, 4), dateStr, sizeof(dateStr));
 				if (rawtime - sqlite3_column_int(stmt, 4) < 60*60*24) { //Today
@@ -6779,7 +6796,7 @@ void Cmd_DFTop10_f(gentity_t *ent) {
 				//if (sqlite3_column_int(stmt, 5) == 1) //temp, make flagged runs red until we can figure out how to handle them
 					//tmpMsg = va("^5%2i^3: ^3%-18s ^1%-12s ^3%-11i ^3%-12i %s\n", row+start, sqlite3_column_text(stmt, 0), timeStr, sqlite3_column_int(stmt, 2), sqlite3_column_int(stmt, 3), dateStrColored);
 				//else
-					tmpMsg = va("^5%2i^3: ^3%-18s ^3%-12s ^3%-11i ^3%-12i %s\n", row + start, sqlite3_column_text(stmt, 0), timeStr, topspeed, average, dateStrColored);
+					tmpMsg = va("^5%2i^3: ^3%-18s ^3%-12s ^3%-11i ^3%-12i ^3%-4s %s\n", row + start, sqlite3_column_text(stmt, 0), timeStr, topspeed, average, respawnStr, dateStrColored);
 				if (strlen(msg) + strlen(tmpMsg) >= sizeof( msg)) {
 					trap->SendServerCommand( ent-g_entities, va("print \"%s\"", msg));
 					msg[0] = '\0';
