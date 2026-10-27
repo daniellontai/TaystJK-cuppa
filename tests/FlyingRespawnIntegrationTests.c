@@ -19,11 +19,18 @@ extern gclient_t g_clients[MAX_CLIENTS];
 static gameImport_t imports;
 static int failures, routeCalls, commandsSent;
 static struct { int client; char text[2048]; } sent[64];
+static char commandName[MAX_TOKEN_CHARS];
 #define CHECK(condition) do { if (!(condition)) { \
     fprintf(stderr, "%s:%d: %s\n", __func__, __LINE__, #condition); failures++; \
 } } while (0)
 
 static int Clock(void) { return 5000; }
+static int Argc(void) { return commandName[0] ? 1 : 0; }
+static void Argv(int n, char *buffer, int size)
+{
+    if (n == 0) Q_strncpyz(buffer, commandName, size);
+    else if (size) buffer[0] = 0;
+}
 static void ServerCommand(int client, const char *text) {
     if (commandsSent < 64) {
         sent[commandsSent].client = client;
@@ -63,6 +70,8 @@ static gentity_t *Player(void)
     memset(&imports, 0, sizeof(imports));
     imports.Milliseconds = Clock;
     imports.SendServerCommand = ServerCommand;
+    imports.Argc = Argc;
+    imports.Argv = Argv;
     imports.GetUserinfo = Userinfo;
     imports.GetServerinfo = Serverinfo;
     imports.Cvar_VariableStringBuffer = CvarString;
@@ -108,6 +117,13 @@ static gentity_t *Player(void)
     memset(sent, 0, sizeof(sent));
     G_FlyingRespawn_InitClient(&player->client->pers.flyingRespawn);
     return player;
+}
+
+static void RunCommand(const char *command)
+{
+    Q_strncpyz(commandName, command, sizeof(commandName));
+    ClientCommand(0);
+    commandName[0] = 0;
 }
 
 static void StaticForceWait(void)
@@ -561,6 +577,36 @@ static void ProgressCountdown(void)
     G_FlyingRespawn_FreeClient(state);
 }
 
+/* A practice bookmark must not move a spectator, and must restore its saved respawn audit count. */
+static void ManualReplayEligibilityAndRespawnCount(void)
+{
+    gentity_t *player = Player();
+    flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
+    flyingRespawnMovement_t movement;
+
+    player->client->pers.practice = qtrue;
+    player->client->ps.origin[0] = 42;
+    G_FlyingRespawn_CaptureMovement(player, &movement);
+    CHECK(G_FlyingRespawn_CaptureManual(state, level.time, &movement));
+    player->client->ps.origin[0] = 99;
+    player->client->sess.sessionTeam = TEAM_SPECTATOR;
+    RunCommand("respos");
+    CHECK(player->client->ps.origin[0] == 99);
+    CHECK(!state->replay.active);
+    G_FlyingRespawn_FreeClient(state);
+
+    player = Player();
+    state = &player->client->pers.flyingRespawn;
+    player->client->pers.practice = qtrue;
+    CHECK(G_FlyingRespawn_OnTimerStart(state, level.time, 0, 0, 0, 0));
+    state->respawnCount = 2;
+    RunCommand("savepos");
+    state->respawnCount = 7;
+    RunCommand("respos");
+    CHECK(state->respawnCount == 2);
+    G_FlyingRespawn_FreeClient(state);
+}
+
 /* Catches public-format/audience changes and secondary time leaking to spectators. */
 static void FinishPublicPrivate(void)
 {
@@ -808,6 +854,7 @@ int main(int argc, char **argv)
         StaticJetpackResources();
         CoopTimerStartReset();
         ProgressCountdown();
+        ManualReplayEligibilityAndRespawnCount();
     }
     FinishPublicPrivate();
     FinishPersistence();

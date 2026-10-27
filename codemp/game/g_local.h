@@ -903,6 +903,7 @@ typedef struct clientPersistant_s {
 	int			savePosTimerElapsed;		// trap->Milliseconds() - stats.startTime
 	int			savePosLevelTimeElapsed;	// level.time - stats.startLevelTime
 	int			savePosNoRespawnElapsed;
+	int			savePosRespawnCount;
 	int			savePosStartLag;
 	float		savePosDisplacement;
 	int			savePosDisplacementSamples;

@@ -7275,6 +7275,7 @@ static void Cmd_Savepos_f(gentity_t *ent)
 		ent->client->pers.savePosTimerElapsed        = trap->Milliseconds() - ent->client->pers.stats.startTime;
 		ent->client->pers.savePosLevelTimeElapsed    = level.time - ent->client->pers.stats.startLevelTime;
 		ent->client->pers.savePosNoRespawnElapsed    = G_FlyingRespawn_GetSecondaryElapsed(&ent->client->pers.flyingRespawn, level.time);
+		ent->client->pers.savePosRespawnCount         = ent->client->pers.flyingRespawn.respawnCount;
 		ent->client->pers.savePosStartLag            = ent->client->pers.startLag;
 		ent->client->pers.savePosDisplacement        = ent->client->pers.stats.displacement;
 		ent->client->pers.savePosDisplacementSamples = ent->client->pers.stats.displacementSamples;
@@ -7283,6 +7284,7 @@ static void Cmd_Savepos_f(gentity_t *ent)
 	} else {
 		ent->client->pers.savePosTimerElapsed = 0;
 		ent->client->pers.savePosNoRespawnElapsed = 0;
+		ent->client->pers.savePosRespawnCount = 0;
 	}
 
 	ent->client->pers.savePosUsed = qtrue;
@@ -7346,8 +7348,8 @@ static void Cmd_Respos_f(gentity_t *ent)
 		trap->SendServerCommand(ent - g_entities, "print \"respos is only available in practice mode.\n\"");
 		return;
 	}
-	if (ent->client->noclip) {
-		trap->SendServerCommand(ent - g_entities, "print \"Can't restore position during noclip.\n\"");
+	if (!FlyingRespawnCommandPlayer(ent)) {
+		trap->SendServerCommand(ent - g_entities, "print \"respos requires an alive racer outside noclip.\n\"");
 		return;
 	}
 	if (!ent->client->pers.flyingRespawn.manualSave.valid) {
@@ -7362,6 +7364,7 @@ void G_FlyingRespawn_ManualTimerHandoff(gentity_t *ent)
 {
 	if (!ent->client || !ent->client->pers.practice ||
 		!ent->client->pers.flyingRespawn.replay.manualReplay) return;
+	ent->client->pers.flyingRespawn.respawnCount = ent->client->pers.savePosRespawnCount;
 	if (ent->client->pers.savePosTimerElapsed) {
 		ent->client->pers.stats.startTime           = trap->Milliseconds() - ent->client->pers.savePosTimerElapsed;
 		ent->client->pers.stats.startLevelTime      = level.time - ent->client->pers.savePosLevelTimeElapsed;
