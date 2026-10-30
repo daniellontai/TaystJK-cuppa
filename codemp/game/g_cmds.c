@@ -5827,7 +5827,7 @@ void Cmd_Aminfo_f(gentity_t *ent)
 		}
 		Q_strcat(buf, sizeof(buf), "+button13 (dodge/dash/walljump)");
 		trap->SendServerCommand(ent-g_entities, va("print \"%s\n\"", buf));
-		trap->SendServerCommand(ent-g_entities, "print \"   ^3Respawn & practice: ^7/savepos (practice bookmark), /respos (practice), /respawn (map checkpoint)\n\"");
+		trap->SendServerCommand(ent-g_entities, "print \"   ^3Respawn & practice: ^7/savepos (practice bookmark), /addSavePoint, /respos (practice), /respawn (map checkpoint)\n\"");
 	}
 
 	Q_strncpyz(buf, "   ^3Emote commands: ", sizeof(buf));
@@ -7257,20 +7257,20 @@ static void Cmd_Launch_f(gentity_t *ent)
 	ent->client->pers.stats.coopStarted = qtrue;
 }
 
-static void Cmd_Savepos_f(gentity_t *ent)
+qboolean G_SavePosition(gentity_t *ent, qboolean announce)
 {
 	flyingRespawnMovement_t movement;
-	if (!ent->client) return;
+	if (!ent->client) return qfalse;
 	if (ent->client->noclip) {
-		trap->SendServerCommand(ent - g_entities, "print \"Can't save position during noclip.\n\"");
-		return;
+		if (announce) trap->SendServerCommand(ent - g_entities, "print \"Can't save position during noclip.\n\"");
+		return qfalse;
 	}
 	if (ent->health <= 0) {
-		trap->SendServerCommand(ent - g_entities, "print \"You must be alive to save position.\n\"");
-		return;
+		if (announce) trap->SendServerCommand(ent - g_entities, "print \"You must be alive to save position.\n\"");
+		return qfalse;
 	}
 	G_FlyingRespawn_CaptureMovement(ent, &movement);
-	if (!G_FlyingRespawn_CaptureManual(&ent->client->pers.flyingRespawn, level.time, &movement)) return;
+	if (!G_FlyingRespawn_CaptureManual(&ent->client->pers.flyingRespawn, level.time, &movement)) return qfalse;
 	if (ent->client->pers.stats.startTime) {
 		ent->client->pers.savePosTimerElapsed        = trap->Milliseconds() - ent->client->pers.stats.startTime;
 		ent->client->pers.savePosLevelTimeElapsed    = level.time - ent->client->pers.stats.startLevelTime;
@@ -7288,7 +7288,13 @@ static void Cmd_Savepos_f(gentity_t *ent)
 	}
 
 	ent->client->pers.savePosUsed = qtrue;
-	trap->SendServerCommand(ent - g_entities, "print \"Position saved.\n\"");
+	if (announce) trap->SendServerCommand(ent - g_entities, "print \"Position saved.\n\"");
+	return qtrue;
+}
+
+static void Cmd_Savepos_f(gentity_t *ent)
+{
+	G_SavePosition(ent, qtrue);
 }
 
 static qboolean FlyingRespawnCommandPlayer(gentity_t *ent)
@@ -7297,6 +7303,48 @@ static qboolean FlyingRespawnCommandPlayer(gentity_t *ent)
 		ent->client->sess.raceMode && ent->client->sess.sessionTeam == TEAM_FREE &&
 		!(ent->r.svFlags & SVF_BOT) && ent->s.eType != ET_NPC &&
 		ent->health > 0 && !ent->client->noclip;
+}
+
+static void Cmd_AddSavePoint_f(gentity_t *ent)
+{
+	clientPersistant_t *pers;
+	int i;
+	char arg[16];
+	if (!FlyingRespawnCommandPlayer(ent)) {
+		trap->SendServerCommand(ent - g_entities, "print \"addSavePoint requires an alive racer outside noclip.\n\"");
+		return;
+	}
+	pers = &ent->client->pers;
+	if (trap->Argc() == 2) {
+		trap->Argv(1, arg, sizeof(arg));
+		if (!Q_stricmp(arg, "cancel") && pers->addSavePointPending) {
+			pers->addSavePointPending = qfalse;
+			trap->SendServerCommand(ent - g_entities, "print \"Savepoint corner cancelled.\n\"");
+			return;
+		}
+	}
+	if (trap->Argc() != 1) {
+		trap->SendServerCommand(ent - g_entities, "print \"Usage: /addSavePoint [cancel]\n\"");
+		return;
+	}
+	if (!pers->addSavePointPending) {
+		VectorCopy(ent->client->ps.origin, pers->addSavePointFirst);
+		pers->addSavePointPending = qtrue;
+		trap->SendServerCommand(ent - g_entities, "print \"Savepoint corner marked. Move to the opposite corner and use /addSavePoint again.\n\"");
+		return;
+	}
+	for (i = 0; i < 3; ++i) {
+		pers->addSavePointMins[i] = Q_min(pers->addSavePointFirst[i], ent->client->ps.origin[i]);
+		pers->addSavePointMaxs[i] = Q_max(pers->addSavePointFirst[i], ent->client->ps.origin[i]);
+		if (pers->addSavePointMins[i] == pers->addSavePointMaxs[i]) {
+			trap->SendServerCommand(ent - g_entities, "print \"Savepoint needs volume on all three axes.\n\"");
+			return;
+		}
+	}
+	pers->addSavePointPending = qfalse;
+	pers->addSavePointArmed = qtrue;
+	pers->addSavePointInside = qfalse;
+	trap->SendServerCommand(ent - g_entities, "print \"Savepoint armed. Crossing it saves your position.\n\"");
 }
 
 static void Cmd_Respawn_f(gentity_t *ent)
@@ -9272,6 +9320,7 @@ command_t commands[] = {
 	{ "replaytest",			Cmd_Replaytest_f,			CMD_NOINTERMISSION },
 	{ "respawn",				Cmd_Respawn_f,				CMD_NOINTERMISSION },
 	{ "respos",				Cmd_Respos_f,				CMD_NOINTERMISSION },
+	{ "addSavePoint",			Cmd_AddSavePoint_f,			CMD_NOINTERMISSION },
 
 	{ "rfind",				Cmd_DFFind_f,				CMD_NOINTERMISSION },
 	{ "rhardest",			Cmd_DFHardest_f,			CMD_NOINTERMISSION },

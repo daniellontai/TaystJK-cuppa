@@ -6058,6 +6058,36 @@ static void FlyingRespawnRawInput(gentity_t *ent)
 	G_FlyingRespawn_RecordRawCmd(state, level.time, &ent->client->pers.cmd);
 }
 
+static void SavePointPostMovement(gentity_t *ent)
+{
+	clientPersistant_t *pers = &ent->client->pers;
+	qboolean inside;
+	int i;
+	if (!pers->addSavePointArmed) return;
+	inside = qtrue;
+	for (i = 0; i < 3; ++i) {
+		if (ent->client->ps.origin[i] < pers->addSavePointMins[i] || ent->client->ps.origin[i] > pers->addSavePointMaxs[i]) {
+			inside = qfalse;
+			break;
+		}
+	}
+	if (inside && !pers->addSavePointInside && G_SavePosition(ent, qfalse)) {
+		if (pers->stats.startTime) {
+			int time = trap->Milliseconds() - pers->stats.startTime;
+			int average = pers->stats.displacementSamples ? floorf((pers->stats.displacement * sv_fps.value) / pers->stats.displacementSamples + 0.5f) : pers->stats.topSpeed;
+			if (pers->showCenterCP)
+				trap->SendServerCommand(ent - g_entities, va("cp \"^3%.3fs^5, avg ^3%i^5u, max ^3%i^5u\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\"", time * 0.001f, average, (int)(pers->stats.topSpeed + 0.5f)));
+			else if (pers->showConsoleCP)
+				trap->SendServerCommand(ent - g_entities, va("print \"^5Savepoint: ^3%.3f^5, avg ^3%i^5, max ^3%i^5 ups\\n\"", time * 0.001f, average, (int)(pers->stats.topSpeed + 0.5f)));
+			else if (pers->showChatCP)
+				trap->SendServerCommand(ent - g_entities, va("chat \"^5Savepoint: ^3%.3f^5, avg ^3%i^5, max ^3%i^5 ups\"", time * 0.001f, average, (int)(pers->stats.topSpeed + 0.5f)));
+		} else {
+			trap->SendServerCommand(ent - g_entities, "print \"Savepoint saved.\n\"");
+		}
+	}
+	pers->addSavePointInside = inside;
+}
+
 static void FlyingRespawnPostMovement(gentity_t *ent)
 {
 	flyingRespawnMovement_t movement;
@@ -6068,6 +6098,7 @@ static void FlyingRespawnPostMovement(gentity_t *ent)
 	G_FlyingRespawn_CaptureMovement(ent, &movement);
 	G_FlyingRespawn_RecordState(state, level.time, &movement);
 	G_FlyingRespawn_CaptureAutomaticHandoff(state, level.time, &movement);
+	SavePointPostMovement(ent);
 }
 
 static void FlyingRespawnThink(gentity_t *ent)

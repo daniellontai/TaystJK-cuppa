@@ -896,6 +896,8 @@ typedef struct clientPersistant_s {
 	} doubleTap;
 
 	flyingRespawnState_t flyingRespawn;
+	qboolean	addSavePointPending, addSavePointArmed, addSavePointInside;
+	vec3_t		addSavePointFirst, addSavePointMins, addSavePointMaxs;
 
 	// Frozen pose/input is owned by flyingRespawn.manualSave; only manual practice timer data follows.
 	qboolean	savePosUsed;
@@ -1941,6 +1943,7 @@ qboolean G_FlyingRespawn_StartManualReplay(gentity_t *ent);
 qboolean G_FlyingRespawn_StartCheckpointReplay(gentity_t *ent);
 qboolean G_FlyingRespawn_StartTestReplay(gentity_t *ent, int durationMs);
 void G_FlyingRespawn_ManualTimerHandoff(gentity_t *ent);
+qboolean G_SavePosition(gentity_t *ent, qboolean announce);
 
 //
 // g_team.c
