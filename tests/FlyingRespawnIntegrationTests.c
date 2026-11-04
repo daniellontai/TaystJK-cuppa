@@ -3,11 +3,13 @@
 #include "sqlite3.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
 
 void TimerStart(gentity_t *, gentity_t *, trace_t *);
 void TimerStop(gentity_t *, gentity_t *, trace_t *);
+void TimerCheckpoint(gentity_t *, gentity_t *, trace_t *);
 void SP_target_restrict(gentity_t *);
 void WP_ForcePowersUpdate(gentity_t *, usercmd_t *);
 void G_RunFrame(int);
@@ -18,7 +20,7 @@ void PrintRaceTime(char *, char *, char *, char *, int, int, char *, int, int, q
 extern gclient_t g_clients[MAX_CLIENTS];
 
 static gameImport_t imports;
-static int failures, routeCalls, commandsSent;
+static int failures, routeCalls, commandsSent, fixtureBrush;
 static struct { int client; char text[2048]; } sent[64];
 static char commandName[MAX_TOKEN_CHARS], commandArg[MAX_TOKEN_CHARS];
 #define CHECK(condition) do { if (!(condition)) { \
@@ -57,7 +59,7 @@ static void Usercmd(int client, usercmd_t *cmd) { (void)client; memset(cmd, 0, s
 static qboolean Contact(const vec3_t mins, const vec3_t maxs, const sharedEntity_t *entity, int capsule)
 {
     (void)mins; (void)maxs; (void)entity; (void)capsule;
-    return qfalse;
+    return fixtureBrush && entity == (sharedEntity_t *)&g_entities[MAX_CLIENTS];
 }
 static void EmptyTrace(trace_t *trace, const vec3_t start, const vec3_t mins, const vec3_t maxs,
     const vec3_t end, int pass, int mask, int capsule, int flags, int lod)
@@ -67,7 +69,7 @@ static void EmptyTrace(trace_t *trace, const vec3_t start, const vec3_t mins, co
 }
 static int EmptyContents(const vec3_t point, int pass) { (void)point; (void)pass; return 0; }
 static int EmptyEntities(const vec3_t mins, const vec3_t maxs, int *list, int count)
-{ (void)mins; (void)maxs; (void)list; (void)count; return 0; }
+{ (void)mins; (void)maxs; if (fixtureBrush && count > 0) { list[0] = MAX_CLIENTS; return 1; } return 0; }
 
 static void Route(gentity_t *target, gentity_t *source, gentity_t *player)
 {
@@ -133,7 +135,7 @@ static gentity_t *Player(void)
     player->client->pers.stats.startLevelTime = 888;
     player->client->pers.stats.coopStarted = qtrue;
     player->client->ps.duelTime = 999;
-    routeCalls = commandsSent = 0;
+    routeCalls = commandsSent = fixtureBrush = 0;
     memset(sent, 0, sizeof(sent));
     G_FlyingRespawn_InitClient(&player->client->pers.flyingRespawn);
     return player;
@@ -654,6 +656,10 @@ static void ManualSkipDeadlines(void)
     player->client->ps.commandTime = 1099;
     player->client->ps.fd.forcePowerRegenDebounceTime = 1500;
     player->client->jetPackDebRecharge = 1600;
+    player->client->jetPackDebReduce = 0;
+    player->client->ps.fd.forcePowerDebounce[FP_SPEED] = 0;
+    player->client->ps.weaponTime = 321;
+    player->client->ps.pm_time = 123;
     RunCommand("savepos");
     SetTimes(1750, 22000);
     player->client->pers.stats.startTime = 1000;
@@ -662,8 +668,58 @@ static void ManualSkipDeadlines(void)
     RunCommand("respos");
     CHECK(player->client->ps.fd.forcePowerRegenDebounceTime == 2450);
     CHECK(player->client->jetPackDebRecharge == 2550);
+    CHECK(player->client->jetPackDebReduce == 0);
+    CHECK(player->client->ps.fd.forcePowerDebounce[FP_SPEED] == 0);
+    CHECK(player->client->ps.weaponTime == 321);
+    CHECK(player->client->ps.pm_time == 123);
     CHECK(Clock() - player->client->pers.stats.startTime == 8500);
     CHECK(player->client->ps.commandTime == 2049);
+    G_FlyingRespawn_FreeClient(state);
+}
+
+static void ReplayRejectedBeginAndConfiguration(void)
+{
+    gentity_t *player = Player();
+    flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
+    flyingRespawnMovement_t movement;
+    flyingRespawnSnapshot_t snapshot;
+    flyingRespawnCmd_t frozen;
+    usercmd_t input = {0};
+    int startTime;
+    CHECK(G_FlyingRespawn_OnTimerStart(state, 1000, 100, 0, 0, 100));
+    G_FlyingRespawn_CaptureMovement(player, &movement);
+    G_FlyingRespawn_RecordState(state, 1000, &movement);
+    input.serverTime = 1050; input.forwardmove = 37;
+    G_FlyingRespawn_RecordExecutionCmd(state, 1050, &input);
+    level.time = 1100;
+    player->client->pers.practice = qtrue;
+    RunCommand("savepos");
+    CHECK(state->manualSave.commandCount == 1);
+    snapshot = state->manualSave.snapshot;
+    frozen = state->manualSave.commands[0];
+    player->client->pers.cmd = input;
+    player->client->ps.origin[0] = 999;
+    player->client->pers.practice = qfalse;
+    startTime = player->client->pers.stats.startTime;
+    level.time = 2000;
+    CHECK(!G_FlyingRespawn_StartManualReplay(player));
+    CHECK(!G_FlyingRespawn_Configure(state, -1, 0, 0));
+    CHECK(!(player->client->ps.eFlags & EF_FLYING_RESPAWN));
+    CHECK(!state->replay.active);
+    CHECK(!memcmp(&player->client->pers.cmd, &input, sizeof(input)));
+    CHECK(player->client->ps.origin[0] == 999);
+    CHECK(player->client->pers.stats.startTime == startTime);
+    CHECK(!memcmp(&state->manualSave.snapshot, &snapshot, sizeof(snapshot)));
+    CHECK(state->manualSave.commandCount == 1);
+    CHECK(!memcmp(&state->manualSave.commands[0], &frozen, sizeof(frozen)));
+    player->client->pers.practice = qtrue;
+    CHECK(G_FlyingRespawn_StartManualReplay(player));
+    CHECK(state->replay.active);
+    CHECK(player->client->ps.eFlags & EF_FLYING_RESPAWN);
+    level.time = 2050;
+    CHECK(G_FlyingRespawn_StartManualReplay(player));
+    CHECK(!state->replay.active);
+    CHECK(!memcmp(&state->manualSave.commands[0], &frozen, sizeof(frozen)));
     G_FlyingRespawn_FreeClient(state);
 }
 
@@ -794,42 +850,244 @@ static void LiveStep(int time)
     ClientThink(0, &live);
 }
 
+static int SaveMessages(void)
+{
+    int count = 0;
+    for (int i = 0; i < commandsSent && i < 64; ++i)
+        if (strstr(sent[i].text, "Savepoint:")) ++count;
+    return count;
+}
+
 static void SavePointReplayPreservesBookmark(void)
 {
-    gentity_t *player = Player();
+    for (int mode = 0; mode < 3; ++mode) {
+        gentity_t *player = Player();
+        flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
+        flyingRespawnMovement_t initial;
+        flyingRespawnSnapshot_t original, originalStart, originalHandoff;
+        flyingRespawnCmd_t *commands;
+        int commandCount, messageCount, savedElapsed, savedLevel, savedSecondary, savedCount;
+        int savedLag, savedSamples, savedCheckpoints;
+        float savedDisplacement, savedTop;
+        qboolean savedRunning;
+        player->client->pers.practice = qtrue;
+        player->client->pers.showConsoleCP = qtrue;
+        CHECK(G_FlyingRespawn_OnTimerStart(state, 1000, mode ? 100 : 0, 0, 0, 100));
+        player->client->pers.addSavePointArmed = qtrue;
+        VectorSet(player->client->pers.addSavePointMins, -10, -10, -10000);
+        VectorSet(player->client->pers.addSavePointMaxs, 10, 10, 10000);
+        G_FlyingRespawn_CaptureMovement(player, &initial);
+        G_FlyingRespawn_RecordState(state, 1000, &initial);
+        player->client->ps.origin[0] = 100;
+        LiveStep(1050);
+        player->client->ps.origin[0] = 0;
+        LiveStep(1100);
+        CHECK(player->client->pers.addSavePointInside);
+        CHECK(state->manualSave.valid && state->manualSave.snapshot.serverTime == 1100);
+        original = state->manualSave.snapshot;
+        originalStart = state->manualSave.start;
+        originalHandoff = state->manualSave.handoff;
+        commandCount = state->manualSave.commandCount;
+        CHECK(!mode || commandCount > 0);
+        commands = commandCount ? malloc(commandCount * sizeof(*commands)) : NULL;
+        if (commandCount) memcpy(commands, state->manualSave.commands, commandCount * sizeof(*commands));
+        savedElapsed = player->client->pers.savePosTimerElapsed;
+        savedLevel = player->client->pers.savePosLevelTimeElapsed;
+        savedSecondary = player->client->pers.savePosNoRespawnElapsed;
+        savedCount = player->client->pers.savePosRespawnCount;
+        savedLag = player->client->pers.savePosStartLag;
+        savedSamples = player->client->pers.savePosDisplacementSamples;
+        savedCheckpoints = player->client->pers.savePosCheckpoints;
+        savedDisplacement = player->client->pers.savePosDisplacement;
+        savedTop = player->client->pers.savePosTopSpeed;
+        savedRunning = player->client->pers.savePosTimerRunning;
+        messageCount = SaveMessages();
+        player->client->ps.origin[0] = 100;
+        LiveStep(1150);
+        CHECK(!player->client->pers.addSavePointInside);
+        level.time = 1200;
+        RunCommand("respos");
+        if (mode == 1) LiveStep(1300);
+        if (mode == 2) { level.time = 1250; RunCommand("respos"); }
+        CHECK(!state->replay.active);
+        CHECK(player->client->pers.addSavePointInside);
+        LiveStep(1350);
+        LiveStep(1400);
+        CHECK(player->client->pers.addSavePointInside);
+        CHECK(!memcmp(&state->manualSave.snapshot, &original, sizeof(original)));
+        CHECK(!memcmp(&state->manualSave.start, &originalStart, sizeof(originalStart)));
+        CHECK(!memcmp(&state->manualSave.handoff, &originalHandoff, sizeof(originalHandoff)));
+        CHECK(state->manualSave.commandCount == commandCount);
+        if (commandCount == state->manualSave.commandCount && commandCount)
+            CHECK(!memcmp(state->manualSave.commands, commands, commandCount * sizeof(*commands)));
+        CHECK(player->client->pers.savePosTimerElapsed == savedElapsed);
+        CHECK(player->client->pers.savePosLevelTimeElapsed == savedLevel);
+        CHECK(player->client->pers.savePosNoRespawnElapsed == savedSecondary);
+        CHECK(player->client->pers.savePosRespawnCount == savedCount);
+        CHECK(player->client->pers.savePosStartLag == savedLag);
+        CHECK(player->client->pers.savePosDisplacementSamples == savedSamples);
+        CHECK(player->client->pers.savePosCheckpoints == savedCheckpoints);
+        CHECK(player->client->pers.savePosDisplacement == savedDisplacement);
+        CHECK(player->client->pers.savePosTopSpeed == savedTop);
+        CHECK(player->client->pers.savePosTimerRunning == savedRunning);
+        CHECK(SaveMessages() == messageCount);
+        player->client->ps.origin[0] = 100;
+        LiveStep(1450);
+        player->client->ps.origin[0] = 0;
+        LiveStep(1500);
+        CHECK(state->manualSave.snapshot.serverTime == 1500);
+        free(commands);
+        G_FlyingRespawn_FreeClient(state);
+    }
+}
+
+static void SavePointOccupancyReplayMatrix(void)
+{
+    /* cancellation inside/outside, checkpoint release, test release, no armed box */
+    for (int mode = 0; mode < 5; ++mode) {
+        gentity_t *player = Player();
+        flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
+        flyingRespawnMovement_t movement;
+        flyingRespawnCheckpointConfig_t config = {0};
+        player->client->pers.practice = qtrue;
+        CHECK(G_FlyingRespawn_OnTimerStart(state, 1000, 100, 100, 1, 100));
+        player->client->pers.addSavePointArmed = mode != 4;
+        VectorSet(player->client->pers.addSavePointMins, -10, -10, -10000);
+        VectorSet(player->client->pers.addSavePointMaxs, 10, 10, 10000);
+        G_FlyingRespawn_CaptureMovement(player, &movement);
+        G_FlyingRespawn_RecordState(state, 1000, &movement);
+        level.time = 1050;
+        RunCommand("savepos");
+        G_FlyingRespawn_RecordState(state, 1100, &movement);
+        CHECK(G_FlyingRespawn_OnCheckpointTouch(state, 1100, 20, &config, &movement));
+        CHECK(G_FlyingRespawn_CaptureAutomaticHandoff(state, 1200, &movement));
+        player->client->pers.addSavePointInside = qfalse;
+        level.time = 2000;
+        if (mode == 3) {
+            g_flyingRespawnTestMode.integer = 1;
+            CHECK(G_FlyingRespawn_StartTestReplay(player, 100));
+        } else {
+            g_enableFlyingRespawn.integer = 1;
+            CHECK(G_FlyingRespawn_StartCheckpointReplay(player));
+        }
+        if (mode < 2) {
+            player->client->ps.origin[0] = mode ? 100 : 0;
+            player->client->sess.raceMode = qfalse;
+            LiveStep(2050);
+            player->client->sess.raceMode = qtrue;
+            CHECK(!state->replay.active);
+            CHECK(player->client->pers.addSavePointInside == !mode);
+        } else {
+            LiveStep(state->replay.releaseServerTime);
+            CHECK(!state->replay.active);
+            CHECK(player->client->pers.addSavePointInside == (mode != 4));
+        }
+        LiveStep(level.time + 50);
+        CHECK(state->manualSave.snapshot.serverTime == 1050);
+        G_FlyingRespawn_FreeClient(state);
+    }
+}
+
+static void FirstGoCheckpointBrush(void)
+{
+    gentity_t *player = Player(), *brush = &g_entities[MAX_CLIENTS];
     flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
+    flyingRespawnMovement_t movement;
+    usercmd_t live = {0};
     player->client->pers.practice = qtrue;
-    player->client->pers.addSavePointArmed = qtrue;
-    VectorSet(player->client->pers.addSavePointMins, -10, -10, -10000);
-    VectorSet(player->client->pers.addSavePointMaxs, 10, 10, 10000);
-    player->client->ps.origin[0] = 100;
-    LiveStep(1050);
-    player->client->ps.origin[0] = 0;
-    LiveStep(1100);
-    CHECK(player->client->pers.addSavePointInside);
-    CHECK(state->manualSave.valid && state->manualSave.snapshot.serverTime == 1100);
-    player->client->ps.origin[0] = 100;
-    LiveStep(1150);
-    CHECK(!player->client->pers.addSavePointInside);
-    level.time = 1200;
+    player->client->ps.stats[STAT_HEALTH] = 100;
+    CHECK(G_FlyingRespawn_OnTimerStart(state, 1000, 100, 0, 0, 100));
+    G_FlyingRespawn_CaptureMovement(player, &movement);
+    G_FlyingRespawn_RecordState(state, 1000, &movement);
+    level.time = 1100;
+    RunCommand("savepos");
+    player->client->ps.origin[0] = 999;
+    G_FlyingRespawn_CaptureMovement(player, &movement);
+    G_FlyingRespawn_RecordState(state, 1500, &movement);
+    level.time = 2000;
     RunCommand("respos");
-    CHECK(player->client->pers.addSavePointInside);
-    LiveStep(1250);
-    LiveStep(1300);
-    CHECK(player->client->pers.addSavePointInside);
-    CHECK(state->manualSave.snapshot.serverTime == 1100);
-    player->client->ps.origin[0] = 100;
-    LiveStep(1350);
-    player->client->ps.origin[0] = 0;
-    LiveStep(1400);
-    CHECK(state->manualSave.snapshot.serverTime == 1400);
+    CHECK(state->replay.active && state->replay.releaseServerTime == 2100);
+    brush->inuse = qtrue;
+    brush->s.number = MAX_CLIENTS;
+    brush->r.contents = CONTENTS_TRIGGER;
+    brush->touch = TimerCheckpoint;
+    brush->objective = 1;
+    fixtureBrush = 1;
+    level.time = live.serverTime = 2100;
+    live.forwardmove = 37;
+    ClientThink(0, &live);
+    fixtureBrush = 0;
+    CHECK(!state->replay.active);
+    CHECK(state->automaticCheckpoint.valid);
+    CHECK(state->automaticCheckpoint.start.serverTime == 2100);
+    CHECK(state->automaticCheckpoint.start.movement.origin[0] != 999);
+    CHECK(state->automaticCheckpoint.commandCount == 1);
+    if (state->automaticCheckpoint.commandCount == 1) {
+        CHECK(state->automaticCheckpoint.commands[0].serverTime == 2100);
+        CHECK(state->automaticCheckpoint.commands[0].cmd.forwardmove == 37);
+    }
+    G_FlyingRespawn_FreeClient(state);
+}
+
+static void FixtureTargetTouch(gentity_t *brush, gentity_t *player, trace_t *trace)
+{
+    gentity_t *target = &g_entities[MAX_CLIENTS + 1];
+    (void)trace;
+    target->use(target, brush, player);
+}
+
+static void ReplayMapperTransition(void)
+{
+    gentity_t *player = Player(), *brush = &g_entities[MAX_CLIENTS], *target = brush + 1;
+    flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
+    flyingRespawnMovement_t movement;
+    int timer;
+    player->client->pers.practice = qtrue;
+    player->client->ps.stats[STAT_HEALTH] = 100;
+    player->client->ps.powerups[PW_NEUTRALFLAG] = 99999;
+    player->client->ps.fd.forcePowerLevel[FP_LEVITATION] = 1;
+    CHECK(G_FlyingRespawn_OnTimerStart(state, 1000, 100, 0, 0, 100));
+    G_FlyingRespawn_CaptureMovement(player, &movement);
+    G_FlyingRespawn_RecordState(state, 1000, &movement);
+    target->spawnflags = 8;
+    target->count = 3;
+    SP_target_restrict(target);
+    brush->inuse = qtrue;
+    brush->r.contents = CONTENTS_TRIGGER;
+    brush->touch = FixtureTargetTouch;
+    timer = player->client->pers.stats.startTime;
+    fixtureBrush = 1;
+    LiveStep(1050);
+    fixtureBrush = 0;
+    CHECK(player->client->ps.fd.forcePowerLevel[FP_LEVITATION] == 3);
+    CHECK(player->client->savedJumpLevel == 1);
+    CHECK(player->client->pers.stats.startTime == timer);
+    level.time = 1100;
+    RunCommand("savepos");
+    CHECK(state->manualSave.commandCount == 1);
+    player->client->ps.fd.forcePowerLevel[FP_LEVITATION] = 2;
+    player->client->savedJumpLevel = 0;
+    level.time = 2000;
+    RunCommand("respos");
+    CHECK(player->client->ps.fd.forcePowerLevel[FP_LEVITATION] == 1);
+    CHECK(player->client->savedJumpLevel == 0);
+    fixtureBrush = 1;
+    LiveStep(2050);
+    CHECK(state->replay.active);
+    CHECK(player->client->ps.fd.forcePowerLevel[FP_LEVITATION] == 3);
+    CHECK(player->client->savedJumpLevel == 1);
+    LiveStep(2100);
+    fixtureBrush = 0;
+    CHECK(!state->replay.active);
+    CHECK(player->client->ps.fd.forcePowerLevel[FP_LEVITATION] == 3);
+    CHECK(player->client->savedJumpLevel == 3); /* neutral-flag update on first live step */
     G_FlyingRespawn_FreeClient(state);
 }
 
 static void ReplaySettingCommandResets(void)
 {
     for (int command = 0; command < 2; ++command) {
-        for (int replay = 0; replay < 2; ++replay) {
+        for (int replay = 0; replay < 3; ++replay) {
             gentity_t *player = Player();
             flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
             flyingRespawnMovement_t movement;
@@ -843,10 +1101,20 @@ static void ReplaySettingCommandResets(void)
             CHECK(G_FlyingRespawn_CaptureAutomaticHandoff(state, 1600, &movement));
             level.time = 2000;
             if (replay) { g_enableFlyingRespawn.integer = 1; CHECK(G_FlyingRespawn_StartCheckpointReplay(player)); }
+            if (replay == 2) {
+                gentity_t *checkpoint = &g_entities[20];
+                checkpoint->s.number = 20;
+                TimerCheckpoint(checkpoint, player, NULL);
+                player->client->ps.groundEntityNum = ENTITYNUM_NONE;
+                LiveStep(state->replay.releaseServerTime);
+                CHECK(!state->replay.active);
+                player->client->ps.groundEntityNum = ENTITYNUM_WORLD;
+                VectorClear(player->client->ps.velocity);
+            }
             RunCommandWithArg(command ? "move" : "jump", command ? "qw" : "2");
             CHECK(player->client->pers.stats.startTime == 0);
             CHECK(command ? player->client->sess.movementStyle == MV_QW : player->client->ps.fd.forcePowerLevel[FP_LEVITATION] == 2);
-            if (replay) {
+            if (replay == 1) {
                 usercmd_t live = {0}; live.serverTime = ++level.time; ClientThink(0, &live);
                 CHECK(!state->replay.active);
             }
@@ -854,6 +1122,53 @@ static void ReplaySettingCommandResets(void)
             CHECK(!state->replay.active);
             CHECK(G_FlyingRespawn_OnTimerStart(state, level.time, 0, 500, 0, 0));
             CHECK(!state->automaticCheckpoint.valid);
+            G_FlyingRespawn_FreeClient(state);
+        }
+    }
+}
+
+static void ReplayJumpContextModes(void)
+{
+    for (int mode = 0; mode < 5; ++mode) {
+        for (int saved = 0; saved < 2; ++saved) {
+            gentity_t *player = Player();
+            flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
+            flyingRespawnMovement_t movement;
+            flyingRespawnCheckpointConfig_t config = {0};
+            player->client->pers.practice = qtrue;
+            player->client->ps.fd.forcePowerLevel[FP_LEVITATION] = 1;
+            player->client->savedJumpLevel = saved ? 2 : 0;
+            if (saved) player->client->ps.powerups[PW_NEUTRALFLAG] = 99999;
+            CHECK(G_FlyingRespawn_OnTimerStart(state, 1000, 100, 100, 1, 100));
+            G_FlyingRespawn_CaptureMovement(player, &movement);
+            G_FlyingRespawn_RecordState(state, 1000, &movement);
+            level.time = 1100;
+            RunCommand("savepos");
+            G_FlyingRespawn_RecordState(state, 1100, &movement);
+            CHECK(G_FlyingRespawn_OnCheckpointTouch(state, 1100, 20, &config, &movement));
+            CHECK(G_FlyingRespawn_CaptureAutomaticHandoff(state, 1200, &movement));
+            player->client->ps.fd.forcePowerLevel[FP_LEVITATION] = 3;
+            player->client->savedJumpLevel = saved ? 0 : 2;
+            level.time = 2000;
+            if (mode < 2) RunCommand("respos");
+            else if (mode == 4) { g_flyingRespawnTestMode.integer = 1; CHECK(G_FlyingRespawn_StartTestReplay(player, 100)); }
+            else { g_enableFlyingRespawn.integer = 1; CHECK(G_FlyingRespawn_StartCheckpointReplay(player)); }
+            CHECK(player->client->ps.fd.forcePowerLevel[FP_LEVITATION] == 1);
+            CHECK(player->client->savedJumpLevel == (saved ? 2 : 0));
+            if (mode == 1) { level.time = 2050; RunCommand("respos"); }
+            if (mode == 3) { level.time = 2050; CHECK(G_FlyingRespawn_StartCheckpointReplay(player)); }
+            if (mode == 2) {
+                gentity_t *checkpoint = &g_entities[20];
+                checkpoint->s.number = 20;
+                level.time = 2100;
+                TimerCheckpoint(checkpoint, player, NULL);
+            }
+            if (state->replay.active) LiveStep(state->replay.releaseServerTime);
+            else LiveStep(level.time + 50);
+            CHECK(!state->replay.active);
+            CHECK(!state->mismatch);
+            CHECK(player->client->ps.fd.forcePowerLevel[FP_LEVITATION] == 1);
+            CHECK(player->client->savedJumpLevel == (saved ? 2 : 0));
             G_FlyingRespawn_FreeClient(state);
         }
     }
@@ -1127,9 +1442,10 @@ static void FinishCoopActiveReplay(void)
 typedef struct { const char *name; void (*run)(void); int finish; } IntegrationCase;
 #define CASE(name, finish) { #name, name, finish }
 static const IntegrationCase cases[] = {
-    CASE(ManualSkipDeadlines, 0), CASE(ManualReleaseTimer, 0), CASE(ManualReleaseHistory, 0),
+    CASE(ManualSkipDeadlines, 0), CASE(ReplayRejectedBeginAndConfiguration, 0), CASE(ManualReleaseTimer, 0), CASE(ManualReleaseHistory, 0),
     CASE(SavePointDefinitionNoclip, 0), CASE(SavePointReplayPreservesBookmark, 0),
-    CASE(ReplayJumpContext, 0), CASE(ReplaySettingCommandResets, 0), CASE(StaticForceWait, 0), CASE(FlyingFrameInput, 0),
+    CASE(SavePointOccupancyReplayMatrix, 0), CASE(FirstGoCheckpointBrush, 0),
+    CASE(ReplayJumpContext, 0), CASE(ReplayJumpContextModes, 0), CASE(ReplayMapperTransition, 0), CASE(ReplaySettingCommandResets, 0), CASE(StaticForceWait, 0), CASE(FlyingFrameInput, 0),
     CASE(ReplayTimerBrushes, 0), CASE(StaticTribesServerFrames, 0),
     CASE(StaticServerFrameTimeout, 0), CASE(MovementResources, 0),
     CASE(StaticJetpackResources, 0), CASE(CoopTimerStartReset, 0),
