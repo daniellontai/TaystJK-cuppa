@@ -242,10 +242,14 @@ static void CG_TransitionSnapshot( void ) {
 				cg.deliveredPredictionValid = qfalse;
 				cg.replayTransitionPending = qfalse;
 			}
+			// A skipped snapshot has not delivered its player-state effects.
+			if ( cg.replayTransitionPending ) {
+				ops = &cg.deliveredPlayerState;
+			}
 			// Only a state actually transitioned by local prediction is an
 			// eligible entry baseline; interpolation also changes predictedPlayerState.
-			if ( (ps->eFlags & EF_FLYING_RESPAWN) && !(ops->eFlags & EF_FLYING_RESPAWN)
-				&& cg.deliveredPredictionValid && !cg.replayTransitionPending
+			else if ( (ps->eFlags & EF_FLYING_RESPAWN) && !(ops->eFlags & EF_FLYING_RESPAWN)
+				&& cg.deliveredPredictionValid
 				&& ops->clientNum == cg.clientNum && ps->clientNum == cg.clientNum
 				&& cg.deliveredPlayerState.clientNum == cg.clientNum
 				&& !cg.demoPlayback && !(ops->pm_flags & PMF_FOLLOW)
