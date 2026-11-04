@@ -7271,7 +7271,8 @@ qboolean G_SavePosition(gentity_t *ent, qboolean announce)
 	}
 	G_FlyingRespawn_CaptureMovement(ent, &movement);
 	if (!G_FlyingRespawn_CaptureManual(&ent->client->pers.flyingRespawn, level.time, &movement)) return qfalse;
-	if (ent->client->pers.stats.startTime) {
+	ent->client->pers.savePosTimerRunning = ent->client->pers.stats.startTime != 0;
+	if (ent->client->pers.savePosTimerRunning) {
 		ent->client->pers.savePosTimerElapsed        = trap->Milliseconds() - ent->client->pers.stats.startTime;
 		ent->client->pers.savePosLevelTimeElapsed    = level.time - ent->client->pers.stats.startLevelTime;
 		ent->client->pers.savePosNoRespawnElapsed    = G_FlyingRespawn_GetSecondaryElapsed(&ent->client->pers.flyingRespawn, level.time);

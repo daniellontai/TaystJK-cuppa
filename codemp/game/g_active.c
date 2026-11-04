@@ -5963,7 +5963,7 @@ static void FlyingRespawnRestorePracticeTimer(gentity_t *ent)
 	if (!ent->client || !ent->client->pers.practice ||
 		!ent->client->pers.flyingRespawn.replay.manualReplay) return;
 	ent->client->pers.flyingRespawn.respawnCount = ent->client->pers.savePosRespawnCount;
-	if (ent->client->pers.savePosTimerElapsed) {
+	if (ent->client->pers.savePosTimerRunning) {
 		ent->client->pers.stats.startTime           = trap->Milliseconds() - ent->client->pers.savePosTimerElapsed;
 		ent->client->pers.stats.startLevelTime      = level.time - ent->client->pers.savePosLevelTimeElapsed;
 		ent->client->pers.startLag                  = ent->client->pers.savePosStartLag;

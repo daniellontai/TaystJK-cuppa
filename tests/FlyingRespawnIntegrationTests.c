@@ -8,6 +8,7 @@
 
 void TimerStart(gentity_t *, gentity_t *, trace_t *);
 void TimerStop(gentity_t *, gentity_t *, trace_t *);
+void SP_target_restrict(gentity_t *);
 void WP_ForcePowersUpdate(gentity_t *, usercmd_t *);
 void G_RunFrame(int);
 void InitGameAccountStuff(void);
@@ -92,6 +93,7 @@ static gentity_t *Player(void)
     imports.FS_Open = Open;
     imports.InPVS = InPVS;
     imports.LinkEntity = LinkEntity;
+    imports.UnlinkEntity = LinkEntity;
     imports.Trace = EmptyTrace;
     imports.PointContents = EmptyContents;
     imports.EntitiesInBox = EmptyEntities;
@@ -665,9 +667,37 @@ static void ManualSkipDeadlines(void)
     G_FlyingRespawn_FreeClient(state);
 }
 
+static void ManualReleaseHistory(void)
+{
+    gentity_t *player = Player();
+    flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
+    flyingRespawnMovement_t movement;
+    player->client->pers.practice = qtrue;
+    CHECK(G_FlyingRespawn_OnTimerStart(state, 600, 500, 0, 0, 500));
+    player->client->ps.origin[0] = 7;
+    G_FlyingRespawn_CaptureMovement(player, &movement);
+    G_FlyingRespawn_RecordState(state, 600, &movement);
+    level.time = 1100;
+    RunCommand("savepos");
+    player->client->ps.origin[0] = 999;
+    G_FlyingRespawn_CaptureMovement(player, &movement);
+    G_FlyingRespawn_RecordState(state, 1600, &movement);
+    level.time = 1750;
+    RunCommand("respos");
+    level.time = 2050;
+    RunCommand("respos");
+    CHECK(player->client->ps.origin[0] == 7);
+    G_FlyingRespawn_CaptureMovement(player, &movement);
+    CHECK(G_FlyingRespawn_CaptureManual(state, 2050, &movement));
+    CHECK(state->manualSave.start.serverTime == 2050);
+    CHECK(state->manualSave.start.movement.origin[0] == 7);
+    CHECK(state->manualSave.start.movement.commandTime == 2049);
+    G_FlyingRespawn_FreeClient(state);
+}
+
 static void ManualReleaseTimer(void)
 {
-    for (int mode = 0; mode < 5; ++mode) {
+    for (int mode = 0; mode < 6; ++mode) {
         gentity_t *player = Player();
         flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
         flyingRespawnMovement_t initial;
@@ -676,20 +706,28 @@ static void ManualReleaseTimer(void)
         G_FlyingRespawn_CaptureMovement(player, &initial);
         G_FlyingRespawn_RecordState(state, 600, &initial);
         SetTimes(1100, 20000);
-        player->client->pers.stats.startTime = mode == 4 ? 0 : 11500;
+        player->client->pers.stats.startTime = mode == 4 ? 0 : mode == 5 ? 20000 : 11500;
         player->client->pers.stats.startLevelTime = 900;
         player->client->pers.stats.topSpeed = 123;
+        player->client->pers.stats.displacement = 456;
+        player->client->pers.stats.displacementSamples = 9;
+        player->client->pers.startLag = 37;
+        state->respawnCount = 2;
         RunCommand("savepos");
         SetTimes(1750, 22000);
         player->client->pers.stats.startTime = 1000;
         player->client->pers.stats.topSpeed = 444;
+        player->client->pers.stats.displacement = 0;
+        player->client->pers.stats.displacementSamples = 0;
+        player->client->pers.startLag = 0;
+        state->respawnCount = 7;
         RunCommand("respos");
-        if (mode != 2 && mode != 4) CHECK(player->client->pers.stats.startTime == 1000);
+        if (mode != 2 && mode != 4 && mode != 5) CHECK(player->client->pers.stats.startTime == 1000);
         if (mode == 1) {
             SetTimes(2050, 22300);
             RunCommand("respos");
         } else if (mode == 0) {
-            SetTimes(2250, 22500);
+            SetTimes(2350, 22600);
             { usercmd_t cmd = {0}; cmd.serverTime = level.time; ClientThink(0, &cmd); }
         } else if (mode == 3) {
             player->client->pers.practice = qfalse;
@@ -709,12 +747,18 @@ static void ManualReleaseTimer(void)
             G_FlyingRespawn_FreeClient(state);
             continue;
         }
-        CHECK(Clock() - player->client->pers.stats.startTime == 8500);
+        CHECK(Clock() - player->client->pers.stats.startTime == (mode == 5 ? 0 : 8500));
         CHECK(level.time - player->client->pers.stats.startLevelTime == 200);
         CHECK(level.time - player->client->ps.duelTime == 200);
         CHECK(player->client->pers.stats.topSpeed == 123);
+        CHECK(player->client->pers.stats.displacement == 456);
+        CHECK(player->client->pers.stats.displacementSamples == 9);
+        CHECK(player->client->pers.startLag == 37);
+        CHECK(state->respawnCount == 2);
+        CHECK(G_FlyingRespawn_GetSecondaryElapsed(state, level.time) == 500);
         SetTimes(level.time + 50, Clock() + 50);
-        CHECK(Clock() - player->client->pers.stats.startTime == 8550);
+        CHECK(Clock() - player->client->pers.stats.startTime == (mode == 5 ? 50 : 8550));
+        CHECK(G_FlyingRespawn_GetSecondaryElapsed(state, level.time) == 550);
         G_FlyingRespawn_FreeClient(state);
     }
 }
@@ -782,6 +826,39 @@ static void SavePointReplayPreservesBookmark(void)
     G_FlyingRespawn_FreeClient(state);
 }
 
+static void ReplaySettingCommandResets(void)
+{
+    for (int command = 0; command < 2; ++command) {
+        for (int replay = 0; replay < 2; ++replay) {
+            gentity_t *player = Player();
+            flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
+            flyingRespawnMovement_t movement;
+            flyingRespawnCheckpointConfig_t config = {0};
+            player->client->ps.groundEntityNum = ENTITYNUM_WORLD;
+            player->client->sess.movementStyle = MV_JKA;
+            player->client->tempSpectate = -1;
+            CHECK(G_FlyingRespawn_OnTimerStart(state, 1000, 0, 500, 0, 0));
+            G_FlyingRespawn_CaptureMovement(player, &movement);
+            CHECK(G_FlyingRespawn_OnCheckpointTouch(state, 1100, 20, &config, &movement));
+            CHECK(G_FlyingRespawn_CaptureAutomaticHandoff(state, 1600, &movement));
+            level.time = 2000;
+            if (replay) { g_enableFlyingRespawn.integer = 1; CHECK(G_FlyingRespawn_StartCheckpointReplay(player)); }
+            RunCommandWithArg(command ? "move" : "jump", command ? "qw" : "2");
+            CHECK(player->client->pers.stats.startTime == 0);
+            CHECK(command ? player->client->sess.movementStyle == MV_QW : player->client->ps.fd.forcePowerLevel[FP_LEVITATION] == 2);
+            if (replay) {
+                usercmd_t live = {0}; live.serverTime = ++level.time; ClientThink(0, &live);
+                CHECK(!state->replay.active);
+            }
+            RunCommand("respawn");
+            CHECK(!state->replay.active);
+            CHECK(G_FlyingRespawn_OnTimerStart(state, level.time, 0, 500, 0, 0));
+            CHECK(!state->automaticCheckpoint.valid);
+            G_FlyingRespawn_FreeClient(state);
+        }
+    }
+}
+
 static void ReplayJumpContext(void)
 {
     gentity_t *player = Player();
@@ -796,6 +873,18 @@ static void ReplayJumpContext(void)
     RunCommand("respos");
     CHECK(player->client->ps.fd.forcePowerLevel[FP_LEVITATION] == 1);
     CHECK(player->client->savedJumpLevel == 2);
+    {
+        gentity_t *target = &g_entities[MAX_CLIENTS];
+        int timer = player->client->pers.stats.startTime;
+        player->client->savedJumpLevel = 0;
+        target->spawnflags = 8;
+        target->count = 3;
+        SP_target_restrict(target);
+        target->use(target, player, player);
+        CHECK(player->client->ps.fd.forcePowerLevel[FP_LEVITATION] == 3);
+        CHECK(player->client->savedJumpLevel == 1);
+        CHECK(player->client->pers.stats.startTime == timer);
+    }
     G_FlyingRespawn_FreeClient(state);
 }
 
@@ -1038,9 +1127,9 @@ static void FinishCoopActiveReplay(void)
 typedef struct { const char *name; void (*run)(void); int finish; } IntegrationCase;
 #define CASE(name, finish) { #name, name, finish }
 static const IntegrationCase cases[] = {
-    CASE(ManualSkipDeadlines, 0), CASE(ManualReleaseTimer, 0),
+    CASE(ManualSkipDeadlines, 0), CASE(ManualReleaseTimer, 0), CASE(ManualReleaseHistory, 0),
     CASE(SavePointDefinitionNoclip, 0), CASE(SavePointReplayPreservesBookmark, 0),
-    CASE(ReplayJumpContext, 0), CASE(StaticForceWait, 0), CASE(FlyingFrameInput, 0),
+    CASE(ReplayJumpContext, 0), CASE(ReplaySettingCommandResets, 0), CASE(StaticForceWait, 0), CASE(FlyingFrameInput, 0),
     CASE(ReplayTimerBrushes, 0), CASE(StaticTribesServerFrames, 0),
     CASE(StaticServerFrameTimeout, 0), CASE(MovementResources, 0),
     CASE(StaticJetpackResources, 0), CASE(CoopTimerStartReset, 0),

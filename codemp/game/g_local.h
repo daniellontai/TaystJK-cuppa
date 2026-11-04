@@ -901,7 +901,8 @@ typedef struct clientPersistant_s {
 
 	// Frozen pose/input is owned by flyingRespawn.manualSave; only manual practice timer data follows.
 	qboolean	savePosUsed;
-	// timer snapshot at savepos time (savePosTimerElapsed == 0 means timer was not running)
+	// Timer snapshot at savepos time; zero elapsed may still be a running timer.
+	qboolean	savePosTimerRunning;
 	int			savePosTimerElapsed;		// trap->Milliseconds() - stats.startTime
 	int			savePosLevelTimeElapsed;	// level.time - stats.startLevelTime
 	int			savePosNoRespawnElapsed;
