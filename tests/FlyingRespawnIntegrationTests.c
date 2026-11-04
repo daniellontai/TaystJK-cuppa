@@ -665,6 +665,60 @@ static void ManualSkipDeadlines(void)
     G_FlyingRespawn_FreeClient(state);
 }
 
+static void ManualReleaseTimer(void)
+{
+    for (int mode = 0; mode < 5; ++mode) {
+        gentity_t *player = Player();
+        flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
+        flyingRespawnMovement_t initial;
+        player->client->pers.practice = qtrue;
+        CHECK(G_FlyingRespawn_OnTimerStart(state, 600, mode >= 2 && mode != 3 ? 0 : 500, 0, 0, 500));
+        G_FlyingRespawn_CaptureMovement(player, &initial);
+        G_FlyingRespawn_RecordState(state, 600, &initial);
+        SetTimes(1100, 20000);
+        player->client->pers.stats.startTime = mode == 4 ? 0 : 11500;
+        player->client->pers.stats.startLevelTime = 900;
+        player->client->pers.stats.topSpeed = 123;
+        RunCommand("savepos");
+        SetTimes(1750, 22000);
+        player->client->pers.stats.startTime = 1000;
+        player->client->pers.stats.topSpeed = 444;
+        RunCommand("respos");
+        if (mode != 2 && mode != 4) CHECK(player->client->pers.stats.startTime == 1000);
+        if (mode == 1) {
+            SetTimes(2050, 22300);
+            RunCommand("respos");
+        } else if (mode == 0) {
+            SetTimes(2250, 22500);
+            { usercmd_t cmd = {0}; cmd.serverTime = level.time; ClientThink(0, &cmd); }
+        } else if (mode == 3) {
+            player->client->pers.practice = qfalse;
+            SetTimes(2050, 22300);
+            { usercmd_t cmd = {0}; cmd.serverTime = level.time; ClientThink(0, &cmd); }
+            CHECK(!state->replay.active);
+            CHECK(player->client->pers.stats.startTime == 1000);
+            CHECK(player->client->pers.stats.topSpeed == 444);
+            G_FlyingRespawn_FreeClient(state);
+            continue;
+        }
+        CHECK(!state->replay.active);
+        if (mode == 4) {
+            CHECK(player->client->pers.stats.startTime == 0);
+            CHECK(player->client->pers.stats.startLevelTime == 0);
+            CHECK(player->client->ps.duelTime == 0);
+            G_FlyingRespawn_FreeClient(state);
+            continue;
+        }
+        CHECK(Clock() - player->client->pers.stats.startTime == 8500);
+        CHECK(level.time - player->client->pers.stats.startLevelTime == 200);
+        CHECK(level.time - player->client->ps.duelTime == 200);
+        CHECK(player->client->pers.stats.topSpeed == 123);
+        SetTimes(level.time + 50, Clock() + 50);
+        CHECK(Clock() - player->client->pers.stats.startTime == 8550);
+        G_FlyingRespawn_FreeClient(state);
+    }
+}
+
 static void SavePointDefinitionNoclip(void)
 {
     gentity_t *player = Player();
@@ -987,12 +1041,14 @@ int main(int argc, char **argv)
         if (!strcmp(argv[2], "ManualSkipDeadlines")) ManualSkipDeadlines();
         else if (!strcmp(argv[2], "SavePointDefinitionNoclip")) SavePointDefinitionNoclip();
         else if (!strcmp(argv[2], "SavePointReplayPreservesBookmark")) SavePointReplayPreservesBookmark();
+        else if (!strcmp(argv[2], "ManualReleaseTimer")) ManualReleaseTimer();
         else if (!strcmp(argv[2], "ReplayJumpContext")) ReplayJumpContext();
         else { fprintf(stderr, "Unknown case: %s\n", argv[2]); return 2; }
         return failures ? 1 : 0;
     }
     if (argc < 2 || strcmp(argv[1], "finish")) {
         ManualSkipDeadlines();
+        ManualReleaseTimer();
         SavePointDefinitionNoclip();
         SavePointReplayPreservesBookmark();
         ReplayJumpContext();
