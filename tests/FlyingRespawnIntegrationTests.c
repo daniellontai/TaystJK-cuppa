@@ -363,7 +363,7 @@ static int Scalar(sqlite3 *db, const char *sql)
 static void MovementResources(void)
 {
     puts("Running movement resource restore and mismatch validation");
-    for (int field = 0; field < 13; ++field) {
+    for (int field = 0; field < 14; ++field) {
         gentity_t *player = Player();
         flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
         flyingRespawnMovement_t movement;
@@ -426,7 +426,7 @@ static void MovementResources(void)
         if (field == 12) player->client->savedJumpLevel++;
         G_FlyingRespawn_CaptureMovement(player, &movement);
         CHECK(G_FlyingRespawn_Advance(state, 2000, &movement, &player->client->pers.cmd));
-        CHECK(state->runInvalid && state->mismatch);
+        CHECK(state->runInvalid == (field < 13) && state->mismatch == (field < 13));
         CHECK(player->client->pers.stats.startTime == 777);
         CHECK(player->client->pers.stats.startLevelTime == 888);
         CHECK(ps->duelTime == 999);
@@ -1035,40 +1035,33 @@ static void FinishCoopActiveReplay(void)
     }
 }
 
+typedef struct { const char *name; void (*run)(void); int finish; } IntegrationCase;
+#define CASE(name, finish) { #name, name, finish }
+static const IntegrationCase cases[] = {
+    CASE(ManualSkipDeadlines, 0), CASE(ManualReleaseTimer, 0),
+    CASE(SavePointDefinitionNoclip, 0), CASE(SavePointReplayPreservesBookmark, 0),
+    CASE(ReplayJumpContext, 0), CASE(StaticForceWait, 0), CASE(FlyingFrameInput, 0),
+    CASE(ReplayTimerBrushes, 0), CASE(StaticTribesServerFrames, 0),
+    CASE(StaticServerFrameTimeout, 0), CASE(MovementResources, 0),
+    CASE(StaticJetpackResources, 0), CASE(CoopTimerStartReset, 0),
+    CASE(ProgressCountdown, 0), CASE(ManualReplayEligibilityAndRespawnCount, 0),
+    CASE(FinishPublicPrivate, 1), CASE(FinishPersistence, 1), CASE(FinishHelp, 1),
+    CASE(FinishCoopEligibility, 1), CASE(FinishCoopActiveReplay, 1)
+};
 int main(int argc, char **argv)
 {
-    if (argc == 3 && !strcmp(argv[1], "--case")) {
-        if (!strcmp(argv[2], "ManualSkipDeadlines")) ManualSkipDeadlines();
-        else if (!strcmp(argv[2], "SavePointDefinitionNoclip")) SavePointDefinitionNoclip();
-        else if (!strcmp(argv[2], "SavePointReplayPreservesBookmark")) SavePointReplayPreservesBookmark();
-        else if (!strcmp(argv[2], "ManualReleaseTimer")) ManualReleaseTimer();
-        else if (!strcmp(argv[2], "ReplayJumpContext")) ReplayJumpContext();
-        else { fprintf(stderr, "Unknown case: %s\n", argv[2]); return 2; }
-        return failures ? 1 : 0;
+    int ran = 0;
+    int named = argc == 3 && !strcmp(argv[1], "--case");
+    int finish = argc == 2 && !strcmp(argv[1], "finish");
+    if (argc != 1 && !named && !finish) return 2;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        if (named && strcmp(argv[2], cases[i].name)) continue;
+        if (finish && !cases[i].finish) continue;
+        cases[i].run();
+        ran++;
     }
-    if (argc < 2 || strcmp(argv[1], "finish")) {
-        ManualSkipDeadlines();
-        ManualReleaseTimer();
-        SavePointDefinitionNoclip();
-        SavePointReplayPreservesBookmark();
-        ReplayJumpContext();
-        StaticForceWait();
-        FlyingFrameInput();
-        ReplayTimerBrushes();
-        StaticTribesServerFrames();
-        StaticServerFrameTimeout();
-        MovementResources();
-        StaticJetpackResources();
-        CoopTimerStartReset();
-        ProgressCountdown();
-        ManualReplayEligibilityAndRespawnCount();
-    }
-    FinishPublicPrivate();
-    FinishPersistence();
-    FinishHelp();
-    FinishCoopEligibility();
-    FinishCoopActiveReplay();
+    if (!ran) { fprintf(stderr, "Unknown case: %s\n", argv[2]); return 2; }
     if (failures) fprintf(stderr, "%d integration assertions failed\n", failures);
-    else puts(argc > 1 ? "5 flying-respawn finish integration cases passed" : "14 flying-respawn integration cases passed");
+    else printf("%d flying-respawn integration cases passed\n", ran);
     return failures ? 1 : 0;
 }

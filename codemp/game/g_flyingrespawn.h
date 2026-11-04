@@ -8,7 +8,7 @@ extern "C" {
 #endif
 
 #define FLYING_RESPAWN_MAX_TEST_MS 30000
-/* Raw commands also cover the sampled predecessor, up to one second earlier. */
+/* Execution commands also cover the sampled predecessor, up to one second earlier. */
 #define FLYING_RESPAWN_SAMPLE_MARGIN_MS 1000
 
 typedef struct {
@@ -38,7 +38,7 @@ typedef struct {
 typedef struct {
 	int serverTime;
 	usercmd_t cmd; /* Original input, before server movement code mutates it. */
-} flyingRespawnRawCmd_t;
+} flyingRespawnCmd_t;
 
 typedef struct {
 	int serverTime;
@@ -56,8 +56,8 @@ typedef struct {
 	flyingRespawnSnapshot_t snapshot;
 	flyingRespawnSnapshot_t start, handoff;
 	usercmd_t startCmd;
-	/* Frozen applied commands, separate from the immutable raw receipt ring. */
-	flyingRespawnRawCmd_t *commands;
+	/* Frozen applied commands, separate from rolling execution history. */
+	flyingRespawnCmd_t *commands;
 	int commandCount, commandCapacity;
 	qboolean pending;
 	int releaseServerTime;
@@ -69,7 +69,6 @@ typedef struct {
 	int endServerTime;
 	int firstCommand, commandCount;
 	unsigned int historyGeneration;
-	qboolean executionHistory;
 } flyingRespawnSelection_t;
 
 typedef struct {
@@ -90,12 +89,11 @@ typedef struct {
 typedef struct {
 	/* These are distinct capture owners; run restart clears only automatic capture. */
 	flyingRespawnCapture_t manualSave, automaticCheckpoint;
-	flyingRespawnRawCmd_t *rawCommands;
 	/* Commands actually passed to normal movement, including coalesced/forced server steps. */
-	flyingRespawnRawCmd_t *executionCommands;
+	flyingRespawnCmd_t *executionCommands;
 	flyingRespawnSnapshot_t *movementStates;
-	int commandHead, commandCount, stateHead, stateCount, historyCapacity;
-	int commandDroppedThrough, stateDroppedThrough;
+	int stateHead, stateCount, historyCapacity;
+	int stateDroppedThrough;
 	int executionHead, executionCount, executionDroppedThrough;
 	unsigned int historyGeneration;
 	int historyContinuousSince; /* Rewind may shorten at the most recent replay handoff. */
@@ -114,11 +112,9 @@ typedef struct {
 
 /* Init only on a new/zeroed client. Free before disposing/reinitializing a client. */
 void G_FlyingRespawn_InitClient(flyingRespawnState_t *state);
-void G_FlyingRespawn_FreeHistory(flyingRespawnState_t *state);
 /* Lifecycle disposal includes frozen owners. Configuration frees only rolling history. */
 void G_FlyingRespawn_FreeClient(flyingRespawnState_t *state);
 qboolean G_FlyingRespawn_Configure(flyingRespawnState_t *state, int rewindMs, int releaseOffsetMs, int testMode);
-void G_FlyingRespawn_ResetRun(flyingRespawnState_t *state, int serverTime);
 /* Optional malformed values inherit; a negative mapper release clamps to zero. */
 void G_FlyingRespawn_ParseCheckpointConfig(flyingRespawnCheckpointConfig_t *config, const char *disabled, const char *rewind, const char *release);
 /* Retain the largest map override, while snapshotting defaults independently. */
@@ -129,14 +125,10 @@ qboolean G_FlyingRespawn_OnCheckpointTouch(flyingRespawnState_t *state, int serv
 qboolean G_FlyingRespawn_IsExpectedCheckpointTouch(const flyingRespawnState_t *state, int entityNum);
 /* Also used by static second-respawn after installing the recorded contact pose. */
 qboolean G_FlyingRespawn_ApplyExpectedCheckpointProgress(flyingRespawnState_t *state, flyingRespawnMovement_t *movement);
-void G_FlyingRespawn_RecordRawCmd(flyingRespawnState_t *state, int serverTime, const usercmd_t *cmd);
 void G_FlyingRespawn_RecordExecutionCmd(flyingRespawnState_t *state, int serverTime, const usercmd_t *cmd);
 void G_FlyingRespawn_RecordState(flyingRespawnState_t *state, int serverTime, const flyingRespawnMovement_t *movement);
 /* Start a continuous stream immediately before the first live movement at GO. */
 void G_FlyingRespawn_RecordHandoff(flyingRespawnState_t *state, int serverTime, const flyingRespawnMovement_t *movement);
-qboolean G_FlyingRespawn_SelectHistory(const flyingRespawnState_t *state, int targetServerTime, int endServerTime, flyingRespawnSelection_t *selection);
-qboolean G_FlyingRespawn_SelectExecutionHistory(const flyingRespawnState_t *state, int targetServerTime, int endServerTime, flyingRespawnSelection_t *selection);
-qboolean G_FlyingRespawn_GetSelectedCmd(const flyingRespawnState_t *state, const flyingRespawnSelection_t *selection, int index, flyingRespawnRawCmd_t *cmd);
 qboolean G_FlyingRespawn_BeginTestReplay(flyingRespawnState_t *state, int serverTime, int durationMs);
 qboolean G_FlyingRespawn_BeginCheckpointReplay(flyingRespawnState_t *state, int serverTime, qboolean enabled);
 void G_FlyingRespawn_BufferLiveCmd(flyingRespawnState_t *state, const usercmd_t *cmd);
@@ -158,10 +150,8 @@ void G_FlyingRespawn_WriteMovement(playerState_t *ps, const flyingRespawnMovemen
 qboolean G_FlyingRespawn_CaptureManual(flyingRespawnState_t *state, int serverTime, const flyingRespawnMovement_t *movement);
 void G_FlyingRespawn_ClearAutomaticCheckpoint(flyingRespawnState_t *state);
 qboolean G_FlyingRespawn_BeginManualReplay(flyingRespawnState_t *state, int serverTime, qboolean practice);
-qboolean G_FlyingRespawn_NextManualCmd(flyingRespawnState_t *state, int serverTime, flyingRespawnRawCmd_t *cmd);
 /* True once, after all recorded movement ran; caller may then restore the practice timer. */
 qboolean G_FlyingRespawn_FinishManualReplay(flyingRespawnState_t *state, int serverTime, qboolean practice);
-qboolean G_FlyingRespawn_CaptureAutomaticStart(flyingRespawnState_t *state, int serverTime, const flyingRespawnMovement_t *movement, int rewindMs, int releaseOffsetMs);
 qboolean G_FlyingRespawn_CaptureAutomaticHandoff(flyingRespawnState_t *state, int serverTime, const flyingRespawnMovement_t *movement);
 void G_FlyingRespawn_ResetSecondarySegment(flyingRespawnState_t *state, int serverTime, int baseMs);
 int G_FlyingRespawn_GetSecondaryElapsed(const flyingRespawnState_t *state, int serverTime);

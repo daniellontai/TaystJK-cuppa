@@ -6081,7 +6081,7 @@ qboolean G_FlyingRespawn_StartTestReplay(gentity_t *ent, int durationMs)
 	return qtrue;
 }
 
-static void FlyingRespawnRawInput(gentity_t *ent)
+static void FlyingRespawnLiveInput(gentity_t *ent)
 {
 	flyingRespawnState_t *state;
 	if (!FlyingRespawnPlayer(ent)) return;
@@ -6096,7 +6096,6 @@ static void FlyingRespawnRawInput(gentity_t *ent)
 		if (!G_FlyingRespawn_Configure(state, g_flyingRespawnRewindMs.integer,
 			g_flyingRespawnReleaseOffsetMs.integer, g_flyingRespawnTestMode.integer)) return;
 	}
-	G_FlyingRespawn_RecordRawCmd(state, level.time, &ent->client->pers.cmd);
 }
 
 static qboolean SavePointContainsPlayer(const gentity_t *ent)
@@ -6199,7 +6198,7 @@ static void FlyingRespawnThink(gentity_t *ent)
 		}
 	}
 	/* Capture the actual invocation, after synchronous/forced timestamp and input choices.
-	 * Receipt history stays untouched; coalesced receipts are never replayed as extra steps. */
+	 * Coalesced receipts are never replayed as extra steps. */
 	if (FlyingRespawnPlayer(ent))
 		G_FlyingRespawn_RecordExecutionCmd(state, level.time, &ent->client->pers.cmd);
 	ClientThink_real(ent);
@@ -6230,7 +6229,7 @@ void ClientThink( int clientNum, usercmd_t *ucmd ) {
 		ent->client->pers.cmd = *ucmd; //Somehow this crashes the server if you try to board a vehicle without it having spawned yet...? somtimes?
 	}
 
-	FlyingRespawnRawInput(ent);
+	FlyingRespawnLiveInput(ent);
 
 /* 	This was moved to clientthink_real, but since its sort of a risky change i left it here for
     now as a more concrete reference - BSD
