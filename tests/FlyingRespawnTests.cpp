@@ -1,5 +1,4 @@
 #include "g_flyingrespawn.h"
-#include "sqlite3.h"
 
 #include <boost/test/unit_test.hpp>
 
@@ -446,43 +445,6 @@ BOOST_AUTO_TEST_CASE(flying_respawn_history_secondary_clock_and_reset)
     BOOST_CHECK_EQUAL(G_FlyingRespawn_GetRespawnCount(&h.state), 0);
     BOOST_CHECK(h.state.manualSave.valid); // separate manual owner survives run restart
     BOOST_CHECK(!h.state.automaticCheckpoint.valid);
-}
-
-struct FlyingDatabase {
-    sqlite3* db = nullptr;
-    FlyingDatabase() { BOOST_REQUIRE_EQUAL(sqlite3_open(":memory:", &db), SQLITE_OK); }
-    ~FlyingDatabase() { sqlite3_close(db); }
-};
-
-// Catches a migration that rewrites historical invalid flags or fails on its second run.
-BOOST_AUTO_TEST_CASE(flying_respawn_history_schema_migrates_historical_rows)
-{
-    FlyingDatabase f;
-    BOOST_REQUIRE_EQUAL(sqlite3_exec(f.db, "CREATE TABLE LocalRun(id INTEGER PRIMARY KEY, invalid INTEGER, respawn_count_old INTEGER); INSERT INTO LocalRun VALUES(1, 2, 8)", nullptr, nullptr, nullptr), SQLITE_OK);
-    BOOST_CHECK_EQUAL(G_FlyingRespawn_HasRespawnCountColumn(f.db), 0);
-    BOOST_REQUIRE_EQUAL(G_FlyingRespawn_MigrateLocalRun(f.db), SQLITE_OK);
-    BOOST_CHECK_EQUAL(G_FlyingRespawn_HasRespawnCountColumn(f.db), 1);
-    BOOST_REQUIRE_EQUAL(G_FlyingRespawn_MigrateLocalRun(f.db), SQLITE_OK);
-    sqlite3_stmt* stmt = nullptr;
-    BOOST_REQUIRE_EQUAL(sqlite3_prepare_v2(f.db, "SELECT respawn_count, invalid FROM LocalRun WHERE id=1", -1, &stmt, nullptr), SQLITE_OK);
-    BOOST_REQUIRE_EQUAL(sqlite3_step(stmt), SQLITE_ROW);
-    BOOST_CHECK_EQUAL(sqlite3_column_int(stmt, 0), 0);
-    BOOST_CHECK_EQUAL(sqlite3_column_int(stmt, 1), 2);
-    sqlite3_finalize(stmt);
-}
-
-// Catches schema inspection accepting similarly named columns or erasing existing metadata.
-BOOST_AUTO_TEST_CASE(flying_respawn_history_schema_preserves_existing_column)
-{
-    FlyingDatabase f;
-    BOOST_REQUIRE_EQUAL(sqlite3_exec(f.db, "CREATE TABLE LocalRun(respawn_count INTEGER NOT NULL DEFAULT 0); INSERT INTO LocalRun VALUES(7)", nullptr, nullptr, nullptr), SQLITE_OK);
-    BOOST_CHECK_EQUAL(G_FlyingRespawn_HasRespawnCountColumn(f.db), 1);
-    BOOST_REQUIRE_EQUAL(G_FlyingRespawn_MigrateLocalRun(f.db), SQLITE_OK);
-    sqlite3_stmt* stmt = nullptr;
-    BOOST_REQUIRE_EQUAL(sqlite3_prepare_v2(f.db, "SELECT respawn_count FROM LocalRun", -1, &stmt, nullptr), SQLITE_OK);
-    BOOST_REQUIRE_EQUAL(sqlite3_step(stmt), SQLITE_ROW);
-    BOOST_CHECK_EQUAL(sqlite3_column_int(stmt, 0), 7);
-    sqlite3_finalize(stmt);
 }
 
 // Catches pruning commands between a sampled predecessor and the rewind boundary.

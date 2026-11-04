@@ -158,11 +158,6 @@ int G_FlyingRespawn_GetSecondaryElapsed(const flyingRespawnState_t *state, int s
 qboolean G_FlyingRespawn_IsRunInvalid(const flyingRespawnState_t *state);
 int G_FlyingRespawn_GetRespawnCount(const flyingRespawnState_t *state);
 
-struct sqlite3;
-/* Inspection returns 0 absent, 1 present, -1 on SQLite error. */
-int G_FlyingRespawn_HasRespawnCountColumn(struct sqlite3 *db);
-int G_FlyingRespawn_MigrateLocalRun(struct sqlite3 *db);
-
 #ifdef __cplusplus
 }
 #endif

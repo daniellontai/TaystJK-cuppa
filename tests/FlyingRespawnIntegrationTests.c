@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
+#include <unistd.h>
 
 void TimerStart(gentity_t *, gentity_t *, trace_t *);
 void TimerStop(gentity_t *, gentity_t *, trace_t *);
@@ -27,6 +28,7 @@ static char commandName[MAX_TOKEN_CHARS], commandArg[MAX_TOKEN_CHARS];
     fprintf(stderr, "%s:%d: %s\n", __func__, __LINE__, #condition); failures++; \
 } } while (0)
 
+static int cleanupSuccesses;
 static int testWallTimeMs;
 static void SetTimes(int serverTime, int wallTimeMs) { level.time = serverTime; testWallTimeMs = wallTimeMs; }
 static int Clock(void) { return testWallTimeMs; }
@@ -45,7 +47,7 @@ static void ServerCommand(int client, const char *text) {
     commandsSent++;
 }
 static void CvarString(const char *name, char *buffer, int size) { (void)name; Q_strncpyz(buffer, ".", size); }
-static void Print(const char *format, ...) { va_list args; va_start(args, format); vfprintf(stderr, format, args); va_end(args); }
+static void Print(const char *format, ...) { if (strstr(format, "Cleaned up racetimes")) cleanupSuccesses++; va_list args; va_start(args, format); vfprintf(stderr, format, args); va_end(args); }
 static int Open(const char *path, fileHandle_t *file, fsMode_t mode) { (void)path; (void)mode; *file = 0; return -1; }
 static void Userinfo(int client, char *buffer, int size) { (void)client; if (size) buffer[0] = 0; }
 static void Serverinfo(char *buffer, int size) { Q_strncpyz(buffer, "\\mapname\\testmap", size); }
@@ -361,6 +363,119 @@ static int Scalar(sqlite3 *db, const char *sql)
     if (statement && sqlite3_step(statement) == SQLITE_ROW) value = sqlite3_column_int(statement, 0);
     sqlite3_finalize(statement);
     return value;
+}
+
+/* Account initialization always opens ./data.db. Each schema case owns its cwd,
+ * including when the executable runs all cases in one process. */
+typedef struct {
+    char *originalDirectory;
+    char directory[80];
+    sqlite3 *db;
+} RespawnSchemaFixture;
+
+static int BeginRespawnSchema(RespawnSchemaFixture *fixture, int existing)
+{
+    memset(fixture, 0, sizeof(*fixture));
+    Player();
+    fixture->originalDirectory = getcwd(NULL, 0);
+    CHECK(fixture->originalDirectory != NULL);
+    if (!fixture->originalDirectory) return 0;
+    strcpy(fixture->directory, "/tmp/flying-respawn-schema-XXXXXX");
+    if (!mkdtemp(fixture->directory)) {
+        CHECK(0); free(fixture->originalDirectory); return 0;
+    }
+    if (chdir(fixture->directory) != 0) {
+        CHECK(0); rmdir(fixture->directory); free(fixture->originalDirectory); return 0;
+    }
+    CHECK(sqlite3_open("./data.db", &fixture->db) == SQLITE_OK);
+    CHECK(sqlite3_exec(fixture->db,
+        "CREATE TABLE LocalRun(id INTEGER PRIMARY KEY, username VARCHAR(16), coursename VARCHAR(40), "
+        "duration_ms UNSIGNED INTEGER, topspeed UNSIGNED SMALLINT, average UNSIGNED SMALLINT, "
+        "style UNSIGNED TINYINT, season UNSIGNED TINYINT, end_time UNSIGNED INTEGER, "
+        "rank UNSIGNED SMALLINT, entries UNSIGNED SMALLINT, season_rank UNSIGNED SMALLINT, "
+        "season_entries UNSIGNED SMALLINT, last_update UNSIGNED INTEGER, invalid UNSIGNED TINYINT, "
+        "respawn_count_old INTEGER); "
+        "INSERT INTO LocalRun VALUES(1, 'historical', 'testmap', 1234, 900, 800, 1, 6, "
+        "1700000000, 2, 3, 4, 5, 1700000001, 2, 8)", NULL, NULL, NULL) == SQLITE_OK);
+    if (existing) {
+        CHECK(sqlite3_exec(fixture->db,
+            "ALTER TABLE LocalRun ADD COLUMN respawn_count INTEGER NOT NULL DEFAULT 0; "
+            "UPDATE LocalRun SET respawn_count=7 WHERE id=1", NULL, NULL, NULL) == SQLITE_OK);
+    }
+    return 1;
+}
+
+static void CheckHistoricalRespawnRow(sqlite3 *db)
+{
+    CHECK(Scalar(db, "SELECT count(*) FROM LocalRun") == 1);
+    CHECK(Scalar(db, "SELECT count(*) FROM LocalRun WHERE id=1 AND username='historical' "
+        "AND coursename='testmap' AND duration_ms=1234 AND topspeed=900 AND average=800 "
+        "AND style=1 AND season=6 AND end_time=1700000000 AND rank=2 AND entries=3 "
+        "AND season_rank=4 AND season_entries=5 AND last_update=1700000001 AND invalid=2") == 1);
+    CHECK(Scalar(db, "SELECT respawn_count_old FROM LocalRun WHERE id=1") == 8);
+}
+
+static void EndRespawnSchema(RespawnSchemaFixture *fixture)
+{
+    if (fixture->db) CHECK(sqlite3_close(fixture->db) == SQLITE_OK);
+    CHECK(unlink("./data.db") == 0);
+    if (fixture->originalDirectory) {
+        CHECK(chdir(fixture->originalDirectory) == 0);
+        free(fixture->originalDirectory);
+    }
+    CHECK(rmdir(fixture->directory) == 0);
+}
+
+static void RespawnSchemaHistorical(void)
+{
+    RespawnSchemaFixture fixture;
+    puts("Running historical respawn schema through account initialization");
+    if (!BeginRespawnSchema(&fixture, 0)) return;
+    InitGameAccountStuff();
+    InitGameAccountStuff();
+    CHECK(commandsSent == 0);
+    CheckHistoricalRespawnRow(fixture.db);
+    CHECK(Scalar(fixture.db, "SELECT respawn_count FROM LocalRun WHERE id=1") == 0);
+    EndRespawnSchema(&fixture);
+}
+
+static void RespawnSchemaExisting(void)
+{
+    RespawnSchemaFixture fixture;
+    puts("Running existing respawn schema through repeated account initialization");
+    if (!BeginRespawnSchema(&fixture, 1)) return;
+    InitGameAccountStuff();
+    InitGameAccountStuff();
+    CHECK(commandsSent == 0);
+    CheckHistoricalRespawnRow(fixture.db);
+    CHECK(Scalar(fixture.db, "SELECT respawn_count FROM LocalRun WHERE id=1") == 7);
+    EndRespawnSchema(&fixture);
+}
+
+static void RespawnSchemaError(void)
+{
+    RespawnSchemaFixture fixture;
+    int migrationErrors = 0, targetColumns = 0;
+    sqlite3_stmt *columns = NULL;
+    puts("Running locked respawn schema through account initialization");
+    if (!BeginRespawnSchema(&fixture, 0)) return;
+    CHECK(sqlite3_exec(fixture.db, "BEGIN EXCLUSIVE", NULL, NULL, NULL) == SQLITE_OK);
+    cleanupSuccesses = 0;
+    InitGameAccountStuff();
+    for (int i = 0; i < commandsSent && i < 64; ++i) {
+        if (strstr(sent[i].text, "SQL Flying Respawn Migration Failed 5")) migrationErrors++;
+    }
+    CHECK(migrationErrors == 1); /* SQLITE_BUSY from the other connection's lock. */
+    CHECK(cleanupSuccesses == 0);
+    CHECK(sqlite3_exec(fixture.db, "ROLLBACK", NULL, NULL, NULL) == SQLITE_OK);
+    CheckHistoricalRespawnRow(fixture.db);
+    CHECK(sqlite3_prepare_v2(fixture.db, "PRAGMA table_info(LocalRun)", -1, &columns, NULL) == SQLITE_OK);
+    while (columns && sqlite3_step(columns) == SQLITE_ROW) {
+        if (!strcmp((const char *)sqlite3_column_text(columns, 1), "respawn_count")) targetColumns++;
+    }
+    sqlite3_finalize(columns);
+    CHECK(targetColumns == 0);
+    EndRespawnSchema(&fixture);
 }
 
 /* Restoring the failed attempt's cooldowns/resources would change the replay trajectory. */
@@ -1442,6 +1557,7 @@ static void FinishCoopActiveReplay(void)
 typedef struct { const char *name; void (*run)(void); int finish; } IntegrationCase;
 #define CASE(name, finish) { #name, name, finish }
 static const IntegrationCase cases[] = {
+    CASE(RespawnSchemaHistorical, 0), CASE(RespawnSchemaExisting, 0), CASE(RespawnSchemaError, 0),
     CASE(ManualSkipDeadlines, 0), CASE(ReplayRejectedBeginAndConfiguration, 0), CASE(ManualReleaseTimer, 0), CASE(ManualReleaseHistory, 0),
     CASE(SavePointDefinitionNoclip, 0), CASE(SavePointReplayPreservesBookmark, 0),
     CASE(SavePointOccupancyReplayMatrix, 0), CASE(FirstGoCheckpointBrush, 0),

@@ -1,6 +1,5 @@
 #include "g_flyingrespawn.h"
 #include "bg_public.h"
-#include "sqlite3.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -847,25 +846,3 @@ qboolean G_FlyingRespawn_CaptureAutomaticHandoff(flyingRespawnState_t *state, in
 
 qboolean G_FlyingRespawn_IsRunInvalid(const flyingRespawnState_t *state) { return state->runInvalid; }
 int G_FlyingRespawn_GetRespawnCount(const flyingRespawnState_t *state) { return state->respawnCount; }
-
-int G_FlyingRespawn_HasRespawnCountColumn(sqlite3 *db)
-{
-	sqlite3_stmt *stmt = NULL;
-	int result, found = 0;
-	result = sqlite3_prepare_v2(db, "PRAGMA table_info(LocalRun)", -1, &stmt, NULL);
-	if (result != SQLITE_OK) return -1;
-	while ((result = sqlite3_step(stmt)) == SQLITE_ROW) {
-		const char *name = (const char *)sqlite3_column_text(stmt, 1);
-		if (name && sqlite3_stricmp(name, "respawn_count") == 0) found = 1;
-	}
-	sqlite3_finalize(stmt);
-	return result == SQLITE_DONE ? found : -1;
-}
-
-int G_FlyingRespawn_MigrateLocalRun(sqlite3 *db)
-{
-	int found = G_FlyingRespawn_HasRespawnCountColumn(db);
-	if (found < 0) return sqlite3_errcode(db);
-	if (found) return SQLITE_OK;
-	return sqlite3_exec(db, "ALTER TABLE LocalRun ADD COLUMN respawn_count INTEGER NOT NULL DEFAULT 0", NULL, NULL, NULL);
-}

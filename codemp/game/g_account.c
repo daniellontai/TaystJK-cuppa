@@ -7597,6 +7597,29 @@ static void SC_EnsureLocalSecretCourseColumn(sqlite3 *db, const char *column, co
 		trap->Print("ERROR: Could not add Secret Course lifecycle column %s.\n", column);
 }
 
+/* Inspection returns 0 absent, 1 present, -1 on SQLite error. */
+static int G_HasRespawnCountColumn(sqlite3 *db)
+{
+	sqlite3_stmt *stmt = NULL;
+	int result, found = 0;
+	result = sqlite3_prepare_v2(db, "PRAGMA table_info(LocalRun)", -1, &stmt, NULL);
+	if (result != SQLITE_OK) return -1;
+	while ((result = sqlite3_step(stmt)) == SQLITE_ROW) {
+		const char *name = (const char *)sqlite3_column_text(stmt, 1);
+		if (name && sqlite3_stricmp(name, "respawn_count") == 0) found = 1;
+	}
+	sqlite3_finalize(stmt);
+	return result == SQLITE_DONE ? found : -1;
+}
+
+static int G_MigrateRespawnCount(sqlite3 *db)
+{
+	int found = G_HasRespawnCountColumn(db);
+	if (found < 0) return sqlite3_errcode(db);
+	if (found) return SQLITE_OK;
+	return sqlite3_exec(db, "ALTER TABLE LocalRun ADD COLUMN respawn_count INTEGER NOT NULL DEFAULT 0", NULL, NULL, NULL);
+}
+
 void InitGameAccountStuff( void ) { //Called every mapload , move the create table stuff to something that gets called every srvr start.. eh?
 	sqlite3 * db;
     char * sql;
@@ -7646,7 +7669,7 @@ void InitGameAccountStuff( void ) { //Called every mapload , move the create tab
 		G_ErrorPrint("ERROR: SQL Create Failed (InitGameAccountStuff 2)", s);
 	CALL_SQLITE (finalize(stmt));
 
-	s = G_FlyingRespawn_MigrateLocalRun(db);
+	s = G_MigrateRespawnCount(db);
 	if (s != SQLITE_OK)
 		G_ErrorPrint("ERROR: SQL Flying Respawn Migration Failed", s);
 	/* Mismatch diagnostics are audit data, never candidates for PB/rank queries. */
