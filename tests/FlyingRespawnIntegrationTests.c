@@ -14,6 +14,7 @@ void TimerCheckpoint(gentity_t *, gentity_t *, trace_t *);
 void SP_target_restrict(gentity_t *);
 void WP_ForcePowersUpdate(gentity_t *, usercmd_t *);
 void G_RunFrame(int);
+void G_RunClient(gentity_t *);
 void InitGameAccountStuff(void);
 void Cmd_Aminfo_f(gentity_t *);
 void G_AddRaceTime(char *, char *, int, int, int, int, int, int, int);
@@ -461,7 +462,10 @@ static void RespawnSchemaError(void)
     if (!BeginRespawnSchema(&fixture, 0)) return;
     CHECK(sqlite3_exec(fixture.db, "BEGIN EXCLUSIVE", NULL, NULL, NULL) == SQLITE_OK);
     cleanupSuccesses = 0;
+    fflush(stdout);
+    fprintf(stderr, "Begin expected SQLite lock diagnostics:\n");
     InitGameAccountStuff();
+    fprintf(stderr, "End expected SQLite lock diagnostics.\n");
     for (int i = 0; i < commandsSent && i < 64; ++i) {
         if (strstr(sent[i].text, "SQL Flying Respawn Migration Failed 5")) migrationErrors++;
     }
@@ -752,6 +756,43 @@ static void ManualReplayEligibilityAndRespawnCount(void)
     state->respawnCount = 7;
     RunCommand("respos");
     CHECK(state->respawnCount == 2);
+    G_FlyingRespawn_FreeClient(state);
+}
+
+static void SynchronousReceiptsCoalesce(void)
+{
+    gentity_t *player = Player();
+    flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
+    flyingRespawnMovement_t movement;
+    usercmd_t first = {0}, latest = {0}, replay = {0};
+    int oldSynchronous = g_synchronousClients.integer;
+    g_synchronousClients.integer = 1;
+    player->client->pers.practice = qtrue;
+    player->client->ps.commandTime = 1000;
+    CHECK(G_FlyingRespawn_OnTimerStart(state, 1000, 100, 0, 0, 100));
+    G_FlyingRespawn_CaptureMovement(player, &movement);
+    G_FlyingRespawn_RecordState(state, 1000, &movement);
+    level.time = 1050;
+    first.serverTime = 1048; first.forwardmove = 127; first.upmove = 127;
+    ClientThink(0, &first);
+    level.time = 1070;
+    latest.serverTime = 1068; latest.forwardmove = -32; latest.angles[YAW] = 12345;
+    ClientThink(0, &latest);
+    CHECK(state->executionCount == 0);
+    level.time = 1100;
+    G_RunClient(player);
+    CHECK(state->executionCount == 1);
+    CHECK(G_SavePosition(player, qfalse));
+    CHECK(state->manualSave.commandCount == 1);
+    CHECK(G_FlyingRespawn_BeginManualReplay(state, 2000, qtrue));
+    CHECK(!G_FlyingRespawn_OverrideCmd(state, 2099, &replay));
+    CHECK(G_FlyingRespawn_OverrideCmd(state, 2100, &replay));
+    CHECK(replay.serverTime == 2100);
+    CHECK(replay.forwardmove == -32);
+    CHECK(replay.upmove == 0);
+    CHECK(replay.angles[YAW] == 12345);
+    CHECK(!G_FlyingRespawn_OverrideCmd(state, 2100, &replay));
+    g_synchronousClients.integer = oldSynchronous;
     G_FlyingRespawn_FreeClient(state);
 }
 
@@ -1558,7 +1599,7 @@ typedef struct { const char *name; void (*run)(void); int finish; } IntegrationC
 #define CASE(name, finish) { #name, name, finish }
 static const IntegrationCase cases[] = {
     CASE(RespawnSchemaHistorical, 0), CASE(RespawnSchemaExisting, 0), CASE(RespawnSchemaError, 0),
-    CASE(ManualSkipDeadlines, 0), CASE(ReplayRejectedBeginAndConfiguration, 0), CASE(ManualReleaseTimer, 0), CASE(ManualReleaseHistory, 0),
+    CASE(SynchronousReceiptsCoalesce, 0), CASE(ManualSkipDeadlines, 0), CASE(ReplayRejectedBeginAndConfiguration, 0), CASE(ManualReleaseTimer, 0), CASE(ManualReleaseHistory, 0),
     CASE(SavePointDefinitionNoclip, 0), CASE(SavePointReplayPreservesBookmark, 0),
     CASE(SavePointOccupancyReplayMatrix, 0), CASE(FirstGoCheckpointBrush, 0),
     CASE(ReplayJumpContext, 0), CASE(ReplayJumpContextModes, 0), CASE(ReplayMapperTransition, 0), CASE(ReplaySettingCommandResets, 0), CASE(StaticForceWait, 0), CASE(FlyingFrameInput, 0),

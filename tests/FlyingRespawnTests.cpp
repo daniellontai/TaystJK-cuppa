@@ -728,7 +728,6 @@ BOOST_AUTO_TEST_CASE(flying_respawn_manual_replays_forced_execution_without_fabr
     BOOST_CHECK(!G_FlyingRespawn_OverrideCmd(&h.state, 2399, &step));
     BOOST_REQUIRE(G_FlyingRespawn_OverrideCmd(&h.state, 2400, &step));
     BOOST_CHECK_EQUAL(step.serverTime, 2400);
-    BOOST_CHECK_EQUAL(step.serverTime, 2400);
     BOOST_CHECK_EQUAL(step.forwardmove, 37);
     BOOST_CHECK(!G_FlyingRespawn_OverrideCmd(&h.state, 2400, &step));
     BOOST_CHECK(G_FlyingRespawn_FinishManualReplay(&h.state, 2400, qtrue));
