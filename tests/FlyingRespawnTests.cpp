@@ -56,6 +56,7 @@ BOOST_AUTO_TEST_CASE(flying_respawn_successive_checkpoint_rewinds_only_continuou
             G_FlyingRespawn_ApplyExpectedCheckpointProgress(&h.state, &actual);
         }
         BOOST_REQUIRE(G_FlyingRespawn_Advance(&h.state, 2300, &actual, &cmd));
+    G_FlyingRespawn_RecordHandoff(&h.state, 2300, &actual);
         const float goOrigin = actual.origin[0];
         actual.origin[0] += 5;
         actual.commandTime = cmd.serverTime = 2350;
@@ -91,6 +92,7 @@ BOOST_AUTO_TEST_CASE(flying_respawn_checkpoint_on_first_go_step_keeps_that_comma
     actual.commandTime = 2300;
     G_FlyingRespawn_ApplyExpectedCheckpointProgress(&h.state, &actual);
     BOOST_REQUIRE(G_FlyingRespawn_Advance(&h.state, 2300, &actual, &cmd));
+    G_FlyingRespawn_RecordHandoff(&h.state, 2300, &actual);
     // The finish of the first live movement touches a checkpoint before post-movement recording.
     cmd.serverTime = actual.commandTime = 2301;
     cmd.forwardmove = 53;

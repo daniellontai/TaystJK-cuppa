@@ -24,7 +24,9 @@ static char commandName[MAX_TOKEN_CHARS];
     fprintf(stderr, "%s:%d: %s\n", __func__, __LINE__, #condition); failures++; \
 } } while (0)
 
-static int Clock(void) { return 5000; }
+static int testWallTimeMs;
+static void SetTimes(int serverTime, int wallTimeMs) { level.time = serverTime; testWallTimeMs = wallTimeMs; }
+static int Clock(void) { return testWallTimeMs; }
 static int Argc(void) { return commandName[0] ? 1 : 0; }
 static void Argv(int n, char *buffer, int size)
 {
@@ -87,7 +89,7 @@ static gentity_t *Player(void)
     imports.ICARUS_MaintainTaskManager = Maintain;
     imports.GetUsercmd = Usercmd;
     trap = &imports;
-    level.time = 1000;
+    SetTimes(1000, 5000);
     level.gametype = GT_FFA;
     level.num_entities = MAX_CLIENTS + 2;
     level.clients = g_clients;
@@ -607,6 +609,35 @@ static void ManualReplayEligibilityAndRespawnCount(void)
     G_FlyingRespawn_FreeClient(state);
 }
 
+static void ManualSkipDeadlines(void)
+{
+    gentity_t *player = Player();
+    flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
+    player->client->pers.practice = qtrue;
+    CHECK(G_FlyingRespawn_OnTimerStart(state, 600, 500, 0, 0, 500));
+    {
+        flyingRespawnMovement_t initial;
+        G_FlyingRespawn_CaptureMovement(player, &initial);
+        G_FlyingRespawn_RecordState(state, 600, &initial);
+    }
+    SetTimes(1100, 20000);
+    player->client->pers.stats.startTime = 11500;
+    player->client->ps.commandTime = 1099;
+    player->client->ps.fd.forcePowerRegenDebounceTime = 1500;
+    player->client->jetPackDebRecharge = 1600;
+    RunCommand("savepos");
+    SetTimes(1750, 22000);
+    player->client->pers.stats.startTime = 1000;
+    RunCommand("respos");
+    SetTimes(2050, 22300);
+    RunCommand("respos");
+    CHECK(player->client->ps.fd.forcePowerRegenDebounceTime == 2450);
+    CHECK(player->client->jetPackDebRecharge == 2550);
+    CHECK(Clock() - player->client->pers.stats.startTime == 8500);
+    CHECK(player->client->ps.commandTime == 2049);
+    G_FlyingRespawn_FreeClient(state);
+}
+
 /* Catches public-format/audience changes and secondary time leaking to spectators. */
 static void FinishPublicPrivate(void)
 {
@@ -845,7 +876,13 @@ static void FinishCoopActiveReplay(void)
 
 int main(int argc, char **argv)
 {
+    if (argc == 3 && !strcmp(argv[1], "--case")) {
+        if (!strcmp(argv[2], "ManualSkipDeadlines")) ManualSkipDeadlines();
+        else { fprintf(stderr, "Unknown case: %s\n", argv[2]); return 2; }
+        return failures ? 1 : 0;
+    }
     if (argc < 2 || strcmp(argv[1], "finish")) {
+        ManualSkipDeadlines();
         StaticForceWait();
         FlyingFrameInput();
         ReplayTimerBrushes();

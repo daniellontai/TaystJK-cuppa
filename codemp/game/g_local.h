@@ -1942,7 +1942,6 @@ void G_FlyingRespawn_RestoreMovement(gentity_t *ent, const flyingRespawnSnapshot
 qboolean G_FlyingRespawn_StartManualReplay(gentity_t *ent);
 qboolean G_FlyingRespawn_StartCheckpointReplay(gentity_t *ent);
 qboolean G_FlyingRespawn_StartTestReplay(gentity_t *ent, int durationMs);
-void G_FlyingRespawn_ManualTimerHandoff(gentity_t *ent);
 qboolean G_SavePosition(gentity_t *ent, qboolean announce);
 
 //

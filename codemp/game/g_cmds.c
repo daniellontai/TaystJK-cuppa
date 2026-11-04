@@ -7407,34 +7407,6 @@ static void Cmd_Respos_f(gentity_t *ent)
 	G_FlyingRespawn_StartManualReplay(ent);
 }
 
-/* Called only by the manual practice replay handoff. The existing timer semantics stay here. */
-void G_FlyingRespawn_ManualTimerHandoff(gentity_t *ent)
-{
-	if (!ent->client || !ent->client->pers.practice ||
-		!ent->client->pers.flyingRespawn.replay.manualReplay) return;
-	ent->client->pers.flyingRespawn.respawnCount = ent->client->pers.savePosRespawnCount;
-	if (ent->client->pers.savePosTimerElapsed) {
-		ent->client->pers.stats.startTime           = trap->Milliseconds() - ent->client->pers.savePosTimerElapsed;
-		ent->client->pers.stats.startLevelTime      = level.time - ent->client->pers.savePosLevelTimeElapsed;
-		ent->client->pers.startLag                  = ent->client->pers.savePosStartLag;
-		ent->client->pers.stats.displacement        = ent->client->pers.savePosDisplacement;
-		ent->client->pers.stats.displacementSamples = ent->client->pers.savePosDisplacementSamples;
-		ent->client->pers.stats.topSpeed            = ent->client->pers.savePosTopSpeed;
-		ent->client->pers.stats.checkpoints         = ent->client->pers.savePosCheckpoints;
-		ent->client->pers.stats.lastCheckpointTime  = 0;
-		ent->client->ps.duelTime                    = level.time - ent->client->pers.savePosLevelTimeElapsed;
-		G_FlyingRespawn_ResetSecondarySegment(&ent->client->pers.flyingRespawn, level.time, ent->client->pers.savePosNoRespawnElapsed);
-	} else {
-		// timer was not running at savepos — clear any run that started after the save
-		// (can't use ResetSpecificPlayerTimers: it clears velocity and overrides force for some styles)
-		ent->client->pers.stats.startTime      = 0;
-		ent->client->pers.stats.startLevelTime = 0;
-		ent->client->ps.duelTime               = 0;
-		ent->client->pers.flyingRespawn.secondaryRunning = qfalse;
-		ent->client->pers.flyingRespawn.secondaryBaseMs = 0;
-	}
-}
-
 static void Cmd_MaxForce_f(gentity_t *ent)
 {
 	char arg[8];

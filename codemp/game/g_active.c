@@ -5935,7 +5935,7 @@ void G_FlyingRespawn_RestoreMovement(gentity_t *ent, const flyingRespawnSnapshot
 {
 	gclient_t *client = ent->client;
 	G_FlyingRespawn_WriteMovement(&client->ps, &snapshot->movement, timeOffset);
-	client->jetPackDebReduce = G_FlyingRespawn_GetJetpackDeadline(&snapshot->movement, timeOffset);
+	client->jetPackDebReduce = G_FlyingRespawn_ShiftDeadline(snapshot->movement.jetPackDebReduce, timeOffset);
 	client->jetPackDebRecharge = G_FlyingRespawn_ShiftDeadline(snapshot->movement.jetPackDebRecharge, timeOffset);
 	client->overheatRechargeDebReduce = G_FlyingRespawn_ShiftDeadline(snapshot->movement.overheatRechargeDebReduce, timeOffset);
 	client->fjDidJump = snapshot->movement.fjDidJump;
@@ -5955,17 +5955,65 @@ void G_FlyingRespawn_RestoreMovement(gentity_t *ent, const flyingRespawnSnapshot
 
 static void FlyingRespawnCountdown(gentity_t *ent);
 
-static void FlyingRespawnManualRelease(gentity_t *ent)
+/* Called only by the manual practice replay handoff. The existing timer semantics stay here. */
+static void FlyingRespawnRestorePracticeTimer(gentity_t *ent)
+{
+	if (!ent->client || !ent->client->pers.practice ||
+		!ent->client->pers.flyingRespawn.replay.manualReplay) return;
+	ent->client->pers.flyingRespawn.respawnCount = ent->client->pers.savePosRespawnCount;
+	if (ent->client->pers.savePosTimerElapsed) {
+		ent->client->pers.stats.startTime           = trap->Milliseconds() - ent->client->pers.savePosTimerElapsed;
+		ent->client->pers.stats.startLevelTime      = level.time - ent->client->pers.savePosLevelTimeElapsed;
+		ent->client->pers.startLag                  = ent->client->pers.savePosStartLag;
+		ent->client->pers.stats.displacement        = ent->client->pers.savePosDisplacement;
+		ent->client->pers.stats.displacementSamples = ent->client->pers.savePosDisplacementSamples;
+		ent->client->pers.stats.topSpeed            = ent->client->pers.savePosTopSpeed;
+		ent->client->pers.stats.checkpoints         = ent->client->pers.savePosCheckpoints;
+		ent->client->pers.stats.lastCheckpointTime  = 0;
+		ent->client->ps.duelTime                    = level.time - ent->client->pers.savePosLevelTimeElapsed;
+		G_FlyingRespawn_ResetSecondarySegment(&ent->client->pers.flyingRespawn, level.time, ent->client->pers.savePosNoRespawnElapsed);
+	} else {
+		// timer was not running at savepos — clear any run that started after the save
+		// (can't use ResetSpecificPlayerTimers: it clears velocity and overrides force for some styles)
+		ent->client->pers.stats.startTime      = 0;
+		ent->client->pers.stats.startLevelTime = 0;
+		ent->client->ps.duelTime               = 0;
+		ent->client->pers.flyingRespawn.secondaryRunning = qfalse;
+		ent->client->pers.flyingRespawn.secondaryBaseMs = 0;
+	}
+}
+
+static void FlyingRespawnRelease(gentity_t *ent)
 {
 	flyingRespawnState_t *state = &ent->client->pers.flyingRespawn;
+	flyingRespawnMovement_t movement;
 	int i;
 	if (state->replay.hasLiveCmd) ent->client->pers.cmd = state->replay.liveCmd;
 	for (i = 0; i < 3; ++i)
 		ent->client->ps.delta_angles[i] = ANGLE2SHORT(ent->client->ps.viewangles[i]) - ent->client->pers.cmd.angles[i];
 	ent->client->pers.cmd.weapon = ent->client->ps.weapon;
+	if (ent->client->ps.commandTime < level.time - 1) ent->client->ps.commandTime = level.time - 1;
 	ent->client->ps.eFlags &= ~EF_FLYING_RESPAWN;
 	ent->client->pers.cmd.serverTime = level.time > ent->client->ps.commandTime ? level.time : ent->client->ps.commandTime + 1;
+	G_FlyingRespawn_CaptureMovement(ent, &movement);
+	G_FlyingRespawn_RecordHandoff(state, level.time, &movement);
 	trap->SendServerCommand(ent - g_entities, "cp \"^2GO!\"");
+}
+
+static void FlyingRespawnManualRelease(gentity_t *ent)
+{
+	FlyingRespawnRestorePracticeTimer(ent);
+	FlyingRespawnRelease(ent);
+}
+
+static void FlyingRespawnInstallReplay(gentity_t *ent)
+{
+	flyingRespawnState_t *state = &ent->client->pers.flyingRespawn;
+	ent->client->ps.eFlags |= EF_FLYING_RESPAWN;
+	G_FlyingRespawn_BufferLiveCmd(state, &ent->client->pers.cmd);
+	G_FlyingRespawn_FrameCmd(state, level.time, &ent->client->pers.cmd);
+	G_FlyingRespawn_RestoreMovement(ent, &state->replay.selection.snapshot,
+		level.time - state->replay.selection.snapshot.serverTime);
 }
 
 qboolean G_FlyingRespawn_StartManualReplay(gentity_t *ent)
@@ -5974,18 +6022,14 @@ qboolean G_FlyingRespawn_StartManualReplay(gentity_t *ent)
 	if (state->replay.active) {
 		if (!state->replay.manualReplay) return qfalse;
 		G_FlyingRespawn_CancelReplay(state, level.time, &ent->client->pers.cmd);
-		G_FlyingRespawn_RestoreMovement(ent, &state->manualSave.snapshot, 0);
+		G_FlyingRespawn_RestoreMovement(ent, &state->manualSave.snapshot, level.time - state->manualSave.snapshot.serverTime);
+		ent->client->ps.commandTime = level.time - 1;
 		FlyingRespawnManualRelease(ent);
 		return qtrue;
 	}
 	if (!G_FlyingRespawn_BeginManualReplay(state, level.time, ent->client->pers.practice)) return qfalse;
-	ent->client->ps.eFlags |= EF_FLYING_RESPAWN;
-	G_FlyingRespawn_BufferLiveCmd(state, &ent->client->pers.cmd);
-	G_FlyingRespawn_FrameCmd(state, level.time, &ent->client->pers.cmd);
-	G_FlyingRespawn_RestoreMovement(ent, &state->replay.selection.snapshot,
-		level.time - state->replay.selection.snapshot.serverTime);
+	FlyingRespawnInstallReplay(ent);
 	G_FlyingRespawn_ClearAutomaticCheckpoint(state);
-	G_FlyingRespawn_ManualTimerHandoff(ent);
 	FlyingRespawnCountdown(ent);
 	if (G_FlyingRespawn_FinishManualReplay(state, level.time, ent->client->pers.practice)) {
 		FlyingRespawnManualRelease(ent);
@@ -6018,11 +6062,7 @@ qboolean G_FlyingRespawn_StartCheckpointReplay(gentity_t *ent)
 		return qtrue;
 	}
 	if (!G_FlyingRespawn_BeginCheckpointReplay(state, level.time, g_enableFlyingRespawn.integer != 0)) return qfalse;
-	ent->client->ps.eFlags |= EF_FLYING_RESPAWN;
-	G_FlyingRespawn_BufferLiveCmd(state, &ent->client->pers.cmd);
-	G_FlyingRespawn_FrameCmd(state, level.time, &ent->client->pers.cmd);
-	G_FlyingRespawn_RestoreMovement(ent, &state->replay.selection.snapshot,
-		level.time - state->replay.selection.snapshot.serverTime);
+	FlyingRespawnInstallReplay(ent);
 	FlyingRespawnCountdown(ent);
 	return qtrue;
 }
@@ -6031,11 +6071,7 @@ qboolean G_FlyingRespawn_StartTestReplay(gentity_t *ent, int durationMs)
 {
 	flyingRespawnState_t *state = &ent->client->pers.flyingRespawn;
 	if (g_flyingRespawnTestMode.integer != 1 || !G_FlyingRespawn_BeginTestReplay(state, level.time, durationMs)) return qfalse;
-	ent->client->ps.eFlags |= EF_FLYING_RESPAWN;
-	G_FlyingRespawn_BufferLiveCmd(state, &ent->client->pers.cmd);
-	G_FlyingRespawn_FrameCmd(state, level.time, &ent->client->pers.cmd);
-	G_FlyingRespawn_RestoreMovement(ent, &state->replay.selection.snapshot,
-		level.time - state->replay.selection.snapshot.serverTime);
+	FlyingRespawnInstallReplay(ent);
 	FlyingRespawnCountdown(ent);
 	return qtrue;
 }
@@ -6107,7 +6143,6 @@ static void FlyingRespawnThink(gentity_t *ent)
 	if (state->replay.active) {
 		flyingRespawnMovement_t actual;
 		qboolean staticReplay = state->replay.staticReplay;
-		int i;
 		if ((state->replay.manualReplay && !ent->client->pers.practice) ||
 			(!state->replay.manualReplay && (!ent->client->pers.stats.startTime || !ent->client->sess.raceMode)) ||
 			ent->health <= 0 || ent->client->noclip ||
@@ -6145,15 +6180,8 @@ static void FlyingRespawnThink(gentity_t *ent)
 					ent->client->overheatRechargeDebReduce = G_FlyingRespawn_ShiftDeadline(ent->client->overheatRechargeDebReduce, late);
 				}
 				ent->client->ps.commandTime = level.time - 1;
-				/* Seed after static deadline/command-time normalization, before live movement. */
-				G_FlyingRespawn_CaptureMovement(ent, &actual);
-				G_FlyingRespawn_RecordHandoff(state, level.time, &actual);
 			}
-			for (i = 0; i < 3; ++i)
-				ent->client->ps.delta_angles[i] = ANGLE2SHORT(ent->client->ps.viewangles[i]) - ent->client->pers.cmd.angles[i];
-			ent->client->pers.cmd.weapon = ent->client->ps.weapon;
-			ent->client->ps.eFlags &= ~EF_FLYING_RESPAWN;
-			trap->SendServerCommand(ent - g_entities, "cp \"^2GO!\"");
+			FlyingRespawnRelease(ent);
 		}
 	}
 	/* Capture the actual invocation, after synchronous/forced timestamp and input choices.

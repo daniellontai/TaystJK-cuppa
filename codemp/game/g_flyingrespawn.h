@@ -143,7 +143,6 @@ void G_FlyingRespawn_BufferLiveCmd(flyingRespawnState_t *state, const usercmd_t 
 qboolean G_FlyingRespawn_FrameCmd(flyingRespawnState_t *state, int serverTime, usercmd_t *cmd);
 /* Preserve static Force timer intervals if the first GO tick is after its deadline. */
 void G_FlyingRespawn_ReleaseStaticForce(const flyingRespawnState_t *state, int serverTime, playerState_t *ps, int *jetPackDebReduce);
-int G_FlyingRespawn_GetJetpackDeadline(const flyingRespawnMovement_t *movement, int timeOffset);
 int G_FlyingRespawn_ShiftDeadline(int deadline, int timeOffset);
 /* Only returns recorded movement steps when they are due; live input stays buffered. */
 qboolean G_FlyingRespawn_OverrideCmd(flyingRespawnState_t *state, int serverTime, usercmd_t *cmd);

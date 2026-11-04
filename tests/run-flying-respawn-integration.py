@@ -11,6 +11,7 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("build_directory", type=Path)
 parser.add_argument("--target", default="jampgamex86_64")
 parser.add_argument("--finish", action="store_true", help="Run only completion, persistence and help cases")
+parser.add_argument("--case", help="Run one named integration case")
 args = parser.parse_args()
 root = Path(__file__).resolve().parent.parent
 build = args.build_directory.resolve()
@@ -33,4 +34,4 @@ subprocess.run([
     "-ldl", "-lpthread", "-lm", "-o", str(executable),
 ], check=True)
 with tempfile.TemporaryDirectory(prefix="flying-respawn-integration-") as working:
-    subprocess.run([str(executable), *(["finish"] if args.finish else [])], cwd=working, check=True)
+    subprocess.run([str(executable), *(["--case", args.case] if args.case else ["finish"] if args.finish else [])], cwd=working, check=True)
