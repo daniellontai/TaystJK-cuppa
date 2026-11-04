@@ -998,6 +998,10 @@ void CG_PredictPlayerState( void ) {
 	const int REAL_CMD_BACKUP = (cl_commandsize.integer >= 4 && cl_commandsize.integer <= 512 ) ? (cl_commandsize.integer) : (CMD_BACKUP); //Loda - FPS UNLOCK client modcode
 
 	cg.hyperspace = qfalse;	// will be set if touching a trigger_teleport
+	if ( cg.mapRestart ) {
+		cg.deliveredPredictionValid = qfalse;
+		cg.replayTransitionPending = qfalse;
+	}
 
 	// if this is the first frame we must guarantee
 	// predictedPlayerState is valid even if there is some
@@ -1012,12 +1016,14 @@ void CG_PredictPlayerState( void ) {
 	}
 
 	if ( cg.snap->ps.eFlags & EF_FLYING_RESPAWN ) {
+		cg.deliveredPredictionValid = qfalse;
 		CG_InterpolatePlayerState( qfalse );
 		return;
 	}
 
 	// demo playback just copies the moves
 	if ( cg.demoPlayback || (cg.snap->ps.pm_flags & PMF_FOLLOW) ) {
+		cg.deliveredPredictionValid = qfalse;
 		CG_InterpolatePlayerState( qfalse );
 		if (CG_Piloting(cg.predictedPlayerState.m_iVehicleNum))
 		{
@@ -1028,6 +1034,7 @@ void CG_PredictPlayerState( void ) {
 
 	// non-predicting local movement will grab the latest angles
 	if ( cg_noPredict.integer || g_synchronousClients.integer || CG_UsingEWeb() ) {
+		cg.deliveredPredictionValid = qfalse;
 		CG_InterpolatePlayerState( qtrue );
 		if (CG_Piloting(cg.predictedPlayerState.m_iVehicleNum))
 		{
@@ -1078,7 +1085,7 @@ void CG_PredictPlayerState( void ) {
 	cg_pmove.noFootsteps = ( cgs.dmflags & DF_NO_FOOTSTEPS ) > 0;
 
 	// save the state before the pmove so we can detect transitions
-	oldPlayerState = cg.predictedPlayerState;
+	oldPlayerState = cg.replayTransitionPending ? cg.deliveredPlayerState : cg.predictedPlayerState;
 	if (CG_Piloting(cg.predictedPlayerState.m_iVehicleNum))
 	{
 		oldVehicleState = cg.predictedVehicleState;
@@ -1504,6 +1511,9 @@ void CG_PredictPlayerState( void ) {
 
 	// fire events and other transition triggered things
 	CG_TransitionPlayerState( &cg.predictedPlayerState, &oldPlayerState );
+	cg.deliveredPlayerState = cg.predictedPlayerState;
+	cg.deliveredPredictionValid = qtrue;
+	cg.replayTransitionPending = qfalse;
 
 	if ( cg_showMiss.integer ) {
 		if (cg.eventSequence > cg.predictedPlayerState.eventSequence) {

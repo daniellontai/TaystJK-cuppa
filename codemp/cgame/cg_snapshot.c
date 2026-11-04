@@ -237,8 +237,28 @@ static void CG_TransitionSnapshot( void ) {
 		// if we are not doing client side movement prediction for any
 		// reason, then the client events and view changes will be issued now
 		if ( cg.demoPlayback || (cg.snap->ps.pm_flags & PMF_FOLLOW)
-			|| cg_noPredict.integer || g_synchronousClients.integer || CG_UsingEWeb() ) {
+			|| (ps->eFlags & EF_FLYING_RESPAWN) || cg_noPredict.integer || g_synchronousClients.integer || CG_UsingEWeb() ) {
+			if ( cg.mapRestart ) {
+				cg.deliveredPredictionValid = qfalse;
+				cg.replayTransitionPending = qfalse;
+			}
+			// Only a state actually transitioned by local prediction is an
+			// eligible entry baseline; interpolation also changes predictedPlayerState.
+			if ( (ps->eFlags & EF_FLYING_RESPAWN) && !(ops->eFlags & EF_FLYING_RESPAWN)
+				&& cg.deliveredPredictionValid && !cg.replayTransitionPending
+				&& ops->clientNum == cg.clientNum && ps->clientNum == cg.clientNum
+				&& cg.deliveredPlayerState.clientNum == cg.clientNum
+				&& !cg.demoPlayback && !(ops->pm_flags & PMF_FOLLOW)
+				&& !(ps->pm_flags & PMF_FOLLOW) && !cg_noPredict.integer
+				&& !g_synchronousClients.integer && !CG_UsingEWeb() ) {
+				ops = &cg.deliveredPlayerState;
+			}
 			CG_TransitionPlayerState( ps, ops );
+			cg.deliveredPredictionValid = qfalse;
+			if ( (ps->eFlags & EF_FLYING_RESPAWN) || cg.replayTransitionPending ) {
+				cg.deliveredPlayerState = *ps;
+				cg.replayTransitionPending = qtrue;
+			}
 		}
 	}
 

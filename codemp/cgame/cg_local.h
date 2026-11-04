@@ -1135,6 +1135,10 @@ typedef struct cg_s {
 	// prediction state
 	qboolean	hyperspace;				// true if prediction has hit a trigger_teleport
 	playerState_t	predictedPlayerState;
+	// Last state that actually produced local transition effects.
+	playerState_t deliveredPlayerState;
+	qboolean deliveredPredictionValid;
+	qboolean replayTransitionPending;
 	playerState_t	predictedVehicleState;
 
 	//centity_t		predictedPlayerEntity;
