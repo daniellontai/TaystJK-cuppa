@@ -7297,12 +7297,17 @@ static void Cmd_Savepos_f(gentity_t *ent)
 	G_SavePosition(ent, qtrue);
 }
 
-static qboolean FlyingRespawnCommandPlayer(gentity_t *ent)
+static qboolean FlyingRespawnCommandRacer(gentity_t *ent)
 {
 	return ent->client && ent->client->pers.connected == CON_CONNECTED &&
 		ent->client->sess.raceMode && ent->client->sess.sessionTeam == TEAM_FREE &&
 		!(ent->r.svFlags & SVF_BOT) && ent->s.eType != ET_NPC &&
-		ent->health > 0 && !ent->client->noclip;
+		ent->health > 0;
+}
+
+static qboolean FlyingRespawnCommandPlayer(gentity_t *ent)
+{
+	return FlyingRespawnCommandRacer(ent) && !ent->client->noclip;
 }
 
 static void Cmd_AddSavePoint_f(gentity_t *ent)
@@ -7310,8 +7315,8 @@ static void Cmd_AddSavePoint_f(gentity_t *ent)
 	clientPersistant_t *pers;
 	int i;
 	char arg[16];
-	if (!FlyingRespawnCommandPlayer(ent)) {
-		trap->SendServerCommand(ent - g_entities, "print \"addSavePoint requires an alive racer outside noclip.\n\"");
+	if (!FlyingRespawnCommandRacer(ent)) {
+		trap->SendServerCommand(ent - g_entities, "print \"addSavePoint requires an alive racer.\n\"");
 		return;
 	}
 	pers = &ent->client->pers;

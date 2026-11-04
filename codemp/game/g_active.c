@@ -5983,6 +5983,8 @@ static void FlyingRespawnRestorePracticeTimer(gentity_t *ent)
 	}
 }
 
+static void SavePointSyncOccupancy(gentity_t *ent);
+
 static void FlyingRespawnRelease(gentity_t *ent)
 {
 	flyingRespawnState_t *state = &ent->client->pers.flyingRespawn;
@@ -5995,6 +5997,7 @@ static void FlyingRespawnRelease(gentity_t *ent)
 	if (ent->client->ps.commandTime < level.time - 1) ent->client->ps.commandTime = level.time - 1;
 	ent->client->ps.eFlags &= ~EF_FLYING_RESPAWN;
 	ent->client->pers.cmd.serverTime = level.time > ent->client->ps.commandTime ? level.time : ent->client->ps.commandTime + 1;
+	SavePointSyncOccupancy(ent);
 	G_FlyingRespawn_CaptureMovement(ent, &movement);
 	G_FlyingRespawn_RecordHandoff(state, level.time, &movement);
 	trap->SendServerCommand(ent - g_entities, "cp \"^2GO!\"");
@@ -6094,19 +6097,27 @@ static void FlyingRespawnRawInput(gentity_t *ent)
 	G_FlyingRespawn_RecordRawCmd(state, level.time, &ent->client->pers.cmd);
 }
 
+static qboolean SavePointContainsPlayer(const gentity_t *ent)
+{
+	const clientPersistant_t *pers = &ent->client->pers;
+	int i;
+	if (!pers->addSavePointArmed) return qfalse;
+	for (i = 0; i < 3; ++i)
+		if (ent->client->ps.origin[i] < pers->addSavePointMins[i] || ent->client->ps.origin[i] > pers->addSavePointMaxs[i]) return qfalse;
+	return qtrue;
+}
+
+static void SavePointSyncOccupancy(gentity_t *ent)
+{
+	ent->client->pers.addSavePointInside = SavePointContainsPlayer(ent);
+}
+
 static void SavePointPostMovement(gentity_t *ent)
 {
 	clientPersistant_t *pers = &ent->client->pers;
 	qboolean inside;
-	int i;
 	if (!pers->addSavePointArmed) return;
-	inside = qtrue;
-	for (i = 0; i < 3; ++i) {
-		if (ent->client->ps.origin[i] < pers->addSavePointMins[i] || ent->client->ps.origin[i] > pers->addSavePointMaxs[i]) {
-			inside = qfalse;
-			break;
-		}
-	}
+	inside = SavePointContainsPlayer(ent);
 	if (inside && !pers->addSavePointInside && G_SavePosition(ent, qfalse)) {
 		if (pers->stats.startTime) {
 			int time = trap->Milliseconds() - pers->stats.startTime;
@@ -6149,6 +6160,7 @@ static void FlyingRespawnThink(gentity_t *ent)
 			ent->client->sess.sessionTeam == TEAM_SPECTATOR) {
 			G_FlyingRespawn_CancelReplay(state, level.time, &ent->client->pers.cmd);
 			ent->client->ps.eFlags &= ~EF_FLYING_RESPAWN;
+			SavePointSyncOccupancy(ent);
 			return;
 		}
 		while (G_FlyingRespawn_OverrideCmd(state, level.time, &ent->client->pers.cmd)) {

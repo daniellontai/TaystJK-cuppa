@@ -19,7 +19,7 @@ extern gclient_t g_clients[MAX_CLIENTS];
 static gameImport_t imports;
 static int failures, routeCalls, commandsSent;
 static struct { int client; char text[2048]; } sent[64];
-static char commandName[MAX_TOKEN_CHARS];
+static char commandName[MAX_TOKEN_CHARS], commandArg[MAX_TOKEN_CHARS];
 #define CHECK(condition) do { if (!(condition)) { \
     fprintf(stderr, "%s:%d: %s\n", __func__, __LINE__, #condition); failures++; \
 } } while (0)
@@ -27,10 +27,11 @@ static char commandName[MAX_TOKEN_CHARS];
 static int testWallTimeMs;
 static void SetTimes(int serverTime, int wallTimeMs) { level.time = serverTime; testWallTimeMs = wallTimeMs; }
 static int Clock(void) { return testWallTimeMs; }
-static int Argc(void) { return commandName[0] ? 1 : 0; }
+static int Argc(void) { return commandName[0] ? (commandArg[0] ? 2 : 1) : 0; }
 static void Argv(int n, char *buffer, int size)
 {
     if (n == 0) Q_strncpyz(buffer, commandName, size);
+    else if (n == 1) Q_strncpyz(buffer, commandArg, size);
     else if (size) buffer[0] = 0;
 }
 static void ServerCommand(int client, const char *text) {
@@ -57,6 +58,16 @@ static qboolean Contact(const vec3_t mins, const vec3_t maxs, const sharedEntity
     (void)mins; (void)maxs; (void)entity; (void)capsule;
     return qfalse;
 }
+static void EmptyTrace(trace_t *trace, const vec3_t start, const vec3_t mins, const vec3_t maxs,
+    const vec3_t end, int pass, int mask, int capsule, int flags, int lod)
+{
+    (void)start; (void)mins; (void)maxs; (void)pass; (void)mask; (void)capsule; (void)flags; (void)lod;
+    memset(trace, 0, sizeof(*trace)); trace->fraction = 1; trace->entityNum = ENTITYNUM_NONE; VectorCopy(end, trace->endpos);
+}
+static int EmptyContents(const vec3_t point, int pass) { (void)point; (void)pass; return 0; }
+static int EmptyEntities(const vec3_t mins, const vec3_t maxs, int *list, int count)
+{ (void)mins; (void)maxs; (void)list; (void)count; return 0; }
+
 static void Route(gentity_t *target, gentity_t *source, gentity_t *player)
 {
     (void)target; (void)source; (void)player;
@@ -81,6 +92,9 @@ static gentity_t *Player(void)
     imports.FS_Open = Open;
     imports.InPVS = InPVS;
     imports.LinkEntity = LinkEntity;
+    imports.Trace = EmptyTrace;
+    imports.PointContents = EmptyContents;
+    imports.EntitiesInBox = EmptyEntities;
     imports.ICARUS_FreeEnt = LinkEntity;
     imports.EntityContact = Contact;
     imports.Cvar_Update = UpdateCvar;
@@ -95,6 +109,8 @@ static gentity_t *Player(void)
     level.clients = g_clients;
     level.maxclients = 1;
     g_forceRegenTime.integer = 500;
+    g_raceMode.integer = 1;
+    g_forceLogin.integer = 0;
     g_fixTimerOOB.integer = 0;
     g_timeouttospec.integer = 0;
     sv_fps.integer = 20;
@@ -126,6 +142,13 @@ static void RunCommand(const char *command)
     Q_strncpyz(commandName, command, sizeof(commandName));
     ClientCommand(0);
     commandName[0] = 0;
+}
+
+static void RunCommandWithArg(const char *command, const char *arg)
+{
+    Q_strncpyz(commandArg, arg, sizeof(commandArg));
+    RunCommand(command);
+    commandArg[0] = 0;
 }
 
 static void StaticForceWait(void)
@@ -638,6 +661,69 @@ static void ManualSkipDeadlines(void)
     G_FlyingRespawn_FreeClient(state);
 }
 
+static void SavePointDefinitionNoclip(void)
+{
+    gentity_t *player = Player();
+    player->client->noclip = qtrue;
+    player->client->ps.origin[0] = player->client->ps.origin[1] = player->client->ps.origin[2] = 1;
+    RunCommand("addSavePoint");
+    CHECK(player->client->pers.addSavePointPending);
+    player->client->ps.origin[0] = player->client->ps.origin[1] = player->client->ps.origin[2] = 10;
+    RunCommand("addSavePoint");
+    CHECK(player->client->pers.addSavePointArmed);
+    CHECK(!player->client->pers.flyingRespawn.manualSave.valid);
+    RunCommand("addSavePoint");
+    CHECK(player->client->pers.addSavePointPending);
+    RunCommandWithArg("addSavePoint", "cancel");
+    CHECK(!player->client->pers.addSavePointPending);
+    RunCommand("savepos");
+    RunCommand("respos");
+    RunCommand("respawn");
+    RunCommandWithArg("replaytest", "100");
+    CHECK(!player->client->pers.flyingRespawn.manualSave.valid);
+    CHECK(!player->client->pers.flyingRespawn.replay.active);
+    G_FlyingRespawn_FreeClient(&player->client->pers.flyingRespawn);
+}
+
+static void LiveStep(int time)
+{
+    usercmd_t live = {0};
+    level.time = live.serverTime = time;
+    ClientThink(0, &live);
+}
+
+static void SavePointReplayPreservesBookmark(void)
+{
+    gentity_t *player = Player();
+    flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
+    player->client->pers.practice = qtrue;
+    player->client->pers.addSavePointArmed = qtrue;
+    VectorSet(player->client->pers.addSavePointMins, -10, -10, -10000);
+    VectorSet(player->client->pers.addSavePointMaxs, 10, 10, 10000);
+    player->client->ps.origin[0] = 100;
+    LiveStep(1050);
+    player->client->ps.origin[0] = 0;
+    LiveStep(1100);
+    CHECK(player->client->pers.addSavePointInside);
+    CHECK(state->manualSave.valid && state->manualSave.snapshot.serverTime == 1100);
+    player->client->ps.origin[0] = 100;
+    LiveStep(1150);
+    CHECK(!player->client->pers.addSavePointInside);
+    level.time = 1200;
+    RunCommand("respos");
+    CHECK(player->client->pers.addSavePointInside);
+    LiveStep(1250);
+    LiveStep(1300);
+    CHECK(player->client->pers.addSavePointInside);
+    CHECK(state->manualSave.snapshot.serverTime == 1100);
+    player->client->ps.origin[0] = 100;
+    LiveStep(1350);
+    player->client->ps.origin[0] = 0;
+    LiveStep(1400);
+    CHECK(state->manualSave.snapshot.serverTime == 1400);
+    G_FlyingRespawn_FreeClient(state);
+}
+
 /* Catches public-format/audience changes and secondary time leaking to spectators. */
 static void FinishPublicPrivate(void)
 {
@@ -878,11 +964,15 @@ int main(int argc, char **argv)
 {
     if (argc == 3 && !strcmp(argv[1], "--case")) {
         if (!strcmp(argv[2], "ManualSkipDeadlines")) ManualSkipDeadlines();
+        else if (!strcmp(argv[2], "SavePointDefinitionNoclip")) SavePointDefinitionNoclip();
+        else if (!strcmp(argv[2], "SavePointReplayPreservesBookmark")) SavePointReplayPreservesBookmark();
         else { fprintf(stderr, "Unknown case: %s\n", argv[2]); return 2; }
         return failures ? 1 : 0;
     }
     if (argc < 2 || strcmp(argv[1], "finish")) {
         ManualSkipDeadlines();
+        SavePointDefinitionNoclip();
+        SavePointReplayPreservesBookmark();
         StaticForceWait();
         FlyingFrameInput();
         ReplayTimerBrushes();
