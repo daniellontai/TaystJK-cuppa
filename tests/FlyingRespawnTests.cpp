@@ -34,6 +34,17 @@ struct FlyingPlayback : FlyingHistory {
     }
 };
 
+BOOST_AUTO_TEST_CASE(flying_respawn_jump_context_roundtrip)
+{
+    playerState_t ps = {};
+    flyingRespawnMovement_t m = {};
+    ps.fd.forcePowerLevel[FP_LEVITATION] = 1;
+    G_FlyingRespawn_ReadMovement(&m, &ps, 0, 0, 0);
+    ps.fd.forcePowerLevel[FP_LEVITATION] = 3;
+    G_FlyingRespawn_WriteMovement(&ps, &m, 900);
+    BOOST_CHECK_EQUAL(ps.fd.forcePowerLevel[FP_LEVITATION], 1);
+}
+
 // A later checkpoint must never pair the failed route's pose with post-GO input.
 BOOST_AUTO_TEST_CASE(flying_respawn_successive_checkpoint_rewinds_only_continuous_history)
 {

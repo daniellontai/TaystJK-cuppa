@@ -366,6 +366,7 @@ static void FR_ShiftMovement(flyingRespawnMovement_t *movement, int offset)
 	int jetPackDebReduce = G_FlyingRespawn_ShiftDeadline(movement->jetPackDebReduce, offset);
 	int jetPackDebRecharge = G_FlyingRespawn_ShiftDeadline(movement->jetPackDebRecharge, offset);
 	int overheatRechargeDebReduce = G_FlyingRespawn_ShiftDeadline(movement->overheatRechargeDebReduce, offset);
+	int savedJumpLevel = movement->savedJumpLevel;
 	qboolean fjDidJump = movement->fjDidJump, jetPackOn = movement->jetPackOn;
 	memset(&ps, 0, sizeof(ps));
 	G_FlyingRespawn_WriteMovement(&ps, movement, offset);
@@ -373,6 +374,7 @@ static void FR_ShiftMovement(flyingRespawnMovement_t *movement, int offset)
 	movement->jetPackDebReduce = jetPackDebReduce;
 	movement->jetPackDebRecharge = jetPackDebRecharge;
 	movement->overheatRechargeDebReduce = overheatRechargeDebReduce;
+	movement->savedJumpLevel = savedJumpLevel;
 	movement->fjDidJump = fjDidJump;
 	movement->jetPackOn = jetPackOn;
 }
@@ -670,6 +672,7 @@ void G_FlyingRespawn_ReadMovement(flyingRespawnMovement_t *m, const playerState_
 	m->checkpoints = checkpoints;
 	m->courseID = courseID;
 	m->forcePower = ps->fd.forcePower;
+	m->forceJumpLevel = ps->fd.forcePowerLevel[FP_LEVITATION];
 	m->forcePowersActive = ps->fd.forcePowersActive;
 	m->forcePowerSelected = ps->fd.forcePowerSelected;
 	m->forceButtonNeedRelease = ps->fd.forceButtonNeedRelease;
@@ -726,6 +729,7 @@ void G_FlyingRespawn_WriteMovement(playerState_t *ps, const flyingRespawnMovemen
 	ps->pm_type = m->pmType;
 	ps->groundEntityNum = m->groundEntityNum;
 	ps->fd.forcePower = m->forcePower;
+	ps->fd.forcePowerLevel[FP_LEVITATION] = m->forceJumpLevel;
 	ps->fd.forcePowersActive = m->forcePowersActive;
 	ps->fd.forcePowerSelected = m->forcePowerSelected;
 	ps->fd.forceButtonNeedRelease = m->forceButtonNeedRelease;

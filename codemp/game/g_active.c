@@ -5927,6 +5927,7 @@ void G_FlyingRespawn_CaptureMovement(gentity_t *ent, flyingRespawnMovement_t *mo
 	movement->jetPackDebReduce = ent->client->jetPackDebReduce;
 	movement->jetPackDebRecharge = ent->client->jetPackDebRecharge;
 	movement->overheatRechargeDebReduce = ent->client->overheatRechargeDebReduce;
+	movement->savedJumpLevel = ent->client->savedJumpLevel;
 	movement->fjDidJump = ent->client->fjDidJump;
 	movement->jetPackOn = ent->client->jetPackOn;
 }
@@ -5938,6 +5939,7 @@ void G_FlyingRespawn_RestoreMovement(gentity_t *ent, const flyingRespawnSnapshot
 	client->jetPackDebReduce = G_FlyingRespawn_ShiftDeadline(snapshot->movement.jetPackDebReduce, timeOffset);
 	client->jetPackDebRecharge = G_FlyingRespawn_ShiftDeadline(snapshot->movement.jetPackDebRecharge, timeOffset);
 	client->overheatRechargeDebReduce = G_FlyingRespawn_ShiftDeadline(snapshot->movement.overheatRechargeDebReduce, timeOffset);
+	client->savedJumpLevel = snapshot->movement.savedJumpLevel;
 	client->fjDidJump = snapshot->movement.fjDidJump;
 	client->jetPackOn = snapshot->movement.jetPackOn;
 	client->sess.movementStyle = snapshot->movement.movementStyle;

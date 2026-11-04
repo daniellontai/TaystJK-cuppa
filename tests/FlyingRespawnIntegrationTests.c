@@ -363,7 +363,7 @@ static int Scalar(sqlite3 *db, const char *sql)
 static void MovementResources(void)
 {
     puts("Running movement resource restore and mismatch validation");
-    for (int field = 0; field < 11; ++field) {
+    for (int field = 0; field < 13; ++field) {
         gentity_t *player = Player();
         flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
         flyingRespawnMovement_t movement;
@@ -383,6 +383,8 @@ static void MovementResources(void)
         player->client->jetPackDebRecharge = 1350;
         player->client->overheatRechargeDebReduce = 1400;
         ps->fd.forceRageRecoveryTime = 1500;
+        ps->fd.forcePowerLevel[FP_LEVITATION] = 1;
+        player->client->savedJumpLevel = 2;
         G_FlyingRespawn_CaptureMovement(player, &movement);
         CHECK(G_FlyingRespawn_OnCheckpointTouch(state, 1200, 20, &config, &movement));
         ps->stats[STAT_DASHTIME] = ps->stats[STAT_WJTIME] = ps->stats[STAT_JUMPTIME] = 0;
@@ -420,6 +422,8 @@ static void MovementResources(void)
         if (field == 8) player->client->overheatRechargeDebReduce++;
         if (field == 9) ps->fd.forceRageRecoveryTime++;
         if (field == 10) player->client->jetPackOn = !player->client->jetPackOn;
+        if (field == 11) ps->fd.forcePowerLevel[FP_LEVITATION]++;
+        if (field == 12) player->client->savedJumpLevel++;
         G_FlyingRespawn_CaptureMovement(player, &movement);
         CHECK(G_FlyingRespawn_Advance(state, 2000, &movement, &player->client->pers.cmd));
         CHECK(state->runInvalid && state->mismatch);
@@ -724,6 +728,23 @@ static void SavePointReplayPreservesBookmark(void)
     G_FlyingRespawn_FreeClient(state);
 }
 
+static void ReplayJumpContext(void)
+{
+    gentity_t *player = Player();
+    flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
+    player->client->pers.practice = qtrue;
+    player->client->ps.fd.forcePowerLevel[FP_LEVITATION] = 1;
+    player->client->savedJumpLevel = 2;
+    RunCommand("savepos");
+    player->client->ps.fd.forcePowerLevel[FP_LEVITATION] = 3;
+    player->client->savedJumpLevel = 0;
+    level.time = 2000;
+    RunCommand("respos");
+    CHECK(player->client->ps.fd.forcePowerLevel[FP_LEVITATION] == 1);
+    CHECK(player->client->savedJumpLevel == 2);
+    G_FlyingRespawn_FreeClient(state);
+}
+
 /* Catches public-format/audience changes and secondary time leaking to spectators. */
 static void FinishPublicPrivate(void)
 {
@@ -966,6 +987,7 @@ int main(int argc, char **argv)
         if (!strcmp(argv[2], "ManualSkipDeadlines")) ManualSkipDeadlines();
         else if (!strcmp(argv[2], "SavePointDefinitionNoclip")) SavePointDefinitionNoclip();
         else if (!strcmp(argv[2], "SavePointReplayPreservesBookmark")) SavePointReplayPreservesBookmark();
+        else if (!strcmp(argv[2], "ReplayJumpContext")) ReplayJumpContext();
         else { fprintf(stderr, "Unknown case: %s\n", argv[2]); return 2; }
         return failures ? 1 : 0;
     }
@@ -973,6 +995,7 @@ int main(int argc, char **argv)
         ManualSkipDeadlines();
         SavePointDefinitionNoclip();
         SavePointReplayPreservesBookmark();
+        ReplayJumpContext();
         StaticForceWait();
         FlyingFrameInput();
         ReplayTimerBrushes();
