@@ -7333,6 +7333,7 @@ static void Cmd_Launch_f(gentity_t *ent)
 qboolean G_SavePosition(gentity_t *ent, qboolean announce)
 {
 	flyingRespawnMovement_t movement;
+	int saveWall;
 	if (!ent->client) return qfalse;
 	if (ent->client->noclip) {
 		if (announce) trap->SendServerCommand(ent - g_entities, "print \"Can't save position during noclip.\n\"");
@@ -7348,10 +7349,12 @@ qboolean G_SavePosition(gentity_t *ent, qboolean announce)
 		G_FlyingRespawn_RecordHandoff(&ent->client->pers.flyingRespawn, level.time, NULL);
 	G_FlyingRespawn_CaptureMovement(ent, &movement);
 	if (!G_FlyingRespawn_CaptureManual(&ent->client->pers.flyingRespawn, level.time, &movement)) return qfalse;
+	saveWall = trap->Milliseconds();
+	ent->client->pers.savePosCommandWallOffset = (int64_t)movement.commandTime - saveWall;
 	ent->client->pers.savePosTimerRunning = ent->client->pers.stats.startTime != 0;
 	if (ent->client->pers.savePosTimerRunning) {
 		ent->client->pers.savePosCoopStarted        = ent->client->pers.stats.coopStarted;
-		ent->client->pers.savePosTimerElapsed        = trap->Milliseconds() - ent->client->pers.stats.startTime;
+		ent->client->pers.savePosTimerElapsed        = saveWall - ent->client->pers.stats.startTime;
 		ent->client->pers.savePosLevelTimeElapsed    = level.time - ent->client->pers.stats.startLevelTime;
 		ent->client->pers.savePosNoRespawnElapsed    = G_FlyingRespawn_GetSecondaryElapsed(&ent->client->pers.flyingRespawn, level.time);
 		ent->client->pers.savePosRespawnCount         = ent->client->pers.flyingRespawn.respawnCount;

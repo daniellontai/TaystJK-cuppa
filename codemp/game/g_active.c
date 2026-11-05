@@ -25,6 +25,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #include "g_local.h"
 #include "bg_saga.h"
 #include "g_unlagged.h"
+#include <limits.h>
 
 extern void Jedi_Cloak( gentity_t *self );
 extern void Jedi_Decloak( gentity_t *self );
@@ -6024,14 +6025,15 @@ void G_FlyingRespawn_RestoreMovement(gentity_t *ent, const flyingRespawnSnapshot
 static void FlyingRespawnCountdown(gentity_t *ent);
 
 /* Rewind saved practice clocks at entry, then restore the saved state at GO. */
-static void FlyingRespawnRestorePracticeTimer(gentity_t *ent, int rewindMs)
+static int FlyingRespawnRestorePracticeTimer(gentity_t *ent, int rewindMs)
 {
+	int wall = trap->Milliseconds();
 	if (!ent->client || !ent->client->pers.practice ||
-		!ent->client->pers.flyingRespawn.replay.manualReplay) return;
+		!ent->client->pers.flyingRespawn.replay.manualReplay) return wall;
 	ent->client->pers.flyingRespawn.respawnCount = ent->client->pers.savePosRespawnCount;
 	if (ent->client->pers.savePosTimerRunning) {
 		ent->client->pers.stats.coopStarted         = ent->client->pers.savePosCoopStarted;
-		ent->client->pers.stats.startTime           = trap->Milliseconds() - ent->client->pers.savePosTimerElapsed + rewindMs;
+		ent->client->pers.stats.startTime           = wall - ent->client->pers.savePosTimerElapsed + rewindMs;
 		ent->client->pers.stats.startLevelTime      = level.time - ent->client->pers.savePosLevelTimeElapsed + rewindMs;
 		ent->client->pers.startLag                  = ent->client->pers.savePosStartLag;
 		ent->client->pers.stats.displacement        = ent->client->pers.savePosDisplacement;
@@ -6051,11 +6053,12 @@ static void FlyingRespawnRestorePracticeTimer(gentity_t *ent, int rewindMs)
 		ent->client->pers.flyingRespawn.secondaryRunning = qfalse;
 		ent->client->pers.flyingRespawn.secondaryBaseMs = 0;
 	}
+	return wall;
 }
 
 static void SavePointSyncOccupancy(gentity_t *ent);
 
-static void FlyingRespawnRelease(gentity_t *ent)
+static void FlyingRespawnRelease(gentity_t *ent, qboolean manual)
 {
 	flyingRespawnState_t *state = &ent->client->pers.flyingRespawn;
 	flyingRespawnMovement_t movement;
@@ -6064,9 +6067,10 @@ static void FlyingRespawnRelease(gentity_t *ent)
 	for (i = 0; i < 3; ++i)
 		ent->client->ps.delta_angles[i] = ANGLE2SHORT(ent->client->ps.viewangles[i]) - ent->client->pers.cmd.angles[i];
 	ent->client->pers.cmd.weapon = ent->client->ps.weapon;
-	if (ent->client->ps.commandTime < level.time - 1) ent->client->ps.commandTime = level.time - 1;
+	if (!manual && ent->client->ps.commandTime < level.time - 1) ent->client->ps.commandTime = level.time - 1;
 	ent->client->ps.eFlags &= ~EF_FLYING_RESPAWN;
-	ent->client->pers.cmd.serverTime = level.time > ent->client->ps.commandTime ? level.time : ent->client->ps.commandTime + 1;
+	if (!manual) ent->client->pers.cmd.serverTime = level.time > ent->client->ps.commandTime ? level.time : ent->client->ps.commandTime + 1;
+	else if (!state->replay.hasLiveCmd) ent->client->pers.cmd.serverTime = ent->client->ps.commandTime;
 	SavePointSyncOccupancy(ent);
 	G_FlyingRespawn_CaptureMovement(ent, &movement);
 	G_FlyingRespawn_RecordHandoff(state, level.time, &movement);
@@ -6077,8 +6081,10 @@ static void FlyingRespawnManualRelease(gentity_t *ent, const char *mode, int pre
 {
 	flyingRespawnState_t *s = &ent->client->pers.flyingRespawn;
 	int buffered = s->replay.hasLiveCmd ? s->replay.liveCmd.serverTime : -1;
-	FlyingRespawnRestorePracticeTimer(ent, 0);
-	FlyingRespawnRelease(ent);
+	int wall = FlyingRespawnRestorePracticeTimer(ent, 0);
+	int64_t commandTime = (int64_t)wall + ent->client->pers.savePosCommandWallOffset;
+	ent->client->ps.commandTime = commandTime > INT_MAX ? INT_MAX : commandTime < INT_MIN ? INT_MIN : (int)commandTime;
+	FlyingRespawnRelease(ent, qtrue);
 	if (g_flyingRespawnDebug.integer) {
 		flyingDebugTrack_t *t = FlyingDebugTrack(ent);
 		int wall = trap->Milliseconds();
@@ -6106,7 +6112,6 @@ qboolean G_FlyingRespawn_StartManualReplay(gentity_t *ent)
 		G_FlyingRespawn_CancelReplay(state, level.time, &ent->client->pers.cmd);
 		G_FlyingRespawn_RestoreMovement(ent, &state->manualSave.snapshot, level.time - state->manualSave.snapshot.serverTime);
 		preCmd = ent->client->ps.commandTime;
-		ent->client->ps.commandTime = level.time - 1;
 		FlyingRespawnManualRelease(ent, "skip", preCmd);
 		return qtrue;
 	}
@@ -6278,7 +6283,7 @@ static void FlyingRespawnThink(gentity_t *ent)
 				}
 				ent->client->ps.commandTime = level.time - 1;
 			}
-			FlyingRespawnRelease(ent);
+			FlyingRespawnRelease(ent, qfalse);
 		}
 	}
 	if (FlyingRespawnPlayer(ent) && ent->client->noclip) {

@@ -846,7 +846,7 @@ static void ManualSkipDeadlines(void)
     CHECK(player->client->ps.weaponTime == 321);
     CHECK(player->client->ps.pm_time == 123);
     CHECK(Clock() - player->client->pers.stats.startTime == 8500);
-    CHECK(player->client->ps.commandTime == 2049);
+    CHECK(player->client->ps.commandTime == 3399); /* saved 1099 + 2300 ms wall elapsed */
     G_FlyingRespawn_FreeClient(state);
 }
 
@@ -904,16 +904,17 @@ static void ManualReleaseHistory(void)
     player->client->pers.practice = qtrue;
     CHECK(G_FlyingRespawn_OnTimerStart(state, 600, 500, 0, 0, 500));
     player->client->ps.origin[0] = 7;
+    player->client->ps.commandTime = 1099;
     G_FlyingRespawn_CaptureMovement(player, &movement);
     G_FlyingRespawn_RecordState(state, 600, &movement);
-    level.time = 1100;
+    SetTimes(1100, 20000);
     RunCommand("savepos");
     player->client->ps.origin[0] = 999;
     G_FlyingRespawn_CaptureMovement(player, &movement);
     G_FlyingRespawn_RecordState(state, 1600, &movement);
-    level.time = 1750;
+    SetTimes(1750, 20650);
     RunCommand("respos");
-    level.time = 2050;
+    SetTimes(2050, 20950);
     RunCommand("respos");
     CHECK(player->client->ps.origin[0] == 7);
     G_FlyingRespawn_CaptureMovement(player, &movement);
@@ -1160,6 +1161,68 @@ static void FlyingRespawnDebugTrace(void)
         G_FlyingRespawn_FreeClient(state);
     }
     g_flyingRespawnDebug.integer = oldDebug;
+}
+
+static void ManualLiveClockQueue(void)
+{
+    for (int variant = 0; variant < 7; ++variant) {
+        const int skip = variant == 1 || variant == 3 || variant == 4 || variant == 6;
+        const int newer = variant >= 5;
+        const int absent = variant == 3 || variant == 4;
+        gentity_t *player = Player();
+        flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
+        flyingRespawnMovement_t initial;
+        usercmd_t live = {0};
+        float savedX;
+        const int saveLevel = 6378139, saveWall = 6377222;
+        const int startLevel = 6389820, startWall = 6388898;
+        const int goLevel = skip ? 6389870 : variant == 2 ? 6389953 : 6389920;
+        const int goWall = skip ? 6388968 : variant == 2 ? 6389031 : 6388998;
+        const int expectedCmd = goWall + 874; /* saved command-to-wall phase */
+        SetTimes(saveLevel - 100, saveWall - 100);
+        player->client->ps.stats[STAT_HEALTH] = 100;
+        player->client->pers.stats.startTime = 6369276;
+        player->client->pers.stats.startLevelTime = 6370186;
+        player->client->ps.commandTime = 6378093;
+        player->client->ps.velocity[0] = 250;
+        CHECK(G_FlyingRespawn_OnTimerStart(state, level.time, 100, 0, 0, 100));
+        G_FlyingRespawn_CaptureMovement(player, &initial);
+        G_FlyingRespawn_RecordState(state, level.time, &initial);
+        SetTimes(saveLevel, saveWall);
+        live.serverTime = 6378096; live.forwardmove = 127;
+        ClientThink(0, &live);
+        if (variant == 4) player->client->pers.stats.startTime = 0;
+        RunCommand("savepos");
+        savedX = player->client->ps.origin[0];
+        CHECK(player->client->pers.savePosTimerElapsed == (variant == 4 ? 0 : 7946));
+        CHECK(state->manualSave.snapshot.movement.commandTime == 6378096);
+        VectorClear(player->client->ps.velocity);
+        RunCommand("practice");
+        CHECK(player->client->pers.practice);
+        SetTimes(startLevel, startWall);
+        RunCommand("respos");
+        CHECK(state->replay.active);
+        SetTimes(goLevel, goWall);
+        live.serverTime = expectedCmd + (newer ? 2 : -1);
+        if (skip) {
+            if (absent) state->replay.hasLiveCmd = qfalse;
+            else ClientThink(0, &live); /* capture input before manual skip */
+            RunCommand("respos");
+        } else ClientThink(0, &live);
+        CHECK(!state->replay.active);
+        CHECK(player->client->ps.commandTime == expectedCmd + (newer && !skip ? 2 : 0));
+        if (absent) CHECK(player->client->pers.cmd.serverTime == expectedCmd);
+        if (variant == 4) CHECK(!player->client->pers.stats.startTime && !player->client->pers.stats.coopStarted);
+        if (newer && !skip) CHECK(fabsf(player->client->ps.origin[0] - savedX - 0.5f) < 0.03f);
+        else CHECK(fabsf(player->client->ps.origin[0] - savedX) < 0.01f);
+        if (newer && skip) CHECK(player->client->pers.cmd.serverTime == expectedCmd + 2);
+        live.serverTime = expectedCmd + (newer ? 5 : 3);
+        ClientThink(0, &live);
+        CHECK(player->client->ps.commandTime == expectedCmd + (newer ? 5 : 3));
+        if (newer) CHECK(fabsf(player->client->ps.origin[0] - savedX - 1.25f) < 0.04f);
+        else CHECK(player->client->ps.origin[0] > savedX + 0.5f);
+        G_FlyingRespawn_FreeClient(state);
+    }
 }
 
 static void ManualTimerEntryAlignment(void)
@@ -2402,7 +2465,7 @@ typedef struct { const char *name; void (*run)(void); int finish; } IntegrationC
 static const IntegrationCase cases[] = {
     CASE(RespawnSchemaHistorical, 0), CASE(RespawnSchemaExisting, 0), CASE(RespawnSchemaError, 0),
     CASE(SynchronousReceiptsCoalesce, 0), CASE(ManualSkipDeadlines, 0), CASE(ReplayRejectedBeginAndConfiguration, 0), CASE(ManualReleaseTimer, 0), CASE(ManualReleaseHistory, 0),
-    CASE(SavePointDefinitionNoclip, 0), CASE(FlyingRespawnDebugTrace, 0), CASE(ManualTimerEntryAlignment, 0), CASE(ManualSetupMomentum, 0), CASE(ManualSetupSameTickBoundary, 0), CASE(NoclipImmediateBookmark, 0), CASE(SetupSameTickExecution, 0), CASE(SetupPreservesOwnersAndWindow, 0), CASE(LaunchRejectedDuringReplay, 0), CASE(SetupTestReplayWaitsForEndpoint, 0), CASE(NoclipCancelsReplayWithoutGo, 0), CASE(NoclipSpaceMomentum, 0), CASE(NoclipCancelThenExitBoundary, 0), CASE(SavepointFeedback, 0), CASE(SavedRankedRunCompletesInPractice, 0), CASE(LaunchSaveClock, 0), CASE(SavePointReplayPreservesBookmark, 0),
+    CASE(SavePointDefinitionNoclip, 0), CASE(FlyingRespawnDebugTrace, 0), CASE(ManualLiveClockQueue, 0), CASE(ManualTimerEntryAlignment, 0), CASE(ManualSetupMomentum, 0), CASE(ManualSetupSameTickBoundary, 0), CASE(NoclipImmediateBookmark, 0), CASE(SetupSameTickExecution, 0), CASE(SetupPreservesOwnersAndWindow, 0), CASE(LaunchRejectedDuringReplay, 0), CASE(SetupTestReplayWaitsForEndpoint, 0), CASE(NoclipCancelsReplayWithoutGo, 0), CASE(NoclipSpaceMomentum, 0), CASE(NoclipCancelThenExitBoundary, 0), CASE(SavepointFeedback, 0), CASE(SavedRankedRunCompletesInPractice, 0), CASE(LaunchSaveClock, 0), CASE(SavePointReplayPreservesBookmark, 0),
     CASE(SavePointOccupancyReplayMatrix, 0), CASE(FirstGoCheckpointBrush, 0),
     CASE(ReplayJumpContext, 0), CASE(ReplayJumpContextModes, 0), CASE(ReplayMapperTransition, 0), CASE(ReplaySettingCommandResets, 0), CASE(StaticForceWait, 0), CASE(FlyingFrameInput, 0),
     CASE(ReplayTimerBrushes, 0), CASE(StaticTribesServerFrames, 0),
