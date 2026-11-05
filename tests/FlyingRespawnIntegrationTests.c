@@ -24,6 +24,8 @@ extern gclient_t g_clients[MAX_CLIENTS];
 static gameImport_t imports;
 static int failures, routeCalls, commandsSent, fixtureBrush;
 static struct { int client; char text[2048]; } sent[64];
+static int debugSentCount;
+static char debugSent[64][2048];
 static char commandName[MAX_TOKEN_CHARS], commandArg[MAX_TOKEN_CHARS];
 #define CHECK(condition) do { if (!(condition)) { \
     fprintf(stderr, "%s:%d: %s\n", __func__, __LINE__, #condition); failures++; \
@@ -48,7 +50,21 @@ static void ServerCommand(int client, const char *text) {
     commandsSent++;
 }
 static void CvarString(const char *name, char *buffer, int size) { (void)name; Q_strncpyz(buffer, ".", size); }
-static void Print(const char *format, ...) { if (strstr(format, "Cleaned up racetimes")) cleanupSuccesses++; va_list args; va_start(args, format); vfprintf(stderr, format, args); va_end(args); }
+static void Print(const char *format, ...) {
+    char line[2048];
+    va_list args, copy;
+    if (strstr(format, "Cleaned up racetimes")) cleanupSuccesses++;
+    va_start(args, format);
+    va_copy(copy, args);
+    vsnprintf(line, sizeof(line), format, copy);
+    va_end(copy);
+    if (!strncmp(line, "FRDBG ", 6)) {
+        if (debugSentCount < 64) Q_strncpyz(debugSent[debugSentCount], line, sizeof(debugSent[debugSentCount]));
+        debugSentCount++;
+    }
+    vfprintf(stderr, format, args);
+    va_end(args);
+}
 static int Open(const char *path, fileHandle_t *file, fsMode_t mode) { (void)path; (void)mode; *file = 0; return -1; }
 static void Userinfo(int client, char *buffer, int size) { (void)client; if (size) buffer[0] = 0; }
 static void Serverinfo(char *buffer, int size) { Q_strncpyz(buffer, "\\mapname\\testmap", size); }
@@ -139,6 +155,7 @@ static gentity_t *Player(void)
     player->client->pers.stats.coopStarted = qtrue;
     player->client->ps.duelTime = 999;
     routeCalls = commandsSent = fixtureBrush = 0;
+    debugSentCount = 0;
     memset(sent, 0, sizeof(sent));
     G_FlyingRespawn_InitClient(&player->client->pers.flyingRespawn);
     return player;
@@ -1018,6 +1035,131 @@ static void MomentumStep(int time, int forward, int buttons)
     live.forwardmove = forward;
     live.buttons = buttons;
     ClientThink(0, &live);
+}
+
+static void FlyingRespawnDebugTrace(void)
+{
+    float baselineX = 0, baselineVelocity = 0;
+    int baselineCommand = 0, baselineTimer = 0, oldDebug = g_flyingRespawnDebug.integer;
+    char baselineCP[2][2048] = {{0}};
+    for (int enabled = 0; enabled < 2; ++enabled) {
+        gentity_t *player = Player(), *checkpoint = &g_entities[MAX_CLIENTS];
+        flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
+        flyingRespawnMovement_t movement;
+        usercmd_t stale = {0};
+        int saves = 0, begins = 0, gos = 0, source = 0, resumed = 0, early = 0, cps = 0;
+        int lastFlushCount, cpOutput = 0;
+        g_flyingRespawnDebug.integer = enabled;
+        ++g_flyingRespawnDebug.modificationCount;
+        player->client->pers.practice = qtrue;
+        player->client->pers.showConsoleCP = qtrue;
+        player->client->ps.stats[STAT_HEALTH] = 100;
+        player->client->ps.commandTime = 950;
+        CHECK(G_FlyingRespawn_OnTimerStart(state, 1000, 100, 0, 0, 100));
+        SetTimes(1000, 19900);
+        player->client->pers.stats.startTime = 11500;
+        G_FlyingRespawn_CaptureMovement(player, &movement);
+        G_FlyingRespawn_RecordState(state, 1000, &movement);
+        SetTimes(1100, 20000);
+        RunCommand("savepos");
+        for (int i = 1; i <= 12; ++i) {
+            SetTimes(1100 + 10 * i, 20000 + 10 * i);
+            MomentumStep(level.time, 127, 0);
+        }
+        checkpoint->s.number = MAX_CLIENTS;
+        CHECK(debugSentCount == 0); /* no diagnostic output before the brush */
+        TimerCheckpoint(checkpoint, player, NULL);
+        lastFlushCount = debugSentCount;
+        SetTimes(2000, 22000);
+        RunCommand("respos");
+        CHECK(state->replay.active);
+        SetTimes(2100, 22100);
+        MomentumStep(2100, 127, 0);
+        CHECK(!state->replay.active);
+        stale.serverTime = player->client->ps.commandTime;
+        ClientThink(0, &stale); /* an attempt rejected before Pmove */
+        for (int i = 1; i <= 12; ++i) {
+            SetTimes(2100 + 10 * i, 22100 + 10 * i);
+            MomentumStep(level.time, 127, 0);
+        }
+        SetTimes(2300, 22300);
+        CHECK(debugSentCount == lastFlushCount);
+        TimerCheckpoint(checkpoint, player, NULL);
+        for (int i = 0; i < commandsSent && i < 64; ++i) {
+            if (strstr(sent[i].text, "Checkpoint:")) {
+                CHECK(cpOutput < 2);
+                if (cpOutput < 2) {
+                    if (!enabled) Q_strncpyz(baselineCP[cpOutput], sent[i].text, sizeof(baselineCP[cpOutput]));
+                    else CHECK(!strcmp(baselineCP[cpOutput], sent[i].text));
+                }
+                ++cpOutput;
+            }
+        }
+        CHECK(cpOutput == 2);
+        for (int i = 0; i < debugSentCount && i < 64; ++i) {
+            const char *line = debugSent[i];
+            if (strstr(line, "FRDBG SAVE ")) saves++;
+            if (strstr(line, "FRDBG BEGIN ")) begins++;
+            if (strstr(line, "FRDBG GO ")) gos++;
+            if (strstr(line, "FRDBG CP ")) {
+                cps++;
+                CHECK(strstr(line, "raw=") && strstr(line, "endLag=") && strstr(line, "printed="));
+            }
+            if (strstr(line, "FRDBG ATTEMPT ")) {
+                if (strstr(line, "phase=save")) source++;
+                if (strstr(line, "phase=go")) resumed++;
+                if (strstr(line, "result=early")) early++;
+                CHECK(strstr(line, "rawCmd=") && strstr(line, "clampedCmd=") && strstr(line, "psCmd="));
+            }
+        }
+        if (!enabled) {
+            CHECK(debugSentCount == 0);
+            baselineX = player->client->ps.origin[0];
+            baselineVelocity = player->client->ps.velocity[0];
+            baselineCommand = player->client->ps.commandTime;
+            baselineTimer = player->client->pers.stats.startTime;
+        } else {
+            CHECK(saves == 1 && begins == 1 && gos == 1 && cps == 2);
+            CHECK(source == 8 && resumed == 8 && early >= 1);
+            CHECK(player->client->ps.origin[0] == baselineX);
+            CHECK(player->client->ps.velocity[0] == baselineVelocity);
+            CHECK(player->client->ps.commandTime == baselineCommand);
+            CHECK(player->client->pers.stats.startTime == baselineTimer);
+            /* Two real saves in one server tick must each arm a fresh budget. */
+            {
+                int first = debugSentCount, sameTickSaves = 0, attempts = 0;
+                usercmd_t input = {0};
+                SetTimes(2400, 22400);
+                RunCommand("savepos");
+                for (int i = 1; i <= 8; ++i) {
+                    input.serverTime = 2400 + i; input.forwardmove = 127;
+                    ClientThink(0, &input);
+                }
+                RunCommand("savepos");
+                input.serverTime = 2409;
+                ClientThink(0, &input);
+                SetTimes(3501, 23501);
+                TimerCheckpoint(checkpoint, player, NULL);
+                for (int i = first; i < debugSentCount && i < 64; ++i) {
+                    if (strstr(debugSent[i], "FRDBG SAVE ")) ++sameTickSaves;
+                    if (strstr(debugSent[i], "FRDBG ATTEMPT ") && strstr(debugSent[i], "phase=save")) ++attempts;
+                }
+                CHECK(sameTickSaves == 2 && attempts == 9);
+            }
+            {
+                int first = debugSentCount;
+                G_FlyingRespawnDebugLog(0, qfalse, "FRDBG client-zero\n");
+                level.clients[1].pers.connectTime = 17;
+                G_FlyingRespawnDebugLog(1, qfalse, "FRDBG client-one\n");
+                G_FlyingRespawnDebugLog(0, qtrue, NULL);
+                CHECK(debugSentCount == first + 1 && strstr(debugSent[first], "client-zero"));
+                G_FlyingRespawnDebugLog(1, qtrue, NULL);
+                CHECK(debugSentCount == first + 2 && strstr(debugSent[first + 1], "client-one"));
+            }
+        }
+        G_FlyingRespawn_FreeClient(state);
+    }
+    g_flyingRespawnDebug.integer = oldDebug;
 }
 
 static void ManualTimerEntryAlignment(void)
@@ -2260,7 +2402,7 @@ typedef struct { const char *name; void (*run)(void); int finish; } IntegrationC
 static const IntegrationCase cases[] = {
     CASE(RespawnSchemaHistorical, 0), CASE(RespawnSchemaExisting, 0), CASE(RespawnSchemaError, 0),
     CASE(SynchronousReceiptsCoalesce, 0), CASE(ManualSkipDeadlines, 0), CASE(ReplayRejectedBeginAndConfiguration, 0), CASE(ManualReleaseTimer, 0), CASE(ManualReleaseHistory, 0),
-    CASE(SavePointDefinitionNoclip, 0), CASE(ManualTimerEntryAlignment, 0), CASE(ManualSetupMomentum, 0), CASE(ManualSetupSameTickBoundary, 0), CASE(NoclipImmediateBookmark, 0), CASE(SetupSameTickExecution, 0), CASE(SetupPreservesOwnersAndWindow, 0), CASE(LaunchRejectedDuringReplay, 0), CASE(SetupTestReplayWaitsForEndpoint, 0), CASE(NoclipCancelsReplayWithoutGo, 0), CASE(NoclipSpaceMomentum, 0), CASE(NoclipCancelThenExitBoundary, 0), CASE(SavepointFeedback, 0), CASE(SavedRankedRunCompletesInPractice, 0), CASE(LaunchSaveClock, 0), CASE(SavePointReplayPreservesBookmark, 0),
+    CASE(SavePointDefinitionNoclip, 0), CASE(FlyingRespawnDebugTrace, 0), CASE(ManualTimerEntryAlignment, 0), CASE(ManualSetupMomentum, 0), CASE(ManualSetupSameTickBoundary, 0), CASE(NoclipImmediateBookmark, 0), CASE(SetupSameTickExecution, 0), CASE(SetupPreservesOwnersAndWindow, 0), CASE(LaunchRejectedDuringReplay, 0), CASE(SetupTestReplayWaitsForEndpoint, 0), CASE(NoclipCancelsReplayWithoutGo, 0), CASE(NoclipSpaceMomentum, 0), CASE(NoclipCancelThenExitBoundary, 0), CASE(SavepointFeedback, 0), CASE(SavedRankedRunCompletesInPractice, 0), CASE(LaunchSaveClock, 0), CASE(SavePointReplayPreservesBookmark, 0),
     CASE(SavePointOccupancyReplayMatrix, 0), CASE(FirstGoCheckpointBrush, 0),
     CASE(ReplayJumpContext, 0), CASE(ReplayJumpContextModes, 0), CASE(ReplayMapperTransition, 0), CASE(ReplaySettingCommandResets, 0), CASE(StaticForceWait, 0), CASE(FlyingFrameInput, 0),
     CASE(ReplayTimerBrushes, 0), CASE(StaticTribesServerFrames, 0),
