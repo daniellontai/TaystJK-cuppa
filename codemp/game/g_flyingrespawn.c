@@ -257,8 +257,9 @@ void G_FlyingRespawn_RecordState(flyingRespawnState_t *state, int serverTime, co
 		slot = FR_Index(state->stateHead, state->stateCount - 1, state->historyCapacity);
 		if (serverTime < state->movementStates[slot].serverTime) return;
 		if (serverTime == state->movementStates[slot].serverTime) {
+			/* Keep a pre-movement discontinuity snapshot and its same-tick commands. */
+			if (serverTime == state->historyContinuousSince && state->historyBoundaryBeforeMovement) return;
 			state->movementStates[slot].movement = *movement;
-			if (serverTime == state->historyContinuousSince) state->historyBoundaryBeforeMovement = qfalse;
 			state->historyGeneration++;
 			return;
 		}
@@ -363,6 +364,11 @@ qboolean G_FlyingRespawn_BeginTestReplay(flyingRespawnState_t *state, int server
 	int i;
 	const flyingRespawnSnapshot_t *end = NULL;
 	if (!state->testMode || state->replay.active || durationMs < 0 || durationMs > FLYING_RESPAWN_MAX_TEST_MS || (int64_t)serverTime - durationMs < INT_MIN) return qfalse;
+	/* A boundary seed intentionally precedes same-tick execution. Wait for
+	 * a later post-movement state before using it as a diagnostic endpoint. */
+	if (state->historyBoundaryBeforeMovement && state->historyCapacity && state->stateCount && state->executionCount &&
+		state->movementStates[FR_Index(state->stateHead, state->stateCount - 1, state->historyCapacity)].serverTime == state->historyContinuousSince &&
+		state->executionCommands[FR_Index(state->executionHead, state->executionCount - 1, state->historyCapacity)].serverTime >= state->historyContinuousSince) return qfalse;
 	if (!FR_SelectHistory(state, serverTime - durationMs, serverTime, &selection)) return qfalse;
 	if ((int64_t)serverTime - selection.snapshot.serverTime > FLYING_RESPAWN_MAX_TEST_MS) return qfalse;
 	if ((int64_t)serverTime + serverTime - selection.snapshot.serverTime > INT_MAX) return qfalse;
@@ -585,7 +591,7 @@ static qboolean FR_MovementMatches(flyingRespawnReplay_t *replay, const flyingRe
 
 void G_FlyingRespawn_RecordHandoff(flyingRespawnState_t *state, int time, const flyingRespawnMovement_t *movement)
 {
-	/* Playback is a discontinuity: old failed-route poses cannot precede new live input. */
+	/* Replay handoff and external setup both break continuity with older poses. */
 	state->stateHead = state->stateCount = 0;
 	state->executionHead = state->executionCount = 0;
 	state->stateDroppedThrough = state->executionDroppedThrough = INT_MIN;

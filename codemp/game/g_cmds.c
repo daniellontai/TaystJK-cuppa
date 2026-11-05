@@ -7179,6 +7179,10 @@ static void Cmd_Launch_f(gentity_t *ent)
 		trap->SendServerCommand( ent-g_entities, "print \"Usage: /launch <speed> or /launch <x y z yaw xyspeed zspeed>\n\"" );
 		return;
 	}
+	if (ent->client->pers.flyingRespawn.replay.active) {
+		trap->SendServerCommand(ent-g_entities, "print \"Cannot launch during replay.\n\"");
+		return;
+	}
 
 	if (trap->Argc() == 2) {
 		int xyspeed;
@@ -7256,6 +7260,20 @@ static void Cmd_Launch_f(gentity_t *ent)
 	ent->client->pers.stats.displacement = 0;
 	ent->client->pers.stats.displacementSamples = 0;//avg fix for standing in starttimer and /launch
 	ent->client->pers.stats.coopStarted = qtrue;
+	{
+		flyingRespawnState_t *state = &ent->client->pers.flyingRespawn;
+		flyingRespawnMovement_t movement;
+		if (state->automaticCheckpoint.pending) G_FlyingRespawn_ClearAutomaticCheckpoint(state);
+		if (!state->historyCapacity)
+			G_FlyingRespawn_Configure(state, g_flyingRespawnRewindMs.integer,
+				g_flyingRespawnReleaseOffsetMs.integer, g_flyingRespawnTestMode.integer);
+		if (ent->client->noclip || state->historyNoclip) {
+			state->historyNoclip = qtrue;
+		} else if (state->historyCapacity) {
+			G_FlyingRespawn_CaptureMovement(ent, &movement);
+			G_FlyingRespawn_RecordHandoff(state, level.time, &movement);
+		}
+	}
 }
 
 qboolean G_SavePosition(gentity_t *ent, qboolean announce)
@@ -7270,6 +7288,10 @@ qboolean G_SavePosition(gentity_t *ent, qboolean announce)
 		if (announce) trap->SendServerCommand(ent - g_entities, "print \"You must be alive to save position.\n\"");
 		return qfalse;
 	}
+	/* No normal movement has selected its mode after noclip yet. Save this
+	 * exact pose without borrowing the old, discontinuous approach. */
+	if (ent->client->pers.flyingRespawn.historyNoclip && !ent->client->pers.flyingRespawn.replay.active)
+		G_FlyingRespawn_RecordHandoff(&ent->client->pers.flyingRespawn, level.time, NULL);
 	G_FlyingRespawn_CaptureMovement(ent, &movement);
 	if (!G_FlyingRespawn_CaptureManual(&ent->client->pers.flyingRespawn, level.time, &movement)) return qfalse;
 	ent->client->pers.savePosTimerRunning = ent->client->pers.stats.startTime != 0;

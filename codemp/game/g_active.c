@@ -3436,6 +3436,8 @@ qboolean CanFireGrapple( gentity_t *ent ) { // Adapt for new hold-to-use jetpack
 }
 
 void Cmd_RaceTele_f(gentity_t *ent, qboolean useForce);
+static qboolean FlyingRespawnPlayer(const gentity_t *ent);
+
 void ClientThink_real( gentity_t *ent ) {
 	gclient_t	*client;
 	pmove_t		pmove;
@@ -3446,8 +3448,12 @@ void ClientThink_real( gentity_t *ent ) {
 	qboolean	controlledByPlayer = qfalse;
 	qboolean	killJetFlags = qtrue;
 	qboolean	isFollowing;
+	usercmd_t	historyInput;
+	flyingRespawnMovement_t historyBoundary;
+	qboolean	captureHistoryBoundary = qfalse;
 
 	client = ent->client;
+	historyInput = client->pers.cmd;
 
 	if (ent->s.eType == ET_NPC)
 	{
@@ -3457,6 +3463,12 @@ void ClientThink_real( gentity_t *ent ) {
 	// don't think if the client is not yet connected (and thus not yet spawned in)
 	if (client->pers.connected != CON_CONNECTED && !isNPC) {
 		return;
+	}
+	if (FlyingRespawnPlayer(ent) && client->pers.flyingRespawn.historyNoclip &&
+		!client->noclip && !client->pers.flyingRespawn.replay.active) {
+		/* Keep state from before this command's non-idempotent processing. */
+		G_FlyingRespawn_CaptureMovement(ent, &historyBoundary);
+		captureHistoryBoundary = qtrue;
 	}
 
 	// This code was moved here from clientThink to fix a problem with g_synchronousClients
@@ -5153,6 +5165,21 @@ void ClientThink_real( gentity_t *ent ) {
 #endif
 	}
 
+	/* Noclip has ended: seed from the actual selected movement mode before
+	 * the first live step, retaining the unmodified execution input. */
+	if (captureHistoryBoundary) {
+		flyingRespawnState_t *state = &client->pers.flyingRespawn;
+		if (!state->historyCapacity)
+			G_FlyingRespawn_Configure(state, g_flyingRespawnRewindMs.integer,
+				g_flyingRespawnReleaseOffsetMs.integer, g_flyingRespawnTestMode.integer);
+		if (state->historyCapacity) {
+			/* Use the mode selected above, without repeating any mode policy. */
+			historyBoundary.pmType = client->ps.pm_type;
+			G_FlyingRespawn_RecordHandoff(state, level.time, &historyBoundary);
+			G_FlyingRespawn_RecordExecutionCmd(state, level.time, &historyInput);
+			state->historyNoclip = qfalse;
+		}
+	}
 	Pmove (&pmove);
 
 	if (ent->client->solidHack)
@@ -6163,6 +6190,7 @@ static void FlyingRespawnThink(gentity_t *ent)
 			ent->client->sess.sessionTeam == TEAM_SPECTATOR) {
 			G_FlyingRespawn_CancelReplay(state, level.time, &ent->client->pers.cmd);
 			ent->client->ps.eFlags &= ~EF_FLYING_RESPAWN;
+			if (ent->client->noclip) state->historyNoclip = qtrue;
 			SavePointSyncOccupancy(ent);
 			return;
 		}
@@ -6199,12 +6227,19 @@ static void FlyingRespawnThink(gentity_t *ent)
 			FlyingRespawnRelease(ent);
 		}
 	}
+	if (FlyingRespawnPlayer(ent) && ent->client->noclip) {
+		state->historyNoclip = qtrue;
+		if (state->automaticCheckpoint.pending) G_FlyingRespawn_ClearAutomaticCheckpoint(state);
+		ClientThink_real(ent);
+		SavePointPostMovement(ent);
+		return;
+	}
 	/* Capture the actual invocation, after synchronous/forced timestamp and input choices.
 	 * Coalesced receipts are never replayed as extra steps. */
-	if (FlyingRespawnPlayer(ent))
+	if (FlyingRespawnPlayer(ent) && !state->historyNoclip)
 		G_FlyingRespawn_RecordExecutionCmd(state, level.time, &ent->client->pers.cmd);
 	ClientThink_real(ent);
-	FlyingRespawnPostMovement(ent);
+	if (!state->historyNoclip) FlyingRespawnPostMovement(ent);
 }
 
 /*

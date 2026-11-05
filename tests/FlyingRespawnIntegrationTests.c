@@ -1011,6 +1011,464 @@ static void LiveStep(int time)
     ClientThink(0, &live);
 }
 
+static void MomentumStep(int time, int forward, int buttons)
+{
+    usercmd_t live = {0};
+    level.time = live.serverTime = time;
+    live.forwardmove = forward;
+    live.buttons = buttons;
+    ClientThink(0, &live);
+}
+
+static void ManualSetupMomentum(void)
+{
+    for (int noclip = 0; noclip < 2; ++noclip) {
+        gentity_t *player = Player();
+        flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
+        int oldAllowRaceTele = g_allowRaceTele.integer;
+        float oldSpeed = g_speed.value;
+        float expectedX, expectedVelocity;
+        int firstLiveTime, replayFirstTime;
+        player->client->pers.practice = qtrue;
+        player->client->ps.stats[STAT_HEALTH] = 100;
+        player->client->ps.commandTime = 950;
+        g_speed.value = 250;
+        g_allowRaceTele.integer = 2;
+        CHECK(G_FlyingRespawn_OnTimerStart(state, 1000, 250, 0, 0, 250));
+        MomentumStep(1000, 0, 0); /* earlier, stationary history exists */
+        if (noclip) {
+            level.time = 1025;
+            RunCommand("noclip");
+            CHECK(player->client->noclip);
+            MomentumStep(1050, 127, BUTTON_ATTACK);
+            MomentumStep(1100, 127, BUTTON_ATTACK);
+            CHECK(player->client->ps.pm_type == PM_NOCLIP);
+            CHECK(player->client->ps.velocity[0] > 500);
+            RunCommand("noclip");
+            CHECK(!player->client->noclip);
+            firstLiveTime = 1150;
+        } else {
+            level.time = 1050;
+            RunCommandWithArg("launch", "1500");
+            CHECK(player->client->ps.velocity[0] == 1500);
+            firstLiveTime = 1100;
+        }
+        MomentumStep(firstLiveTime, 0, 0);
+        expectedX = player->client->ps.origin[0];
+        expectedVelocity = player->client->ps.velocity[0];
+        CHECK(expectedVelocity > 500);
+        MomentumStep(1250, 0, 0);
+        RunCommand("savepos");
+        CHECK(state->manualSave.valid);
+        CHECK(state->manualSave.start.serverTime <= firstLiveTime);
+        if (noclip) {
+            CHECK(state->manualSave.start.serverTime == firstLiveTime);
+            CHECK(state->manualSave.start.movement.pmType != PM_NOCLIP);
+            CHECK(state->manualSave.commandCount == 2);
+            for (int i = 0; i < state->manualSave.commandCount; ++i)
+                CHECK(!(state->manualSave.commands[i].cmd.buttons & BUTTON_ATTACK));
+        }
+        player->client->ps.velocity[0] = -900; /* later live setup must not supply replay momentum */
+        level.time = 2000;
+        RunCommand("respos");
+        CHECK(state->replay.active);
+        replayFirstTime = 2000 + firstLiveTime - state->manualSave.start.serverTime;
+        MomentumStep(replayFirstTime, 0, 0);
+        CHECK(state->replay.active);
+        if (fabsf(player->client->ps.velocity[0] - expectedVelocity) > 0.25f ||
+            fabsf(player->client->ps.origin[0] - expectedX) > 0.25f)
+            fprintf(stderr, "momentum mode=%s: expected x=%.3f vx=%.3f, replay x=%.3f vx=%.3f, start=%d\n",
+                noclip ? "noclip" : "launch", expectedX, expectedVelocity,
+                player->client->ps.origin[0], player->client->ps.velocity[0], state->manualSave.start.serverTime);
+        CHECK(fabsf(player->client->ps.velocity[0] - expectedVelocity) <= 0.25f);
+        CHECK(fabsf(player->client->ps.origin[0] - expectedX) <= 0.25f);
+        g_allowRaceTele.integer = oldAllowRaceTele;
+        g_speed.value = oldSpeed;
+        G_FlyingRespawn_FreeClient(state);
+    }
+}
+
+/* Diagnostic for a possible boundary-based fix: setup and movement can share one tick. */
+static void ManualSetupSameTickBoundary(void)
+{
+    gentity_t *player = Player();
+    flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
+    flyingRespawnMovement_t setup;
+    float afterFirst;
+    player->client->pers.practice = qtrue;
+    player->client->ps.stats[STAT_HEALTH] = 100;
+    player->client->ps.commandTime = 950;
+    CHECK(G_FlyingRespawn_OnTimerStart(state, 1000, 100, 0, 0, 100));
+    MomentumStep(1000, 0, 0);
+    level.time = 1050;
+    RunCommandWithArg("launch", "1500");
+    G_FlyingRespawn_CaptureMovement(player, &setup);
+    G_FlyingRespawn_RecordHandoff(state, level.time, &setup);
+    MomentumStep(1050, 37, 0);
+    afterFirst = player->client->ps.origin[0];
+    MomentumStep(1100, 0, 0);
+    RunCommand("savepos");
+    CHECK(state->manualSave.valid);
+    CHECK(state->manualSave.start.serverTime == 1050);
+    CHECK(fabsf(state->manualSave.start.movement.origin[0] - setup.origin[0]) <= 0.01f);
+    CHECK(state->manualSave.commandCount == 2);
+    if (state->manualSave.commandCount > 0)
+        CHECK(state->manualSave.commands[0].cmd.forwardmove == 37);
+    level.time = 2000;
+    RunCommand("respos");
+    MomentumStep(2000, 0, 0);
+    CHECK(state->replay.commandCursor == 1);
+    CHECK(fabsf(player->client->ps.origin[0] - afterFirst) <= 0.25f);
+    G_FlyingRespawn_FreeClient(state);
+}
+
+static void NoclipImmediateBookmark(void)
+{
+    gentity_t *player = Player();
+    flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
+    int oldAllow = g_allowRaceTele.integer;
+    float oldSpeed = g_speed.value, savedX, savedVelocity;
+    flyingRespawnSnapshot_t saved;
+    player->client->pers.practice = qtrue;
+    player->client->ps.stats[STAT_HEALTH] = 100;
+    player->client->ps.commandTime = 700;
+    g_allowRaceTele.integer = 2;
+    g_speed.value = 250;
+    CHECK(G_FlyingRespawn_OnTimerStart(state, 750, 250, 0, 0, 250));
+    MomentumStep(750, 0, 0);
+    MomentumStep(1000, 0, 0);
+    level.time = 1025;
+    RunCommand("noclip");
+    CHECK(player->client->noclip);
+    MomentumStep(1050, 127, BUTTON_ATTACK);
+    MomentumStep(1100, 127, BUTTON_ATTACK);
+    RunCommand("noclip");
+    CHECK(!player->client->noclip);
+    savedX = player->client->ps.origin[0];
+    savedVelocity = player->client->ps.velocity[0];
+    CHECK(savedVelocity > 500);
+    RunCommand("savepos");
+    saved = state->manualSave.snapshot;
+    CHECK(state->manualSave.valid);
+    CHECK(state->manualSave.start.serverTime == 1100);
+    CHECK(state->manualSave.commandCount == 0);
+    player->client->ps.velocity[0] = -900;
+    level.time = 2000;
+    RunCommand("respos");
+    CHECK(!state->replay.active);
+    CHECK(fabsf(player->client->ps.origin[0] - savedX) <= 0.01f);
+    CHECK(fabsf(player->client->ps.velocity[0] - savedVelocity) <= 0.01f);
+    MomentumStep(2050, 0, 0);
+    CHECK(player->client->ps.pm_type == PM_NORMAL);
+    CHECK(player->client->ps.velocity[0] > 500);
+    CHECK(!memcmp(&state->manualSave.snapshot, &saved, sizeof(saved)));
+    g_allowRaceTele.integer = oldAllow;
+    g_speed.value = oldSpeed;
+    G_FlyingRespawn_FreeClient(state);
+}
+
+static void SetupSameTickExecution(void)
+{
+    for (int noclip = 0; noclip < 2; ++noclip) {
+        for (int sync = 0; sync < 2; ++sync) {
+            gentity_t *player = Player();
+            flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
+            usercmd_t first = {0}, latest = {0}, replay = {0};
+            int oldSync = g_synchronousClients.integer, oldAllow = g_allowRaceTele.integer;
+            float oldSpeed = g_speed.value;
+            player->client->pers.practice = qtrue;
+            player->client->ps.stats[STAT_HEALTH] = 100;
+            player->client->ps.commandTime = 950;
+            g_speed.value = 250;
+            g_allowRaceTele.integer = 2;
+            g_synchronousClients.integer = 0;
+            CHECK(G_FlyingRespawn_OnTimerStart(state, 1000, 100, 0, 0, 100));
+            MomentumStep(1000, 0, 0);
+            g_synchronousClients.integer = sync;
+            if (noclip) {
+                level.time = 1025;
+                RunCommand("noclip");
+                MomentumStep(1050, 127, BUTTON_ATTACK);
+                if (sync) G_RunClient(player);
+                CHECK(player->client->noclip && player->client->ps.velocity[0] > 500);
+                level.time = 1100;
+                RunCommand("noclip");
+                CHECK(!player->client->noclip);
+            } else {
+                level.time = 1100;
+                RunCommandWithArg("launch", "1500");
+            }
+            first.serverTime = 1090; first.forwardmove = 19;
+            latest.serverTime = 1100; latest.forwardmove = 25;
+            if (!noclip || sync) ClientThink(0, &first);
+            ClientThink(0, &latest);
+            if (sync) G_RunClient(player);
+            RunCommand("savepos");
+            CHECK(state->manualSave.start.serverTime == 1100);
+            CHECK(state->manualSave.start.movement.pmType != PM_NOCLIP);
+            CHECK(state->manualSave.commandCount == ((!noclip && !sync) ? 2 : 1));
+            level.time = 2000;
+            RunCommand("respos");
+            CHECK(state->replay.active);
+            CHECK(G_FlyingRespawn_OverrideCmd(state, 2000, &replay));
+            CHECK(replay.forwardmove == ((!noclip && !sync) ? 19 : 25));
+            if (!noclip && !sync) {
+                CHECK(G_FlyingRespawn_OverrideCmd(state, 2000, &replay));
+                CHECK(replay.forwardmove == 25);
+            }
+            CHECK(!G_FlyingRespawn_OverrideCmd(state, 2000, &replay));
+            g_synchronousClients.integer = oldSync;
+            g_allowRaceTele.integer = oldAllow;
+            g_speed.value = oldSpeed;
+            G_FlyingRespawn_FreeClient(state);
+        }
+    }
+}
+
+static void SetupPreservesOwnersAndWindow(void)
+{
+    for (int noclip = 0; noclip < 2; ++noclip) {
+        for (int pending = 0; pending < 2; ++pending) {
+            gentity_t *player = Player();
+            flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
+            flyingRespawnMovement_t movement;
+            flyingRespawnSnapshot_t saved;
+            flyingRespawnCheckpointConfig_t config = {0};
+            int oldAllow = g_allowRaceTele.integer;
+            float oldSpeed = g_speed.value;
+            player->client->pers.practice = qtrue;
+            player->client->ps.stats[STAT_HEALTH] = 100;
+            player->client->ps.commandTime = 950;
+            g_allowRaceTele.integer = 2;
+            g_speed.value = 250;
+            CHECK(G_FlyingRespawn_OnTimerStart(state, 1000, 200, 200, 0, 200));
+            MomentumStep(1000, 0, 0);
+            RunCommand("savepos");
+            saved = state->manualSave.snapshot;
+            G_FlyingRespawn_CaptureMovement(player, &movement);
+            config.hasRewind = qtrue;
+            config.rewindMs = 0;
+            CHECK(G_FlyingRespawn_OnCheckpointTouch(state, 1000, 20, &config, &movement));
+            if (!pending) CHECK(G_FlyingRespawn_CaptureAutomaticHandoff(state, 1200, &movement));
+            CHECK(state->automaticCheckpoint.pending == pending);
+            level.time = 1250;
+            if (noclip) {
+                RunCommand("noclip");
+                CHECK(player->client->noclip);
+                MomentumStep(1300, 127, BUTTON_ATTACK);
+                RunCommand("noclip");
+                CHECK(!player->client->noclip);
+                MomentumStep(1350, 0, 0);
+            } else {
+                RunCommandWithArg("launch", "1500");
+                MomentumStep(1300, 0, 0);
+            }
+            CHECK(!state->automaticCheckpoint.pending);
+            CHECK(state->automaticCheckpoint.valid == !pending);
+            CHECK(!memcmp(&state->manualSave.snapshot, &saved, sizeof(saved)));
+            MomentumStep(1400, 0, 0);
+            MomentumStep(1500, 0, 0);
+            MomentumStep(1600, 0, 0);
+            RunCommand("savepos");
+            CHECK(state->manualSave.start.serverTime == 1400);
+            g_allowRaceTele.integer = oldAllow;
+            g_speed.value = oldSpeed;
+            G_FlyingRespawn_FreeClient(state);
+        }
+    }
+}
+
+static void LaunchRejectedDuringReplay(void)
+{
+    gentity_t *player = Player();
+    flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
+    flyingRespawnMovement_t movement;
+    usercmd_t input;
+    int timer, flags;
+    unsigned int generation;
+    player->client->pers.practice = qtrue;
+    CHECK(G_FlyingRespawn_OnTimerStart(state, 1000, 100, 0, 0, 100));
+    G_FlyingRespawn_CaptureMovement(player, &movement);
+    G_FlyingRespawn_RecordState(state, 1000, &movement);
+    level.time = 1050;
+    generation = state->historyGeneration;
+    RunCommand("launch"); /* invalid usage must leave rolling history alone */
+    CHECK(state->historyGeneration == generation);
+    level.time = 1100;
+    RunCommand("savepos");
+    level.time = 2000;
+    RunCommand("respos");
+    CHECK(state->replay.active);
+    G_FlyingRespawn_CaptureMovement(player, &movement);
+    input = player->client->pers.cmd;
+    timer = player->client->pers.stats.startTime;
+    flags = player->client->ps.eFlags;
+    generation = state->historyGeneration;
+    RunCommandWithArg("launch", "1500");
+    CHECK(state->replay.active && state->historyGeneration == generation);
+    CHECK(!memcmp(&input, &player->client->pers.cmd, sizeof(input)));
+    CHECK(player->client->pers.stats.startTime == timer);
+    CHECK(player->client->ps.eFlags == flags);
+    CHECK(player->client->ps.velocity[0] == movement.velocity[0]);
+    G_FlyingRespawn_FreeClient(state);
+
+    /* First action after connect can be launch, before any movement configured history. */
+    {
+        int oldRewind = g_flyingRespawnRewindMs.integer;
+        player = Player();
+        state = &player->client->pers.flyingRespawn;
+        player->client->pers.practice = qtrue;
+        player->client->ps.stats[STAT_HEALTH] = 100;
+        player->client->ps.commandTime = 950;
+        g_flyingRespawnRewindMs.integer = 100;
+        CHECK(!state->historyCapacity);
+        RunCommandWithArg("launch", "1500");
+        CHECK(state->historyCapacity > 0);
+        CHECK(state->historyContinuousSince == 1000);
+        MomentumStep(1050, 0, 0);
+        RunCommand("savepos");
+        CHECK(state->manualSave.start.serverTime == 1000);
+        CHECK(state->manualSave.start.movement.velocity[0] == 1500);
+        CHECK(state->manualSave.commandCount == 1);
+        g_flyingRespawnRewindMs.integer = oldRewind;
+        G_FlyingRespawn_FreeClient(state);
+    }
+}
+
+static void SetupTestReplayWaitsForEndpoint(void)
+{
+    gentity_t *player = Player();
+    flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
+    int oldTestMode = g_flyingRespawnTestMode.integer;
+    player->client->pers.practice = qtrue;
+    player->client->ps.stats[STAT_HEALTH] = 100;
+    player->client->ps.commandTime = 950;
+    g_flyingRespawnTestMode.integer = 1;
+    CHECK(G_FlyingRespawn_OnTimerStart(state, 1000, 100, 0, 1, 100));
+    MomentumStep(1000, 0, 0);
+    level.time = 1050;
+    RunCommandWithArg("launch", "1500");
+    MomentumStep(1050, 0, 0);
+    CHECK(!G_FlyingRespawn_StartTestReplay(player, 0));
+    CHECK(!state->replay.active && !state->testReplayUsed && !state->runInvalid);
+    MomentumStep(1100, 0, 0);
+    CHECK(G_FlyingRespawn_StartTestReplay(player, 50));
+    MomentumStep(1150, 0, 0);
+    CHECK(!state->replay.active);
+    CHECK(!state->mismatch);
+    g_flyingRespawnTestMode.integer = oldTestMode;
+    G_FlyingRespawn_FreeClient(state);
+}
+
+static void NoclipCancelsReplayWithoutGo(void)
+{
+    gentity_t *player = Player();
+    flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
+    flyingRespawnMovement_t movement;
+    int oldAllow = g_allowRaceTele.integer;
+    player->client->pers.practice = qtrue;
+    g_allowRaceTele.integer = 2;
+    CHECK(G_FlyingRespawn_OnTimerStart(state, 1000, 100, 0, 0, 100));
+    G_FlyingRespawn_CaptureMovement(player, &movement);
+    G_FlyingRespawn_RecordState(state, 1000, &movement);
+    SetTimes(1100, 20000);
+    player->client->pers.stats.startTime = 11500;
+    RunCommand("savepos");
+    SetTimes(2000, 22000);
+    RunCommand("respos");
+    CHECK(state->replay.active);
+    CHECK(Clock() - player->client->pers.stats.startTime == 8500);
+    commandsSent = 0;
+    RunCommand("noclip");
+    CHECK(player->client->noclip);
+    SetTimes(2050, 22050);
+    MomentumStep(2050, 0, 0);
+    CHECK(!state->replay.active && !(player->client->ps.eFlags & EF_FLYING_RESPAWN));
+    CHECK(Clock() - player->client->pers.stats.startTime == 8550);
+    for (int i = 0; i < commandsSent && i < 64; ++i)
+        CHECK(!strstr(sent[i].text, "GO!"));
+    g_allowRaceTele.integer = oldAllow;
+    G_FlyingRespawn_FreeClient(state);
+}
+
+static void NoclipSpaceMomentum(void)
+{
+    gentity_t *player = Player();
+    flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
+    int oldAllow = g_allowRaceTele.integer;
+    float oldSpeed = g_speed.value, expectedX, expectedVelocity;
+    player->client->pers.practice = qtrue;
+    player->client->ps.stats[STAT_HEALTH] = 100;
+    player->client->ps.commandTime = 950;
+    g_allowRaceTele.integer = 2;
+    g_speed.value = 250;
+    CHECK(G_FlyingRespawn_OnTimerStart(state, 1000, 250, 0, 0, 250));
+    MomentumStep(1000, 0, 0);
+    level.time = 1025;
+    RunCommand("noclip");
+    MomentumStep(1050, 127, BUTTON_ATTACK);
+    MomentumStep(1100, 127, BUTTON_ATTACK);
+    CHECK(player->client->ps.velocity[0] > 500);
+    RunCommand("noclip");
+    player->client->inSpaceIndex = 1;
+    MomentumStep(1150, 0, 0);
+    expectedX = player->client->ps.origin[0];
+    expectedVelocity = player->client->ps.velocity[0];
+    MomentumStep(1250, 0, 0);
+    RunCommand("savepos");
+    CHECK(state->manualSave.valid && state->manualSave.start.serverTime == 1150);
+    level.time = 2000;
+    RunCommand("respos");
+    MomentumStep(2000, 0, 0);
+    if (fabsf(player->client->ps.velocity[0] - expectedVelocity) > 0.25f)
+        fprintf(stderr, "space boundary expected x=%.3f vx=%.3f, replay x=%.3f vx=%.3f\n",
+            expectedX, expectedVelocity, player->client->ps.origin[0], player->client->ps.velocity[0]);
+    CHECK(state->replay.active);
+    CHECK(fabsf(player->client->ps.origin[0] - expectedX) <= 0.25f);
+    CHECK(fabsf(player->client->ps.velocity[0] - expectedVelocity) <= 0.25f);
+    g_allowRaceTele.integer = oldAllow;
+    g_speed.value = oldSpeed;
+    G_FlyingRespawn_FreeClient(state);
+}
+
+static void NoclipCancelThenExitBoundary(void)
+{
+    gentity_t *player = Player();
+    flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
+    int oldAllow = g_allowRaceTele.integer;
+    player->client->pers.practice = qtrue;
+    player->client->ps.stats[STAT_HEALTH] = 100;
+    player->client->ps.commandTime = 50;
+    g_allowRaceTele.integer = 2;
+    CHECK(G_FlyingRespawn_OnTimerStart(state, 100, 1000, 0, 0, 1000));
+    MomentumStep(100, 0, 0);
+    level.time = 1100;
+    RunCommand("savepos");
+    CHECK(state->manualSave.valid && state->manualSave.start.serverTime == 100);
+    player->client->ps.origin[0] = 999;
+    MomentumStep(1200, 0, 0);
+    MomentumStep(1500, 0, 0);
+    level.time = 2000;
+    RunCommand("respos");
+    CHECK(state->replay.active && player->client->ps.origin[0] != 999);
+    level.time = 2050;
+    RunCommand("noclip");
+    MomentumStep(2050, 0, 0); /* cancels before noclip movement */
+    CHECK(!state->replay.active && player->client->noclip);
+    RunCommand("noclip"); /* leave noclip before another movement */
+    CHECK(!player->client->noclip);
+    MomentumStep(2100, 0, 0);
+    MomentumStep(2200, 0, 0);
+    RunCommand("savepos");
+    CHECK(state->manualSave.start.serverTime >= 2100);
+    CHECK(state->manualSave.start.movement.origin[0] != 999);
+    level.time = 3000;
+    RunCommand("respos");
+    CHECK(player->client->ps.origin[0] != 999);
+    g_allowRaceTele.integer = oldAllow;
+    G_FlyingRespawn_FreeClient(state);
+}
+
 static void SavepointFeedback(void)
 {
     for (int timed = 0; timed < 2; ++timed) {
@@ -1761,7 +2219,7 @@ typedef struct { const char *name; void (*run)(void); int finish; } IntegrationC
 static const IntegrationCase cases[] = {
     CASE(RespawnSchemaHistorical, 0), CASE(RespawnSchemaExisting, 0), CASE(RespawnSchemaError, 0),
     CASE(SynchronousReceiptsCoalesce, 0), CASE(ManualSkipDeadlines, 0), CASE(ReplayRejectedBeginAndConfiguration, 0), CASE(ManualReleaseTimer, 0), CASE(ManualReleaseHistory, 0),
-    CASE(SavePointDefinitionNoclip, 0), CASE(SavepointFeedback, 0), CASE(SavedRankedRunCompletesInPractice, 0), CASE(LaunchSaveClock, 0), CASE(SavePointReplayPreservesBookmark, 0),
+    CASE(SavePointDefinitionNoclip, 0), CASE(ManualSetupMomentum, 0), CASE(ManualSetupSameTickBoundary, 0), CASE(NoclipImmediateBookmark, 0), CASE(SetupSameTickExecution, 0), CASE(SetupPreservesOwnersAndWindow, 0), CASE(LaunchRejectedDuringReplay, 0), CASE(SetupTestReplayWaitsForEndpoint, 0), CASE(NoclipCancelsReplayWithoutGo, 0), CASE(NoclipSpaceMomentum, 0), CASE(NoclipCancelThenExitBoundary, 0), CASE(SavepointFeedback, 0), CASE(SavedRankedRunCompletesInPractice, 0), CASE(LaunchSaveClock, 0), CASE(SavePointReplayPreservesBookmark, 0),
     CASE(SavePointOccupancyReplayMatrix, 0), CASE(FirstGoCheckpointBrush, 0),
     CASE(ReplayJumpContext, 0), CASE(ReplayJumpContextModes, 0), CASE(ReplayMapperTransition, 0), CASE(ReplaySettingCommandResets, 0), CASE(StaticForceWait, 0), CASE(FlyingFrameInput, 0),
     CASE(ReplayTimerBrushes, 0), CASE(StaticTribesServerFrames, 0),

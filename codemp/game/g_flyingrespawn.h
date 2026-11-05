@@ -96,8 +96,9 @@ typedef struct {
 	int stateDroppedThrough;
 	int executionHead, executionCount, executionDroppedThrough;
 	unsigned int historyGeneration;
-	int historyContinuousSince; /* Rewind may shorten at the most recent replay handoff. */
+	int historyContinuousSince; /* Rewind may shorten at a replay handoff or external setup. */
 	qboolean historyBoundaryBeforeMovement;
+	qboolean historyNoclip; /* Noclip movement occurred; await the first normal-mode boundary. */
 	int rewindMs, releaseOffsetMs, retentionMs;
 	qboolean testMode;
 	qboolean secondaryRunning;
@@ -127,7 +128,7 @@ qboolean G_FlyingRespawn_IsExpectedCheckpointTouch(const flyingRespawnState_t *s
 qboolean G_FlyingRespawn_ApplyExpectedCheckpointProgress(flyingRespawnState_t *state, flyingRespawnMovement_t *movement);
 void G_FlyingRespawn_RecordExecutionCmd(flyingRespawnState_t *state, int serverTime, const usercmd_t *cmd);
 void G_FlyingRespawn_RecordState(flyingRespawnState_t *state, int serverTime, const flyingRespawnMovement_t *movement);
-/* Start a continuous stream immediately before the first live movement at GO. */
+/* Start a continuous stream before live movement after replay or external setup. */
 void G_FlyingRespawn_RecordHandoff(flyingRespawnState_t *state, int serverTime, const flyingRespawnMovement_t *movement);
 qboolean G_FlyingRespawn_BeginTestReplay(flyingRespawnState_t *state, int serverTime, int durationMs);
 qboolean G_FlyingRespawn_BeginCheckpointReplay(flyingRespawnState_t *state, int serverTime, qboolean enabled);
