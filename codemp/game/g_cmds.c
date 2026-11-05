@@ -27,60 +27,6 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 
 #include "ui/menudef.h"			// for the voice chats
 
-/* Diagnostic output is deferred until after checkpoint timing is measured. */
-int G_FlyingRespawnDebugLog(int client, qboolean flush, const char *format, ...)
-{
-	static char lines[256][1024];
-	static int owners[256];
-	static int count, dropped, modification = -1, map = -1;
-	static int connects[MAX_CLIENTS], generations[MAX_CLIENTS];
-	int i;
-	va_list args;
-	if (!g_flyingRespawnDebug.integer || client < 0 || client >= MAX_CLIENTS) return 0;
-	if (modification != g_flyingRespawnDebug.modificationCount || map != level.startTime) {
-		count = dropped = 0;
-		modification = g_flyingRespawnDebug.modificationCount; map = level.startTime;
-		memset(connects, 0, sizeof(connects)); memset(generations, 0, sizeof(generations));
-	}
-	if (connects[client] != level.clients[client].pers.connectTime) {
-		int out = 0;
-		for (i = 0; i < count; ++i) if (owners[i] != client) {
-			if (out != i) { memcpy(lines[out], lines[i], sizeof(lines[out])); owners[out] = owners[i]; }
-			++out;
-		}
-		count = out; connects[client] = level.clients[client].pers.connectTime; ++generations[client];
-	}
-	if (format && !strncmp(format, "FRDBG SAVE ", 11)) ++generations[client];
-	if (format) {
-		if (count == 256) ++dropped;
-		else {
-			char suffix[48];
-			int length;
-			va_start(args, format);
-			Q_vsnprintf(lines[count], sizeof(lines[0]), format, args);
-			va_end(args);
-			length = strlen(lines[count]);
-			if (length && lines[count][length - 1] == '\n') lines[count][length - 1] = '\0';
-			Com_sprintf(suffix, sizeof(suffix), " gen=%d\n", generations[client]);
-			Q_strcat(lines[count], sizeof(lines[0]), suffix);
-			owners[count++] = client;
-		}
-	}
-	if (flush) {
-		int out = 0;
-		for (i = 0; i < count; ++i) {
-			if (owners[i] == client) trap->Print("%s", lines[i]);
-			else {
-				if (out != i) { memcpy(lines[out], lines[i], sizeof(lines[out])); owners[out] = owners[i]; }
-				++out;
-			}
-		}
-		if (dropped) trap->Print("FRDBG overflow dropped=%d\n", dropped);
-		count = out; dropped = 0;
-	}
-	return generations[client];
-}
-
 //rww - for getting bot commands...
 int AcceptBotCommand(char *cmd, gentity_t *pl);
 //end rww
@@ -7372,11 +7318,6 @@ qboolean G_SavePosition(gentity_t *ent, qboolean announce)
 
 	ent->client->pers.savePosUsed = qtrue;
 	if (announce) trap->SendServerCommand(ent - g_entities, "print \"Position saved.\n\"");
-	if (g_flyingRespawnDebug.integer) {
-		flyingRespawnState_t *s = &ent->client->pers.flyingRespawn;
-		int wall = trap->Milliseconds();
-		G_FlyingRespawnDebugLog((int)(ent-g_entities), qfalse, "FRDBG SAVE client=%d save=%d wallObs=%d level=%d frame=%d start=%d startLevel=%d savedElapsed=%d hud=%d startLag=%d sourceStart=%d savedCmd=%d rawCmd=%d practice=%d ping=%d fps=%d fixed=%d msec=%d pos=%.3f,%.3f,%.3f vel=%.3f,%.3f,%.3f\n", (int)(ent-g_entities), s->manualSave.snapshot.serverTime, wall, level.time, level.frameStartTime, ent->client->pers.stats.startTime, ent->client->pers.stats.startLevelTime, ent->client->pers.savePosTimerElapsed, ent->client->ps.duelTime, ent->client->pers.startLag, s->manualSave.start.serverTime, movement.commandTime, ent->client->pers.cmd.serverTime, ent->client->pers.practice, ent->client->ps.ping, sv_fps.integer, pmove_fixed.integer, pmove_msec.integer, movement.origin[0], movement.origin[1], movement.origin[2], movement.velocity[0], movement.velocity[1], movement.velocity[2]);
-	}
 	return qtrue;
 }
 

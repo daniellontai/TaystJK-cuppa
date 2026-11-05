@@ -2017,7 +2017,6 @@ void TimerCheckpoint(gentity_t *trigger, gentity_t *player, trace_t *trace) {//J
 	if (player->client->pers.stats.startTime && (level.time - player->client->pers.stats.lastCheckpointTime > 1000)) { //make this more accurate with interp? or dosnt really matter ...
 		int i;
 		int time = GetTimeMS() - player->client->pers.stats.startTime;
-		const int rawTime = time;
 		const int endLag = GetTimeMS() - level.frameStartTime + level.time - player->client->pers.cmd.serverTime;
 		const int diffLag = player->client->pers.startLag - endLag;
 		int average;
@@ -2088,10 +2087,6 @@ void TimerCheckpoint(gentity_t *trigger, gentity_t *player, trace_t *trace) {//J
 		}
 
 		player->client->pers.stats.lastCheckpointTime = level.time; //For built in floodprotect
-		if (g_flyingRespawnDebug.integer) {
-			G_FlyingRespawnDebugLog((int)(player-g_entities), qfalse, "FRDBG CP client=%d save=%d run=%d wallRaw=%d wallLag=%d level=%d frame=%d start=%d startLevel=%d savedElapsed=%d hud=%d raw=%d startLag=%d endLag=%d printed=%d psCmd=%d rawCmd=%d bufferedCmd=%d practice=%d pos=%.3f,%.3f,%.3f vel=%.3f,%.3f,%.3f\n", (int)(player-g_entities), flyingRespawn->manualSave.snapshot.serverTime, flyingRespawn->replay.startServerTime, rawTime + player->client->pers.stats.startTime, endLag + level.frameStartTime - level.time + player->client->pers.cmd.serverTime, level.time, level.frameStartTime, player->client->pers.stats.startTime, player->client->pers.stats.startLevelTime, player->client->pers.savePosTimerElapsed, player->client->ps.duelTime, rawTime, player->client->pers.startLag, endLag, time, player->client->ps.commandTime, player->client->pers.cmd.serverTime, flyingRespawn->replay.hasLiveCmd ? flyingRespawn->replay.liveCmd.serverTime : -1, player->client->pers.practice, player->client->ps.origin[0], player->client->ps.origin[1], player->client->ps.origin[2], player->client->ps.velocity[0], player->client->ps.velocity[1], player->client->ps.velocity[2]);
-			G_FlyingRespawnDebugLog((int)(player-g_entities), qtrue, NULL);
-		}
 	}
 }
 

@@ -3438,24 +3438,6 @@ qboolean CanFireGrapple( gentity_t *ent ) { // Adapt for new hold-to-use jetpack
 
 void Cmd_RaceTele_f(gentity_t *ent, qboolean useForce);
 static qboolean FlyingRespawnPlayer(const gentity_t *ent);
-typedef struct { int save, connect, map, generation, lastLevel, sourceBudget, goBudget, run; qboolean valid, first; } flyingDebugTrack_t;
-static flyingDebugTrack_t flyingDebugTrack[MAX_CLIENTS];
-static flyingDebugTrack_t *FlyingDebugTrack(gentity_t *ent)
-{
-    flyingDebugTrack_t *t;
-    flyingRespawnState_t *s;
-    int generation;
-    if (!g_flyingRespawnDebug.integer || !FlyingRespawnPlayer(ent)) return NULL;
-    t = &flyingDebugTrack[ent-g_entities]; s = &ent->client->pers.flyingRespawn;
-    generation = G_FlyingRespawnDebugLog((int)(ent-g_entities), qfalse, NULL);
-    if (!s->manualSave.valid) { t->valid = qfalse; return NULL; }
-    if (!t->valid || t->generation != generation || t->save != s->manualSave.snapshot.serverTime || t->connect != ent->client->pers.connectTime || t->map != level.startTime || level.time < t->lastLevel) {
-        memset(t, 0, sizeof(*t)); t->valid = qtrue; t->save = s->manualSave.snapshot.serverTime;
-        t->connect = ent->client->pers.connectTime; t->map = level.startTime; t->generation = generation; t->sourceBudget = 8;
-    }
-    t->lastLevel = level.time;
-    return t;
-}
 
 void ClientThink_real( gentity_t *ent ) {
 	gclient_t	*client;
@@ -3470,10 +3452,6 @@ void ClientThink_real( gentity_t *ent ) {
 	usercmd_t	historyInput;
 	flyingRespawnMovement_t historyBoundary;
 	qboolean	captureHistoryBoundary = qfalse;
-    flyingDebugTrack_t *debugTrack = NULL;
-    const char *debugPhase = NULL;
-    int debugRaw = 0, debugClamp = 0, debugPs = 0, debugMsec = 0, debugQuantized = 0;
-    qboolean debugAttempt = qfalse;
 
 	client = ent->client;
 	historyInput = client->pers.cmd;
@@ -3694,13 +3672,6 @@ void ClientThink_real( gentity_t *ent ) {
 
 	// mark the time, so the connection sprite can be removed
 	ucmd = &ent->client->pers.cmd;
-    if (g_flyingRespawnDebug.integer && !client->pers.flyingRespawn.replay.active) {
-        debugTrack = FlyingDebugTrack(ent);
-        if (debugTrack && debugTrack->goBudget > 0) { debugPhase = "go"; --debugTrack->goBudget; debugAttempt = qtrue; }
-        else if (debugTrack && debugTrack->first) { debugPhase = "go"; }
-        else if (debugTrack && debugTrack->sourceBudget > 0) { debugPhase = "save"; --debugTrack->sourceBudget; debugAttempt = qtrue; }
-        if (debugPhase) { debugRaw = ucmd->serverTime; debugPs = client->ps.commandTime; }
-    }
 
 	if ( client && !isFollowing && (client->ps.eFlags2&EF2_HELD_BY_MONSTER) )
 	{
@@ -3791,11 +3762,9 @@ void ClientThink_real( gentity_t *ent ) {
 	client->lastUpdateFrame = level.framenum; //Unlagged
 
 	msec = ucmd->serverTime - client->ps.commandTime;
-    if (debugPhase) { debugClamp = ucmd->serverTime; debugMsec = msec; }
 	// following others may result in bad times, but we still want
 	// to check for follow toggles
 	if ( msec < 1 && client->sess.spectatorState != SPECTATOR_FOLLOW ) {
-        if (debugAttempt) G_FlyingRespawnDebugLog((int)(ent-g_entities), qfalse, "FRDBG ATTEMPT client=%d save=%d run=%d phase=%s result=early wallObs=%d level=%d frame=%d rawCmd=%d clampedCmd=%d psCmd=%d msec=%d practice=%d\n", (int)(ent-g_entities), debugTrack->save, debugTrack->run, debugPhase, trap->Milliseconds(), level.time, level.frameStartTime, debugRaw, debugClamp, debugPs, debugMsec, client->pers.practice);
 		return;
 	}
 
@@ -5212,15 +5181,7 @@ void ClientThink_real( gentity_t *ent ) {
 			state->historyNoclip = qfalse;
 		}
 	}
-    if (debugPhase) debugQuantized = pmove.cmd.serverTime;
-    Pmove (&pmove);
-    if (debugPhase) {
-        if (debugAttempt) G_FlyingRespawnDebugLog((int)(ent-g_entities), qfalse, "FRDBG ATTEMPT client=%d save=%d run=%d phase=%s result=pmove wallObs=%d level=%d frame=%d rawCmd=%d clampedCmd=%d psCmd=%d msec=%d quantized=%d delta=%d afterCmd=%d practice=%d pos=%.3f,%.3f,%.3f vel=%.3f,%.3f,%.3f\n", (int)(ent-g_entities), debugTrack->save, debugTrack->run, debugPhase, trap->Milliseconds(), level.time, level.frameStartTime, debugRaw, debugClamp, debugPs, debugMsec, debugQuantized, debugQuantized-debugClamp, client->ps.commandTime, client->pers.practice, client->ps.origin[0], client->ps.origin[1], client->ps.origin[2], client->ps.velocity[0], client->ps.velocity[1], client->ps.velocity[2]);
-        if (debugTrack->first && !strcmp(debugPhase, "go")) {
-            debugTrack->first = qfalse;
-            G_FlyingRespawnDebugLog((int)(ent-g_entities), qfalse, "FRDBG FIRST_PMOVE client=%d save=%d run=%d level=%d rawCmd=%d clampedCmd=%d quantized=%d psCmd=%d afterCmd=%d\n", (int)(ent-g_entities), debugTrack->save, debugTrack->run, level.time, debugRaw, debugClamp, debugQuantized, debugPs, client->ps.commandTime);
-        }
-    }
+	Pmove (&pmove);
 
 	if (ent->client->solidHack)
 	{
@@ -6077,20 +6038,12 @@ static void FlyingRespawnRelease(gentity_t *ent, qboolean manual)
 	trap->SendServerCommand(ent - g_entities, "cp \"^2GO!\"");
 }
 
-static void FlyingRespawnManualRelease(gentity_t *ent, const char *mode, int preCmd)
+static void FlyingRespawnManualRelease(gentity_t *ent)
 {
-	flyingRespawnState_t *s = &ent->client->pers.flyingRespawn;
-	int buffered = s->replay.hasLiveCmd ? s->replay.liveCmd.serverTime : -1;
 	int wall = FlyingRespawnRestorePracticeTimer(ent, 0);
 	int64_t commandTime = (int64_t)wall + ent->client->pers.savePosCommandWallOffset;
 	ent->client->ps.commandTime = commandTime > INT_MAX ? INT_MAX : commandTime < INT_MIN ? INT_MIN : (int)commandTime;
 	FlyingRespawnRelease(ent, qtrue);
-	if (g_flyingRespawnDebug.integer) {
-		flyingDebugTrack_t *t = FlyingDebugTrack(ent);
-		int wall = trap->Milliseconds();
-		if (t) { t->sourceBudget = 0; t->goBudget = 8; t->first = qtrue; t->run = s->replay.startServerTime; }
-		G_FlyingRespawnDebugLog((int)(ent-g_entities), qfalse, "FRDBG GO client=%d save=%d run=%d mode=%s wallObs=%d level=%d frame=%d preCmd=%d psCmd=%d bufferedCmd=%d rawCmd=%d start=%d startLevel=%d savedElapsed=%d hud=%d startLag=%d practice=%d pos=%.3f,%.3f,%.3f vel=%.3f,%.3f,%.3f\n", (int)(ent-g_entities), s->manualSave.snapshot.serverTime, s->replay.startServerTime, mode, wall, level.time, level.frameStartTime, preCmd, ent->client->ps.commandTime, buffered, ent->client->pers.cmd.serverTime, ent->client->pers.stats.startTime, ent->client->pers.stats.startLevelTime, ent->client->pers.savePosTimerElapsed, ent->client->ps.duelTime, ent->client->pers.startLag, ent->client->pers.practice, ent->client->ps.origin[0], ent->client->ps.origin[1], ent->client->ps.origin[2], ent->client->ps.velocity[0], ent->client->ps.velocity[1], ent->client->ps.velocity[2]);
-	}
 }
 
 static void FlyingRespawnInstallReplay(gentity_t *ent)
@@ -6107,26 +6060,19 @@ qboolean G_FlyingRespawn_StartManualReplay(gentity_t *ent)
 {
 	flyingRespawnState_t *state = &ent->client->pers.flyingRespawn;
 	if (state->replay.active) {
-		int preCmd;
 		if (!state->replay.manualReplay) return qfalse;
 		G_FlyingRespawn_CancelReplay(state, level.time, &ent->client->pers.cmd);
 		G_FlyingRespawn_RestoreMovement(ent, &state->manualSave.snapshot, level.time - state->manualSave.snapshot.serverTime);
-		preCmd = ent->client->ps.commandTime;
-		FlyingRespawnManualRelease(ent, "skip", preCmd);
+		FlyingRespawnManualRelease(ent);
 		return qtrue;
 	}
 	if (!G_FlyingRespawn_BeginManualReplay(state, level.time, ent->client->pers.practice)) return qfalse;
-	if (g_flyingRespawnDebug.integer) {
-		flyingDebugTrack_t *t = FlyingDebugTrack(ent);
-		if (t) { t->goBudget = 0; t->first = qfalse; }
-	}
 	FlyingRespawnInstallReplay(ent);
 	G_FlyingRespawn_ClearAutomaticCheckpoint(state);
 	FlyingRespawnRestorePracticeTimer(ent, state->manualSave.snapshot.serverTime - state->manualSave.start.serverTime);
-	if (g_flyingRespawnDebug.integer) G_FlyingRespawnDebugLog((int)(ent-g_entities), qfalse, "FRDBG BEGIN client=%d save=%d run=%d wallObs=%d level=%d frame=%d sourceStart=%d release=%d savedCmd=%d psCmd=%d bufferedCmd=%d start=%d startLevel=%d savedElapsed=%d hud=%d startLag=%d practice=%d\n", (int)(ent-g_entities), state->manualSave.snapshot.serverTime, state->replay.startServerTime, trap->Milliseconds(), level.time, level.frameStartTime, state->manualSave.start.serverTime, state->replay.releaseServerTime, state->manualSave.snapshot.movement.commandTime, ent->client->ps.commandTime, state->replay.hasLiveCmd ? state->replay.liveCmd.serverTime : -1, ent->client->pers.stats.startTime, ent->client->pers.stats.startLevelTime, ent->client->pers.savePosTimerElapsed, ent->client->ps.duelTime, ent->client->pers.startLag, ent->client->pers.practice);
 	FlyingRespawnCountdown(ent);
 	if (G_FlyingRespawn_FinishManualReplay(state, level.time, ent->client->pers.practice)) {
-		FlyingRespawnManualRelease(ent, "zero", ent->client->ps.commandTime);
+		FlyingRespawnManualRelease(ent);
 	}
 	return qtrue;
 }
@@ -6261,7 +6207,7 @@ static void FlyingRespawnThink(gentity_t *ent)
 				FlyingRespawnCountdown(ent);
 				return;
 			}
-			FlyingRespawnManualRelease(ent, "natural", ent->client->ps.commandTime);
+			FlyingRespawnManualRelease(ent);
 		} else {
 			G_FlyingRespawn_CaptureMovement(ent, &actual);
 			if (!G_FlyingRespawn_Advance(state, level.time, &actual, &ent->client->pers.cmd)) {
