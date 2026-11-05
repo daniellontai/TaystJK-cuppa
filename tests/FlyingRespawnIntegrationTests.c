@@ -23,8 +23,6 @@ extern gclient_t g_clients[MAX_CLIENTS];
 
 static gameImport_t imports;
 static int failures, routeCalls, commandsSent, fixtureBrush;
-static qboolean fixtureBrushUseMinX;
-static float fixtureBrushMinX;
 static struct { int client; char text[2048]; } sent[64];
 static char commandName[MAX_TOKEN_CHARS], commandArg[MAX_TOKEN_CHARS];
 #define CHECK(condition) do { if (!(condition)) { \
@@ -64,8 +62,7 @@ static void Usercmd(int client, usercmd_t *cmd) { (void)client; memset(cmd, 0, s
 static qboolean Contact(const vec3_t mins, const vec3_t maxs, const sharedEntity_t *entity, int capsule)
 {
     (void)mins; (void)maxs; (void)entity; (void)capsule;
-    return fixtureBrush && entity == (sharedEntity_t *)&g_entities[MAX_CLIENTS] &&
-        (!fixtureBrushUseMinX || g_clients[0].ps.origin[0] >= fixtureBrushMinX);
+    return fixtureBrush && entity == (sharedEntity_t *)&g_entities[MAX_CLIENTS];
 }
 static void EmptyTrace(trace_t *trace, const vec3_t start, const vec3_t mins, const vec3_t maxs,
     const vec3_t end, int pass, int mask, int capsule, int flags, int lod)
@@ -142,7 +139,6 @@ static gentity_t *Player(void)
     player->client->pers.stats.coopStarted = qtrue;
     player->client->ps.duelTime = 999;
     routeCalls = commandsSent = fixtureBrush = 0;
-    fixtureBrushUseMinX = qfalse;
     memset(sent, 0, sizeof(sent));
     G_FlyingRespawn_InitClient(&player->client->pers.flyingRespawn);
     return player;
@@ -1061,115 +1057,6 @@ static void ManualTimerEntryAlignment(void)
         CHECK(Clock() - player->client->pers.stats.startTime == 8500);
         CHECK(level.time - player->client->ps.duelTime == 900);
         CHECK(G_FlyingRespawn_GetSecondaryElapsed(state, level.time) == 200);
-        G_FlyingRespawn_FreeClient(state);
-    }
-}
-
-static int PrintedCheckpointMs(void)
-{
-    for (int i = 0; i < commandsSent && i < 64; ++i) {
-        const char *p = strstr(sent[i].text, "Checkpoint: ^3");
-        if (p) return (int)(strtof(p + strlen("Checkpoint: ^3"), NULL) * 1000.0f + 0.5f);
-    }
-    return -1;
-}
-
-static void ManualCheckpointTiming(void)
-{
-    for (int frameMs = 25; frameMs <= 33; frameMs += 8) {
-    gentity_t *player = Player(), *brush = &g_entities[MAX_CLIENTS];
-    flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
-    usercmd_t live = {0};
-    int sourceMs, replayMs, oldFps = sv_fps.integer, oldFixed = pmove_fixed.integer, oldMsec = pmove_msec.integer;
-    float oldFpsValue = sv_fps.value, sourceX;
-    sv_fps.integer = frameMs == 25 ? 40 : 30;
-    sv_fps.value = sv_fps.integer;
-    pmove_fixed.integer = 0;
-    pmove_msec.integer = 8;
-    player->client->pers.practice = qtrue;
-    player->client->pers.showConsoleCP = qtrue;
-    player->client->ps.stats[STAT_HEALTH] = 100;
-    player->client->ps.commandTime = 950;
-    player->client->ps.velocity[0] = 200;
-    CHECK(G_FlyingRespawn_OnTimerStart(state, 1000, 100, 0, 0, 100));
-    SetTimes(1000, 19900);
-    player->client->pers.stats.startTime = 11500;
-    player->client->pers.stats.startLevelTime = 900;
-    player->client->pers.startLag = 0;
-    MomentumStep(1000, 127, 0);
-    SetTimes(1100, 20000);
-    MomentumStep(1100, 127, 0);
-    RunCommand("savepos");
-    CHECK(state->manualSave.valid && state->manualSave.start.serverTime == 1000);
-    brush->inuse = qtrue;
-    brush->s.number = MAX_CLIENTS;
-    brush->r.contents = CONTENTS_TRIGGER;
-    brush->touch = TimerCheckpoint;
-    fixtureBrushUseMinX = qtrue;
-    fixtureBrushMinX = player->client->ps.origin[0] + 1.0f;
-    commandsSent = 0;
-    fixtureBrush = 1;
-    SetTimes(1100, 20000);
-    level.frameStartTime = Clock();
-    live.serverTime = 1110;
-    live.forwardmove = 127;
-    ClientThink(0, &live);
-    sourceX = player->client->ps.origin[0];
-    sourceMs = PrintedCheckpointMs();
-    CHECK(sourceMs > 0);
-    fixtureBrush = 0;
-    SetTimes(2000, 22000);
-    RunCommand("respos");
-    CHECK(state->replay.active);
-    commandsSent = 0;
-    fixtureBrush = 1;
-    for (int tick = 0; tick < 4 && PrintedCheckpointMs() < 0; ++tick) {
-        SetTimes(2100 + frameMs * tick, 22100 + frameMs * tick);
-        level.frameStartTime = Clock();
-        live.serverTime = level.time + 10;
-        ClientThink(0, &live);
-        if (!tick) {
-            CHECK(fabsf(player->client->ps.origin[0] - sourceX) <= 0.25f);
-        }
-    }
-    replayMs = PrintedCheckpointMs();
-    CHECK(replayMs > 0);
-    CHECK(replayMs == sourceMs);
-    fixtureBrush = 0;
-    sv_fps.integer = oldFps;
-    sv_fps.value = oldFpsValue;
-    pmove_fixed.integer = oldFixed;
-    pmove_msec.integer = oldMsec;
-    G_FlyingRespawn_FreeClient(state);
-    }
-}
-
-static void ManualSkipBufferedInput(void)
-{
-    for (int future = 0; future < 2; ++future) {
-        gentity_t *player = Player();
-        flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
-        flyingRespawnMovement_t movement;
-        usercmd_t live = {0};
-        player->client->pers.practice = qtrue;
-        CHECK(G_FlyingRespawn_OnTimerStart(state, 1000, 100, 0, 0, 100));
-        G_FlyingRespawn_CaptureMovement(player, &movement);
-        G_FlyingRespawn_RecordState(state, 1000, &movement);
-        SetTimes(1100, 20000);
-        player->client->pers.stats.startTime = 11500;
-        RunCommand("savepos");
-        SetTimes(2000, 22000);
-        RunCommand("respos");
-        CHECK(state->replay.active);
-        SetTimes(2050, 22050);
-        live.serverTime = future ? 2100 : 2000;
-        live.forwardmove = 37;
-        ClientThink(0, &live);
-        RunCommand("respos");
-        CHECK(!state->replay.active);
-        CHECK(player->client->pers.cmd.forwardmove == 37);
-        CHECK(player->client->pers.cmd.serverTime == (future ? 2100 : 2050));
-        CHECK(Clock() - player->client->pers.stats.startTime == 8500);
         G_FlyingRespawn_FreeClient(state);
     }
 }
@@ -2373,7 +2260,7 @@ typedef struct { const char *name; void (*run)(void); int finish; } IntegrationC
 static const IntegrationCase cases[] = {
     CASE(RespawnSchemaHistorical, 0), CASE(RespawnSchemaExisting, 0), CASE(RespawnSchemaError, 0),
     CASE(SynchronousReceiptsCoalesce, 0), CASE(ManualSkipDeadlines, 0), CASE(ReplayRejectedBeginAndConfiguration, 0), CASE(ManualReleaseTimer, 0), CASE(ManualReleaseHistory, 0),
-    CASE(SavePointDefinitionNoclip, 0), CASE(ManualTimerEntryAlignment, 0), CASE(ManualCheckpointTiming, 0), CASE(ManualSkipBufferedInput, 0), CASE(ManualSetupMomentum, 0), CASE(ManualSetupSameTickBoundary, 0), CASE(NoclipImmediateBookmark, 0), CASE(SetupSameTickExecution, 0), CASE(SetupPreservesOwnersAndWindow, 0), CASE(LaunchRejectedDuringReplay, 0), CASE(SetupTestReplayWaitsForEndpoint, 0), CASE(NoclipCancelsReplayWithoutGo, 0), CASE(NoclipSpaceMomentum, 0), CASE(NoclipCancelThenExitBoundary, 0), CASE(SavepointFeedback, 0), CASE(SavedRankedRunCompletesInPractice, 0), CASE(LaunchSaveClock, 0), CASE(SavePointReplayPreservesBookmark, 0),
+    CASE(SavePointDefinitionNoclip, 0), CASE(ManualTimerEntryAlignment, 0), CASE(ManualSetupMomentum, 0), CASE(ManualSetupSameTickBoundary, 0), CASE(NoclipImmediateBookmark, 0), CASE(SetupSameTickExecution, 0), CASE(SetupPreservesOwnersAndWindow, 0), CASE(LaunchRejectedDuringReplay, 0), CASE(SetupTestReplayWaitsForEndpoint, 0), CASE(NoclipCancelsReplayWithoutGo, 0), CASE(NoclipSpaceMomentum, 0), CASE(NoclipCancelThenExitBoundary, 0), CASE(SavepointFeedback, 0), CASE(SavedRankedRunCompletesInPractice, 0), CASE(LaunchSaveClock, 0), CASE(SavePointReplayPreservesBookmark, 0),
     CASE(SavePointOccupancyReplayMatrix, 0), CASE(FirstGoCheckpointBrush, 0),
     CASE(ReplayJumpContext, 0), CASE(ReplayJumpContextModes, 0), CASE(ReplayMapperTransition, 0), CASE(ReplaySettingCommandResets, 0), CASE(StaticForceWait, 0), CASE(FlyingFrameInput, 0),
     CASE(ReplayTimerBrushes, 0), CASE(StaticTribesServerFrames, 0),

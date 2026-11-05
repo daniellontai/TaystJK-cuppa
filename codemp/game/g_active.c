@@ -6020,16 +6020,14 @@ static void FlyingRespawnRelease(gentity_t *ent)
 {
 	flyingRespawnState_t *state = &ent->client->pers.flyingRespawn;
 	flyingRespawnMovement_t movement;
-	int i, releaseTime;
+	int i;
 	if (state->replay.hasLiveCmd) ent->client->pers.cmd = state->replay.liveCmd;
 	for (i = 0; i < 3; ++i)
 		ent->client->ps.delta_angles[i] = ANGLE2SHORT(ent->client->ps.viewangles[i]) - ent->client->pers.cmd.angles[i];
 	ent->client->pers.cmd.weapon = ent->client->ps.weapon;
 	if (ent->client->ps.commandTime < level.time - 1) ent->client->ps.commandTime = level.time - 1;
 	ent->client->ps.eFlags &= ~EF_FLYING_RESPAWN;
-	releaseTime = level.time > ent->client->ps.commandTime ? level.time : ent->client->ps.commandTime + 1;
-	if (!state->replay.hasLiveCmd || ent->client->pers.cmd.serverTime < releaseTime)
-		ent->client->pers.cmd.serverTime = releaseTime;
+	ent->client->pers.cmd.serverTime = level.time > ent->client->ps.commandTime ? level.time : ent->client->ps.commandTime + 1;
 	SavePointSyncOccupancy(ent);
 	G_FlyingRespawn_CaptureMovement(ent, &movement);
 	G_FlyingRespawn_RecordHandoff(state, level.time, &movement);
