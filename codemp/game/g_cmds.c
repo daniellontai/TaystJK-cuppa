@@ -7249,6 +7249,7 @@ static void Cmd_Launch_f(gentity_t *ent)
 	if (frameTime > 16)
 		frameTime = 16;
 	ent->client->pers.stats.startTime = trap->Milliseconds() + frameTime; //Set their timer as now..
+	ent->client->pers.stats.startLevelTime = level.time;
 	ent->client->ps.duelTime = level.time;
 	ent->client->pers.startLag = trap->Milliseconds() - level.frameStartTime + level.time - ent->client->pers.cmd.serverTime; //use level.previousTime?
 
@@ -7273,6 +7274,7 @@ qboolean G_SavePosition(gentity_t *ent, qboolean announce)
 	if (!G_FlyingRespawn_CaptureManual(&ent->client->pers.flyingRespawn, level.time, &movement)) return qfalse;
 	ent->client->pers.savePosTimerRunning = ent->client->pers.stats.startTime != 0;
 	if (ent->client->pers.savePosTimerRunning) {
+		ent->client->pers.savePosCoopStarted        = ent->client->pers.stats.coopStarted;
 		ent->client->pers.savePosTimerElapsed        = trap->Milliseconds() - ent->client->pers.stats.startTime;
 		ent->client->pers.savePosLevelTimeElapsed    = level.time - ent->client->pers.stats.startLevelTime;
 		ent->client->pers.savePosNoRespawnElapsed    = G_FlyingRespawn_GetSecondaryElapsed(&ent->client->pers.flyingRespawn, level.time);
@@ -7283,6 +7285,7 @@ qboolean G_SavePosition(gentity_t *ent, qboolean announce)
 		ent->client->pers.savePosTopSpeed            = ent->client->pers.stats.topSpeed;
 		ent->client->pers.savePosCheckpoints         = ent->client->pers.stats.checkpoints;
 	} else {
+		ent->client->pers.savePosCoopStarted = qfalse;
 		ent->client->pers.savePosTimerElapsed = 0;
 		ent->client->pers.savePosNoRespawnElapsed = 0;
 		ent->client->pers.savePosRespawnCount = 0;

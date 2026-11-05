@@ -934,7 +934,11 @@ static void ManualReleaseTimer(void)
         player->client->pers.startLag = 0;
         state->respawnCount = 7;
         RunCommand("respos");
-        if (mode != 2 && mode != 4 && mode != 5) CHECK(player->client->pers.stats.startTime == 1000);
+        /* Practice playback now restores the saved clocks at entry as well as GO. */
+        if (mode != 2 && mode != 4 && mode != 5) {
+            CHECK(Clock() - player->client->pers.stats.startTime == 8500);
+            CHECK(player->client->pers.stats.topSpeed == 123);
+        }
         if (mode == 1) {
             SetTimes(2050, 22300);
             RunCommand("respos");
@@ -946,8 +950,8 @@ static void ManualReleaseTimer(void)
             SetTimes(2050, 22300);
             { usercmd_t cmd = {0}; cmd.serverTime = level.time; ClientThink(0, &cmd); }
             CHECK(!state->replay.active);
-            CHECK(player->client->pers.stats.startTime == 1000);
-            CHECK(player->client->pers.stats.topSpeed == 444);
+            CHECK(Clock() - player->client->pers.stats.startTime == 8800);
+            CHECK(player->client->pers.stats.topSpeed == 123);
             G_FlyingRespawn_FreeClient(state);
             continue;
         }
@@ -956,6 +960,7 @@ static void ManualReleaseTimer(void)
             CHECK(player->client->pers.stats.startTime == 0);
             CHECK(player->client->pers.stats.startLevelTime == 0);
             CHECK(player->client->ps.duelTime == 0);
+            CHECK(!player->client->pers.stats.coopStarted);
             G_FlyingRespawn_FreeClient(state);
             continue;
         }
@@ -1004,6 +1009,162 @@ static void LiveStep(int time)
     usercmd_t live = {0};
     level.time = live.serverTime = time;
     ClientThink(0, &live);
+}
+
+static void SavepointFeedback(void)
+{
+    for (int timed = 0; timed < 2; ++timed) {
+        for (int choice = 0; choice < 4; ++choice) {
+            gentity_t *player = Player();
+            int confirmation = 0, stats = 0;
+            SetTimes(1000, 20000);
+            player->client->pers.stats.startTime = timed ? 11500 : 0;
+            player->client->pers.showCenterCP = choice == 1;
+            player->client->pers.showConsoleCP = choice == 2;
+            player->client->pers.showChatCP = choice == 3;
+            player->client->pers.addSavePointArmed = qtrue;
+            VectorSet(player->client->pers.addSavePointMins, -10, -10, -10000);
+            VectorSet(player->client->pers.addSavePointMaxs, 10, 10, 10000);
+            LiveStep(1050);
+            CHECK(player->client->pers.flyingRespawn.manualSave.valid);
+            for (int i = 0; i < commandsSent && i < 64; ++i) {
+                if (strstr(sent[i].text, "Savepoint saved.")) confirmation++;
+                if (strstr(sent[i].text, "avg")) {
+                    stats++;
+                    CHECK(!strstr(sent[i].text, "\\n"));
+                    if (choice == 1 || choice == 2) CHECK(strchr(sent[i].text, '\n') != NULL);
+                }
+            }
+            CHECK(confirmation == 1);
+            CHECK(stats == (timed && choice != 0));
+            G_FlyingRespawn_FreeClient(&player->client->pers.flyingRespawn);
+        }
+    }
+}
+
+static void SavedRankedRunCompletesInPractice(void)
+{
+    for (int skip = 0; skip < 2; ++skip) {
+        gentity_t *player = Player(), *finish = &g_entities[MAX_CLIENTS];
+        flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
+        flyingRespawnMovement_t movement;
+        sqlite3 *db = NULL;
+        int invalidOutput = 0;
+        InitGameAccountStuff();
+        CHECK(sqlite3_open("./data.db", &db) == SQLITE_OK);
+        CHECK(sqlite3_exec(db, "DELETE FROM LocalRun; DELETE FROM LocalRunInvalid", NULL, NULL, NULL) == SQLITE_OK);
+        Q_strncpyz(player->client->pers.userName, "runner", sizeof(player->client->pers.userName));
+        SetTimes(1000, 20000);
+        player->client->ps.stats[STAT_HEALTH] = 100;
+        player->client->pers.stats.startTime = 11500;
+        player->client->pers.stats.startLevelTime = 900;
+        player->client->pers.stats.coopStarted = qtrue;
+        CHECK(G_FlyingRespawn_OnTimerStart(state, 1000, 100, 0, 0, 100));
+        G_FlyingRespawn_CaptureMovement(player, &movement);
+        G_FlyingRespawn_RecordState(state, 1000, &movement);
+        player->client->pers.addSavePointArmed = qtrue;
+        VectorSet(player->client->pers.addSavePointMins, -10, -10, -10000);
+        VectorSet(player->client->pers.addSavePointMaxs, 10, 10, 10000);
+        player->client->ps.origin[0] = 100;
+        LiveStep(1050);
+        player->client->ps.origin[0] = 0;
+        LiveStep(1100);
+        CHECK(state->manualSave.valid && state->manualSave.snapshot.serverTime == 1100);
+        CHECK(player->client->pers.stats.coopStarted);
+        player->client->ps.origin[0] = 100;
+        LiveStep(1150);
+        VectorClear(player->client->ps.velocity);
+        RunCommand("practice");
+        CHECK(player->client->pers.practice && !player->client->pers.stats.coopStarted);
+        SetTimes(1200, 22000);
+        RunCommand("respos");
+        CHECK(state->replay.active);
+        if (skip) { SetTimes(1250, 22050); RunCommand("respos"); }
+        else { SetTimes(1300, 22100); LiveStep(1300); }
+        CHECK(!state->replay.active);
+        CHECK(player->client->pers.stats.coopStarted);
+        finish->inuse = qtrue;
+        finish->wait = 1;
+        commandsSent = 0;
+        TimerStop(finish, player, NULL);
+        for (int i = 0; i < commandsSent && i < 64; ++i)
+            if (strstr(sent[i].text, "dffinish_japro_invalid")) invalidOutput++;
+        CHECK(invalidOutput == 1);
+        CHECK(!player->client->pers.stats.startTime);
+        CHECK(!player->client->pers.stats.startLevelTime);
+        CHECK(!player->client->ps.duelTime);
+        CHECK(Scalar(db, "SELECT count(*) FROM LocalRun") == 0);
+        CHECK(Scalar(db, "SELECT count(*) FROM LocalRunInvalid") == 0);
+        sqlite3_close(db);
+        G_FlyingRespawn_FreeClient(state);
+    }
+}
+
+static void LaunchSaveClock(void)
+{
+    gentity_t *player = Player();
+    flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
+    SetTimes(66660000, 20000);
+    player->client->pmoveMsec = 16;
+    VectorClear(player->client->ps.velocity);
+    RunCommand("practice");
+    CHECK(player->client->pers.practice && !player->client->pers.stats.startTime);
+    player->client->ps.commandTime = level.time;
+    player->client->pers.addSavePointArmed = qtrue;
+    VectorSet(player->client->pers.addSavePointMins, -10, -10, -10000);
+    VectorSet(player->client->pers.addSavePointMaxs, 10, 10, 10000);
+    RunCommandWithArg("launch", "0");
+    CHECK(player->client->pers.stats.startTime == 20016);
+    CHECK(player->client->pers.stats.startLevelTime == 66660000);
+    SetTimes(66660050, 20066);
+    LiveStep(66660050);
+    CHECK(state->manualSave.valid && state->manualSave.snapshot.serverTime == 66660050);
+    CHECK(player->client->pers.savePosTimerElapsed == 50);
+    CHECK(player->client->pers.savePosLevelTimeElapsed == 50);
+    VectorClear(player->client->ps.velocity);
+    RunCommand("practice");
+    RunCommand("practice");
+    CHECK(player->client->pers.practice && !player->client->pers.stats.startTime);
+    SetTimes(66661000, 21016);
+    RunCommand("respos");
+    CHECK(Clock() - player->client->pers.stats.startTime == 50);
+    CHECK(level.time - player->client->ps.duelTime == 50);
+    CHECK(level.time - player->client->pers.stats.startLevelTime == 50);
+    G_FlyingRespawn_FreeClient(state);
+
+    /* A later launch must not replace a pre-existing bookmark's timer state. */
+    for (int savedRunning = 0; savedRunning < 2; ++savedRunning) {
+        flyingRespawnMovement_t movement;
+        player = Player();
+        state = &player->client->pers.flyingRespawn;
+        player->client->pers.practice = qtrue;
+        CHECK(G_FlyingRespawn_OnTimerStart(state, 1000, 100, 0, 0, 100));
+        G_FlyingRespawn_CaptureMovement(player, &movement);
+        G_FlyingRespawn_RecordState(state, 1000, &movement);
+        SetTimes(1100, 20000);
+        player->client->pers.stats.startTime = savedRunning ? 11500 : 0;
+        player->client->pers.stats.startLevelTime = 900;
+        player->client->pers.stats.coopStarted = qfalse;
+        RunCommand("savepos");
+        SetTimes(1750, 22000);
+        RunCommandWithArg("launch", "0");
+        CHECK(player->client->pers.stats.coopStarted);
+        RunCommand("respos");
+        CHECK(state->replay.active);
+        CHECK(!player->client->pers.stats.coopStarted);
+        if (savedRunning) {
+            CHECK(Clock() - player->client->pers.stats.startTime == 8500);
+            CHECK(level.time - player->client->ps.duelTime == 200);
+        } else {
+            CHECK(!player->client->pers.stats.startTime && !player->client->ps.duelTime);
+        }
+        SetTimes(1800, 22050);
+        RunCommand("respos");
+        CHECK(!state->replay.active && !player->client->pers.stats.coopStarted);
+        if (savedRunning) CHECK(Clock() - player->client->pers.stats.startTime == 8500);
+        else CHECK(!player->client->pers.stats.startTime && !player->client->ps.duelTime);
+        G_FlyingRespawn_FreeClient(state);
+    }
 }
 
 static int SaveMessages(void)
@@ -1600,7 +1761,7 @@ typedef struct { const char *name; void (*run)(void); int finish; } IntegrationC
 static const IntegrationCase cases[] = {
     CASE(RespawnSchemaHistorical, 0), CASE(RespawnSchemaExisting, 0), CASE(RespawnSchemaError, 0),
     CASE(SynchronousReceiptsCoalesce, 0), CASE(ManualSkipDeadlines, 0), CASE(ReplayRejectedBeginAndConfiguration, 0), CASE(ManualReleaseTimer, 0), CASE(ManualReleaseHistory, 0),
-    CASE(SavePointDefinitionNoclip, 0), CASE(SavePointReplayPreservesBookmark, 0),
+    CASE(SavePointDefinitionNoclip, 0), CASE(SavepointFeedback, 0), CASE(SavedRankedRunCompletesInPractice, 0), CASE(LaunchSaveClock, 0), CASE(SavePointReplayPreservesBookmark, 0),
     CASE(SavePointOccupancyReplayMatrix, 0), CASE(FirstGoCheckpointBrush, 0),
     CASE(ReplayJumpContext, 0), CASE(ReplayJumpContextModes, 0), CASE(ReplayMapperTransition, 0), CASE(ReplaySettingCommandResets, 0), CASE(StaticForceWait, 0), CASE(FlyingFrameInput, 0),
     CASE(ReplayTimerBrushes, 0), CASE(StaticTribesServerFrames, 0),

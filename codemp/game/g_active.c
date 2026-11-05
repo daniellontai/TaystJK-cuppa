@@ -5957,13 +5957,14 @@ void G_FlyingRespawn_RestoreMovement(gentity_t *ent, const flyingRespawnSnapshot
 
 static void FlyingRespawnCountdown(gentity_t *ent);
 
-/* Called only by the manual practice replay handoff. The existing timer semantics stay here. */
+/* Restore the saved practice state at replay entry and again at successful GO. */
 static void FlyingRespawnRestorePracticeTimer(gentity_t *ent)
 {
 	if (!ent->client || !ent->client->pers.practice ||
 		!ent->client->pers.flyingRespawn.replay.manualReplay) return;
 	ent->client->pers.flyingRespawn.respawnCount = ent->client->pers.savePosRespawnCount;
 	if (ent->client->pers.savePosTimerRunning) {
+		ent->client->pers.stats.coopStarted         = ent->client->pers.savePosCoopStarted;
 		ent->client->pers.stats.startTime           = trap->Milliseconds() - ent->client->pers.savePosTimerElapsed;
 		ent->client->pers.stats.startLevelTime      = level.time - ent->client->pers.savePosLevelTimeElapsed;
 		ent->client->pers.startLag                  = ent->client->pers.savePosStartLag;
@@ -5978,6 +5979,7 @@ static void FlyingRespawnRestorePracticeTimer(gentity_t *ent)
 		// timer was not running at savepos — clear any run that started after the save
 		// (can't use ResetSpecificPlayerTimers: it clears velocity and overrides force for some styles)
 		ent->client->pers.stats.startTime      = 0;
+		ent->client->pers.stats.coopStarted    = qfalse;
 		ent->client->pers.stats.startLevelTime = 0;
 		ent->client->ps.duelTime               = 0;
 		ent->client->pers.flyingRespawn.secondaryRunning = qfalse;
@@ -6035,6 +6037,7 @@ qboolean G_FlyingRespawn_StartManualReplay(gentity_t *ent)
 	if (!G_FlyingRespawn_BeginManualReplay(state, level.time, ent->client->pers.practice)) return qfalse;
 	FlyingRespawnInstallReplay(ent);
 	G_FlyingRespawn_ClearAutomaticCheckpoint(state);
+	FlyingRespawnRestorePracticeTimer(ent);
 	FlyingRespawnCountdown(ent);
 	if (G_FlyingRespawn_FinishManualReplay(state, level.time, ent->client->pers.practice)) {
 		FlyingRespawnManualRelease(ent);
@@ -6124,14 +6127,13 @@ static void SavePointPostMovement(gentity_t *ent)
 			int time = trap->Milliseconds() - pers->stats.startTime;
 			int average = pers->stats.displacementSamples ? floorf((pers->stats.displacement * sv_fps.value) / pers->stats.displacementSamples + 0.5f) : pers->stats.topSpeed;
 			if (pers->showCenterCP)
-				trap->SendServerCommand(ent - g_entities, va("cp \"^3%.3fs^5, avg ^3%i^5u, max ^3%i^5u\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\"", time * 0.001f, average, (int)(pers->stats.topSpeed + 0.5f)));
+				trap->SendServerCommand(ent - g_entities, va("cp \"^3%.3fs^5, avg ^3%i^5u, max ^3%i^5u\n\n\n\n\n\n\n\n\n\n\"", time * 0.001f, average, (int)(pers->stats.topSpeed + 0.5f)));
 			else if (pers->showConsoleCP)
-				trap->SendServerCommand(ent - g_entities, va("print \"^5Savepoint: ^3%.3f^5, avg ^3%i^5, max ^3%i^5 ups\\n\"", time * 0.001f, average, (int)(pers->stats.topSpeed + 0.5f)));
+				trap->SendServerCommand(ent - g_entities, va("print \"^5Savepoint: ^3%.3f^5, avg ^3%i^5, max ^3%i^5 ups\n\"", time * 0.001f, average, (int)(pers->stats.topSpeed + 0.5f)));
 			else if (pers->showChatCP)
 				trap->SendServerCommand(ent - g_entities, va("chat \"^5Savepoint: ^3%.3f^5, avg ^3%i^5, max ^3%i^5 ups\"", time * 0.001f, average, (int)(pers->stats.topSpeed + 0.5f)));
-		} else {
-			trap->SendServerCommand(ent - g_entities, "print \"Savepoint saved.\n\"");
 		}
+		trap->SendServerCommand(ent - g_entities, "print \"Savepoint saved.\n\"");
 	}
 	pers->addSavePointInside = inside;
 }

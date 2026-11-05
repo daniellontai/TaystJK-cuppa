@@ -903,6 +903,7 @@ typedef struct clientPersistant_s {
 	qboolean	savePosUsed;
 	// Timer snapshot at savepos time; zero elapsed may still be a running timer.
 	qboolean	savePosTimerRunning;
+	qboolean	savePosCoopStarted;
 	int			savePosTimerElapsed;		// trap->Milliseconds() - stats.startTime
 	int			savePosLevelTimeElapsed;	// level.time - stats.startLevelTime
 	int			savePosNoRespawnElapsed;
