@@ -2016,60 +2016,18 @@ void TimerCheckpoint(gentity_t *trigger, gentity_t *player, trace_t *trace) {//J
 
 	if (player->client->pers.stats.startTime && (level.time - player->client->pers.stats.lastCheckpointTime > 1000)) { //make this more accurate with interp? or dosnt really matter ...
 		int i;
-		int time = GetTimeMS() - player->client->pers.stats.startTime;
-		const int endLag = GetTimeMS() - level.frameStartTime + level.time - player->client->pers.cmd.serverTime;
-		const int diffLag = player->client->pers.startLag - endLag;
-		int average;
-		//const int average = floorf(player->client->pers.stats.displacement / ((level.time - player->client->pers.stats.startLevelTime) * 0.001f)) + 0.5f; //Could this be more accurate?
-		if (player->client->pers.stats.displacementSamples)
-			average = floorf(((player->client->pers.stats.displacement * sv_fps.value) / player->client->pers.stats.displacementSamples) + 0.5f);
-		else
-			average = player->client->pers.stats.topSpeed;
-
-		if (diffLag > 0) {//Should this be more trusting..?.. -20? -30?
-			time += diffLag;
-		}
-		//else 
-			//time -= 10; //Clients time was massively fucked due to lag, improve it up the minimum ammount..
-
-		if (time < 1)
-			time = 1;
-
-		/*
-		if (trigger && trigger->spawnflags & 1)//Minimalist print loda fixme get rid of target shit 
-			trap->SendServerCommand( player-g_entities, va("cp \"^3%.3fs^5, avg ^3%i^5u\n\n\n\n\n\n\n\n\n\n\"", (float)time * 0.001f, average));
-		else
-			trap->SendServerCommand( player-g_entities, va("chat \"^5Checkpoint: ^3%.3f^5, max ^3%i^5, average ^3%i^5 ups\"", (float)time * 0.001f, player->client->pers.stats.topSpeed, average));
-			*/
-
-		if (mandatoryCheckpoint) {  //Bitvalue of the checkpoint Todo, need to print times
-			if (player->client->pers.showCenterCP)
-				trap->SendServerCommand(player - g_entities, va("cp \"^5Required Checkpoint %i:\n^3%.3fs^5, avg ^3%i^5u, max ^3%i^5u\n\n\n\n\n\n\n\n\n\"", mandatoryCheckpoint, (float)time * 0.001f, average, (int)(player->client->pers.stats.topSpeed + 0.5f)));
-			if (player->client->pers.showConsoleCP)
-				trap->SendServerCommand(player - g_entities, va("print \"^5Required Checkpoint %i: ^3%.3f^5, avg ^3%i^5, max ^3%i^5 ups\n\"", mandatoryCheckpoint, (float)time * 0.001f, average, (int)(player->client->pers.stats.topSpeed + 0.5f)));
-			else if (player->client->pers.showChatCP)
-				trap->SendServerCommand(player - g_entities, va("chat \"^5Required Checkpoint %i: ^3%.3f^5, avg ^3%i^5, max ^3%i^5 ups\"", mandatoryCheckpoint, (float)time * 0.001f, average, (int)(player->client->pers.stats.topSpeed + 0.5f)));
-		}
-		else {
-			if (player->client->pers.showCenterCP)
-				trap->SendServerCommand(player - g_entities, va("cp \"^3%.3fs^5, avg ^3%i^5u, max ^3%i^5u\n\n\n\n\n\n\n\n\n\n\"", (float)time * 0.001f, average, (int)(player->client->pers.stats.topSpeed + 0.5f)));
-			if (player->client->pers.showConsoleCP)
-				trap->SendServerCommand(player - g_entities, va("print \"^5Checkpoint: ^3%.3f^5, avg ^3%i^5, max ^3%i^5 ups\n\"", (float)time * 0.001f, average, (int)(player->client->pers.stats.topSpeed + 0.5f)));
-			else if (player->client->pers.showChatCP)
-				trap->SendServerCommand(player - g_entities, va("chat \"^5Checkpoint: ^3%.3f^5, avg ^3%i^5, max ^3%i^5 ups\"", (float)time * 0.001f, average, (int)(player->client->pers.stats.topSpeed + 0.5f)));
-		}
+		raceFeedbackSample_t sample;
+		if (!G_RaceFeedback_Sample(player, &sample)) return;
+		G_RaceFeedback_Send(player, &sample,
+			mandatoryCheckpoint ? RACE_FEEDBACK_REQUIRED_CHECKPOINT : RACE_FEEDBACK_CHECKPOINT,
+			mandatoryCheckpoint, 7);
 
 		if (player->client->sess.movementStyle == MV_COOP_JKA && player->client->ps.duelInProgress && player->client->pers.stats.coopStarted)
 		{ //send checkpoint to coop partner
 			gentity_t *partner = &g_entities[player->client->ps.duelIndex];
 			if (partner && partner->inuse && partner->client && (level.time - partner->client->pers.stats.lastCheckpointTime > 1000))
 			{
-				if (partner->client->pers.showCenterCP)
-					trap->SendServerCommand( partner - g_entities, va("cp \"^3%.3fs^5, avg ^3%i^5u, max ^3%i^5u\n\n\n\n\n\n\n\n\n\n\"", (float)time * 0.001f, average, (int)(player->client->pers.stats.topSpeed + 0.5f)));
-				if (partner->client->pers.showConsoleCP)
-					trap->SendServerCommand(partner - g_entities, va("print \"^5Checkpoint: ^3%.3f^5, avg ^3%i^5, max ^3%i^5 ups\n\"", (float)time * 0.001f, average, (int)(player->client->pers.stats.topSpeed + 0.5f)));
-				else if (partner->client->pers.showChatCP)
-					trap->SendServerCommand( partner - g_entities, va("chat \"^5Checkpoint: ^3%.3f^5, avg ^3%i^5, max ^3%i^5 ups\"", (float)time * 0.001f, average, (int)(player->client->pers.stats.topSpeed + 0.5f)));
+				G_RaceFeedback_Send(partner, &sample, RACE_FEEDBACK_CHECKPOINT, 0, 7);
 			}
 		}
 
@@ -2078,11 +2036,7 @@ void TimerCheckpoint(gentity_t *trigger, gentity_t *player, trace_t *trace) {//J
 				continue;
 			if ((level.clients[i].sess.sessionTeam == TEAM_SPECTATOR) && (level.clients[i].ps.pm_flags & PMF_FOLLOW) && (level.clients[i].sess.spectatorClient == player->client->ps.clientNum))
 			{
-				//if (trigger && trigger->spawnflags & 1)//Minimalist print loda fixme get rid of target shit 
-				if (level.clients[i].pers.showCenterCP)
-					trap->SendServerCommand( i, va("cp \"^3%.3fs^5, avg ^3%i^5u, max ^3%i^5u\n\n\n\n\n\n\n\n\n\n\"", (float)time * 0.001f, average, (int)(player->client->pers.stats.topSpeed + 0.5f)));
-				if (level.clients[i].pers.showChatCP)
-					trap->SendServerCommand( i, va("chat \"^5Checkpoint: ^3%.3f^5, avg ^3%i^5, max ^3%i^5 ups\"", (float)time * 0.001f, average, (int)(player->client->pers.stats.topSpeed + 0.5f)));
+				G_RaceFeedback_Send(&g_entities[i], &sample, RACE_FEEDBACK_CHECKPOINT, 0, 5);
 			}
 		}
 

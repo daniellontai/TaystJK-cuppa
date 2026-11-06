@@ -6157,16 +6157,9 @@ static void SavePointPostMovement(gentity_t *ent)
 	if (!pers->addSavePointArmed) return;
 	inside = SavePointContainsPlayer(ent);
 	if (inside && !pers->addSavePointInside && G_SavePosition(ent, qfalse)) {
-		if (pers->stats.startTime) {
-			int time = trap->Milliseconds() - pers->stats.startTime;
-			int average = pers->stats.displacementSamples ? floorf((pers->stats.displacement * sv_fps.value) / pers->stats.displacementSamples + 0.5f) : pers->stats.topSpeed;
-			if (pers->showCenterCP)
-				trap->SendServerCommand(ent - g_entities, va("cp \"^3%.3fs^5, avg ^3%i^5u, max ^3%i^5u\n\n\n\n\n\n\n\n\n\n\"", time * 0.001f, average, (int)(pers->stats.topSpeed + 0.5f)));
-			else if (pers->showConsoleCP)
-				trap->SendServerCommand(ent - g_entities, va("print \"^5Savepoint: ^3%.3f^5, avg ^3%i^5, max ^3%i^5 ups\n\"", time * 0.001f, average, (int)(pers->stats.topSpeed + 0.5f)));
-			else if (pers->showChatCP)
-				trap->SendServerCommand(ent - g_entities, va("chat \"^5Savepoint: ^3%.3f^5, avg ^3%i^5, max ^3%i^5 ups\"", time * 0.001f, average, (int)(pers->stats.topSpeed + 0.5f)));
-		}
+		raceFeedbackSample_t sample;
+		if (G_RaceFeedback_Sample(ent, &sample))
+			G_RaceFeedback_Send(ent, &sample, RACE_FEEDBACK_SAVEPOINT, 0, 7);
 		trap->SendServerCommand(ent - g_entities, "print \"Savepoint saved.\n\"");
 	}
 	pers->addSavePointInside = inside;

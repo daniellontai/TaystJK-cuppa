@@ -1743,29 +1743,160 @@ static void NoclipCancelThenExitBoundary(void)
 static void SavepointFeedback(void)
 {
     for (int timed = 0; timed < 2; ++timed) {
-        for (int choice = 0; choice < 4; ++choice) {
+        for (int choice = 0; choice < 8; ++choice) {
             gentity_t *player = Player();
             int confirmation = 0, stats = 0;
+            for (int i = 1; i < 4; ++i) {
+                g_entities[i].inuse = qtrue;
+                g_entities[i].client = &g_clients[i];
+                g_clients[i].sess.sessionTeam = i == 3 ? TEAM_FREE : TEAM_SPECTATOR;
+                g_clients[i].ps.pm_flags = i == 1 ? PMF_FOLLOW : 0;
+                g_clients[i].sess.spectatorClient = 0;
+                g_clients[i].pers.showCenterCP = g_clients[i].pers.showConsoleCP = g_clients[i].pers.showChatCP = qtrue;
+            }
             SetTimes(1000, 20000);
             player->client->pers.stats.startTime = timed ? 11500 : 0;
-            player->client->pers.showCenterCP = choice == 1;
-            player->client->pers.showConsoleCP = choice == 2;
-            player->client->pers.showChatCP = choice == 3;
+            player->client->pers.showCenterCP = choice & 1;
+            player->client->pers.showConsoleCP = choice & 2;
+            player->client->pers.showChatCP = choice & 4;
             player->client->pers.addSavePointArmed = qtrue;
             VectorSet(player->client->pers.addSavePointMins, -10, -10, -10000);
             VectorSet(player->client->pers.addSavePointMaxs, 10, 10, 10000);
             LiveStep(1050);
             CHECK(player->client->pers.flyingRespawn.manualSave.valid);
             for (int i = 0; i < commandsSent && i < 64; ++i) {
-                if (strstr(sent[i].text, "Savepoint saved.")) confirmation++;
+                CHECK(sent[i].client == 0);
+                if (strstr(sent[i].text, "Savepoint saved.")) {
+                    confirmation++;
+                    CHECK(!strcmp(sent[i].text, "print \"Savepoint saved.\n\""));
+                }
                 if (strstr(sent[i].text, "avg")) {
                     stats++;
                     CHECK(!strstr(sent[i].text, "\\n"));
-                    if (choice == 1 || choice == 2) CHECK(strchr(sent[i].text, '\n') != NULL);
+                    CHECK(sent[i].client == 0);
+                    if (!strncmp(sent[i].text, "cp ", 3))
+                        CHECK(!strcmp(sent[i].text, "cp \"^38.500s^5, avg ^30^5u, max ^30^5u\n\n\n\n\n\n\n\n\n\n\""));
+                    else if (choice & 2)
+                        CHECK(!strcmp(sent[i].text, "print \"^5Savepoint: ^38.500^5, avg ^30^5, max ^30^5 ups\n\""));
+                    else
+                        CHECK(!strcmp(sent[i].text, "chat \"^5Savepoint: ^38.500^5, avg ^30^5, max ^30^5 ups\""));
                 }
             }
             CHECK(confirmation == 1);
-            CHECK(stats == (timed && choice != 0));
+            CHECK(stats == (timed ? !!(choice & 1) + !!(choice & 6) : 0));
+            G_FlyingRespawn_FreeClient(&player->client->pers.flyingRespawn);
+        }
+    }
+}
+
+static void SavepointFeedbackLag(void)
+{
+    const char *elapsed[] = {"8.600", "8.500", "8.500", "0.001"};
+    for (int variant = 0; variant < 4; ++variant) {
+        for (int samples = 0; samples < 2; ++samples) {
+            for (int map = 0; map < 2; ++map) {
+                gentity_t *player = Player(), *checkpoint = &g_entities[MAX_CLIENTS];
+                int output = 0;
+                SetTimes(2000, 20000);
+                player->client->ps.stats[STAT_HEALTH] = 100;
+                player->client->pers.stats.startTime = variant == 3 ? 20000 : 11500;
+                player->client->pers.stats.displacement = samples ? 100 : 0;
+                player->client->pers.stats.displacementSamples = samples ? 4 : 0;
+                player->client->pers.stats.topSpeed = 123.6f;
+                player->client->pers.showConsoleCP = qtrue;
+                /* At the crossing, end lag is zero. */
+                level.frameStartTime = 20000;
+                player->client->pers.cmd.serverTime = 2000;
+                player->client->pers.startLag = variant == 0 ? 100 : variant == 2 ? -100 : 0;
+                checkpoint->s.number = MAX_CLIENTS;
+                if (map) {
+                    TimerCheckpoint(checkpoint, player, NULL);
+                    CHECK(player->client->pers.stats.lastCheckpointTime == 2000);
+                } else {
+                    player->client->pers.addSavePointArmed = qtrue;
+                    VectorSet(player->client->pers.addSavePointMins, -10, -10, -10000);
+                    VectorSet(player->client->pers.addSavePointMaxs, 10, 10, 10000);
+                    /* Freeze movement/stat accumulation while exercising the real crossing path. */
+                    player->client->ps.pm_type = PM_FREEZE;
+                    LiveStep(2000);
+                    CHECK(player->client->pers.flyingRespawn.manualSave.valid);
+                    CHECK(player->client->pers.savePosTimerElapsed == (variant == 3 ? 0 : 8500));
+                }
+                for (int i = 0; i < commandsSent && i < 64; ++i) {
+                    if (!strstr(sent[i].text, "avg")) continue;
+                    output++;
+                    CHECK(strstr(sent[i].text, elapsed[variant]) != NULL);
+                    CHECK(strstr(sent[i].text, samples ? "avg ^3500^5" : "avg ^3123^5") != NULL);
+                    CHECK(strstr(sent[i].text, "max ^3124^5") != NULL);
+                }
+                CHECK(output == 1);
+                G_FlyingRespawn_FreeClient(&player->client->pers.flyingRespawn);
+            }
+        }
+    }
+}
+
+static void CheckpointFeedbackRecipients(void)
+{
+    for (int required = 0; required < 2; ++required) {
+        for (int flags = 0; flags < 8; ++flags) {
+            gentity_t *player = Player(), *checkpoint = &g_entities[MAX_CLIENTS];
+            int counts[5] = {0};
+            SetTimes(2000, 20000);
+            level.frameStartTime = 20000;
+            player->client->pers.cmd.serverTime = 2000;
+            player->client->ps.stats[STAT_HEALTH] = 100;
+            player->client->pers.stats.startTime = 11500;
+            player->client->sess.movementStyle = MV_COOP_JKA;
+            player->client->ps.duelInProgress = qtrue;
+            player->client->ps.duelIndex = 1;
+            for (int i = 0; i < 5; ++i) {
+                g_entities[i].inuse = qtrue;
+                g_entities[i].client = &g_clients[i];
+                g_clients[i].pers.showCenterCP = flags & 1;
+                g_clients[i].pers.showConsoleCP = flags & 2;
+                g_clients[i].pers.showChatCP = flags & 4;
+                if (i >= 2) {
+                    g_clients[i].sess.sessionTeam = i == 4 ? TEAM_FREE : TEAM_SPECTATOR;
+                    g_clients[i].ps.pm_flags = i == 2 ? PMF_FOLLOW : 0;
+                    g_clients[i].sess.spectatorClient = 0;
+                }
+            }
+            checkpoint->s.number = MAX_CLIENTS;
+            checkpoint->objective = required ? 4 : 0;
+            TimerCheckpoint(checkpoint, player, NULL);
+            for (int i = 0; i < commandsSent && i < 64; ++i) {
+                const int recipient = sent[i].client;
+                CHECK(recipient >= 0 && recipient < 3);
+                if (recipient < 0 || recipient >= 5) continue;
+                counts[recipient]++;
+                if (!strncmp(sent[i].text, "cp ", 3)) {
+                    CHECK(!strcmp(sent[i].text, required && recipient == 0
+                        ? "cp \"^5Required Checkpoint 3:\n^38.500s^5, avg ^30^5u, max ^30^5u\n\n\n\n\n\n\n\n\n\""
+                        : "cp \"^38.500s^5, avg ^30^5u, max ^30^5u\n\n\n\n\n\n\n\n\n\n\""));
+                } else {
+                    CHECK(!strcmp(sent[i].text, required && recipient == 0
+                        ? ((flags & 2) ? "print \"^5Required Checkpoint 3: ^38.500^5, avg ^30^5, max ^30^5 ups\n\"" : "chat \"^5Required Checkpoint 3: ^38.500^5, avg ^30^5, max ^30^5 ups\"")
+                        : ((recipient != 2 && (flags & 2)) ? "print \"^5Checkpoint: ^38.500^5, avg ^30^5, max ^30^5 ups\n\"" : "chat \"^5Checkpoint: ^38.500^5, avg ^30^5, max ^30^5 ups\"")));
+                }
+            }
+            CHECK(counts[0] == !!(flags & 1) + !!(flags & 6));
+            CHECK(counts[1] == counts[0]);
+            CHECK(counts[2] == !!(flags & 1) + !!(flags & 4));
+            CHECK(!counts[3] && !counts[4]);
+            CHECK(player->client->pers.stats.checkpoints == (required ? 4 : 0));
+            CHECK(player->client->pers.stats.lastCheckpointTime == 2000);
+            CHECK(g_clients[1].pers.stats.lastCheckpointTime == 0);
+            { int before = commandsSent;
+                TimerCheckpoint(checkpoint, player, NULL);
+                CHECK(commandsSent == before);
+                level.time = 2500;
+                checkpoint->objective = 8;
+                TimerCheckpoint(checkpoint, player, NULL);
+                CHECK(commandsSent == before);
+                CHECK(player->client->pers.stats.checkpoints == (required ? 12 : 8));
+                CHECK(player->client->pers.stats.lastCheckpointTime == 2000);
+            }
             G_FlyingRespawn_FreeClient(&player->client->pers.flyingRespawn);
         }
     }
@@ -2491,6 +2622,7 @@ static const IntegrationCase cases[] = {
     CASE(RespawnSchemaHistorical, 0), CASE(RespawnSchemaExisting, 0), CASE(RespawnSchemaError, 0),
     CASE(SynchronousReceiptsCoalesce, 0), CASE(ManualSkipDeadlines, 0), CASE(ReplayRejectedBeginAndConfiguration, 0), CASE(ManualReleaseTimer, 0), CASE(ManualReleaseHistory, 0),
     CASE(SavePointReplacementAtomic, 0), CASE(SavePointDefinitionNoclip, 0), CASE(ManualLiveClockQueue, 0), CASE(ManualTimerEntryAlignment, 0), CASE(ManualSetupMomentum, 0), CASE(ManualSetupSameTickBoundary, 0), CASE(NoclipImmediateBookmark, 0), CASE(SetupSameTickExecution, 0), CASE(SetupPreservesOwnersAndWindow, 0), CASE(LaunchRejectedDuringReplay, 0), CASE(SetupTestReplayWaitsForEndpoint, 0), CASE(NoclipCancelsReplayWithoutGo, 0), CASE(NoclipSpaceMomentum, 0), CASE(NoclipCancelThenExitBoundary, 0), CASE(SavepointFeedback, 0), CASE(SavedRankedRunCompletesInPractice, 0), CASE(LaunchSaveClock, 0), CASE(SavePointReplayPreservesBookmark, 0),
+    CASE(SavepointFeedbackLag, 0), CASE(CheckpointFeedbackRecipients, 0),
     CASE(SavePointOccupancyReplayMatrix, 0), CASE(FirstGoCheckpointBrush, 0),
     CASE(ReplayJumpContext, 0), CASE(ReplayJumpContextModes, 0), CASE(ReplayMapperTransition, 0), CASE(ReplaySettingCommandResets, 0), CASE(StaticForceWait, 0), CASE(FlyingFrameInput, 0),
     CASE(ReplayTimerBrushes, 0), CASE(StaticTribesServerFrames, 0),

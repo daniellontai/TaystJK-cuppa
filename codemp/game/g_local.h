@@ -31,6 +31,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #include "bg_vehicles.h"
 #include "g_public.h"
 #include "g_flyingrespawn.h"
+#include "g_racefeedback.h"
 #include "qcommon/q_version.h"
 
 typedef struct gentity_s gentity_t;
