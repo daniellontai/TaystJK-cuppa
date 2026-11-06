@@ -7320,14 +7320,14 @@ static void Cmd_AddSavePoint_f(gentity_t *ent)
 	if (!pers->addSavePointPending) {
 		VectorCopy(ent->client->ps.origin, pers->addSavePointFirst);
 		pers->addSavePointPending = qtrue;
-		trap->SendServerCommand(ent - g_entities, "print \"Savepoint corner marked. Move to the opposite corner and use /addSavePoint again.\n\"");
+		trap->SendServerCommand(ent - g_entities, "print \"Savepoint corner marked. Move to the opposite corner and use /addSavePoint again, or use /addSavePoint cancel to cancel the pending definition.\n\"");
 		return;
 	}
 	for (i = 0; i < 3; ++i) {
 		mins[i] = Q_min(pers->addSavePointFirst[i], ent->client->ps.origin[i]);
 		maxs[i] = Q_max(pers->addSavePointFirst[i], ent->client->ps.origin[i]);
 		if (mins[i] == maxs[i]) {
-			trap->SendServerCommand(ent - g_entities, "print \"Savepoint needs volume on all three axes.\n\"");
+			trap->SendServerCommand(ent - g_entities, "print \"Savepoint needs volume on all three axes. Move to a different corner and use /addSavePoint again, or use /addSavePoint cancel to cancel the pending definition.\n\"");
 			return;
 		}
 	}
