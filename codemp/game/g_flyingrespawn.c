@@ -428,6 +428,16 @@ void G_FlyingRespawn_BufferLiveCmd(flyingRespawnState_t *state, const usercmd_t 
 	state->replay.hasLiveCmd = qtrue;
 }
 
+void G_FlyingRespawn_AcknowledgeStaticInput(const flyingRespawnState_t *state, int serverTime, playerState_t *ps)
+{
+	int acknowledged;
+	if (!state || !ps || !state->replay.active || !state->replay.staticReplay ||
+		state->replay.manualReplay || !state->replay.hasLiveCmd) return;
+	acknowledged = state->replay.liveCmd.serverTime;
+	if (acknowledged > serverTime) acknowledged = serverTime;
+	if (ps->commandTime < acknowledged) ps->commandTime = acknowledged;
+}
+
 int G_FlyingRespawn_QuantizeCmdTime(const flyingRespawnState_t *state, int time, int quantum)
 {
 	int64_t offset = state->replay.active ?
@@ -564,6 +574,7 @@ static qboolean FR_MovementMatches(flyingRespawnReplay_t *replay, const flyingRe
 	flyingRespawnMovement_t a = *actual, expected = replay->expectedMovement;
 	int i;
 	float originError = 0, velocityError = 0;
+	if (replay->staticReplay) a.commandTime = expected.commandTime;
 	qboolean matches = qtrue;
 	for (i = 0; i < 3; ++i) {
 		float origin = actual->origin[i] - expected.origin[i];

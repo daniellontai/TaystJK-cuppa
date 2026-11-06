@@ -133,6 +133,7 @@ void G_FlyingRespawn_RecordHandoff(flyingRespawnState_t *state, int serverTime, 
 qboolean G_FlyingRespawn_BeginTestReplay(flyingRespawnState_t *state, int serverTime, int durationMs);
 qboolean G_FlyingRespawn_BeginCheckpointReplay(flyingRespawnState_t *state, int serverTime, qboolean enabled);
 void G_FlyingRespawn_BufferLiveCmd(flyingRespawnState_t *state, const usercmd_t *cmd);
+void G_FlyingRespawn_AcknowledgeStaticInput(const flyingRespawnState_t *state, int serverTime, playerState_t *ps);
 /* Non-consuming authoritative input for frame consumers; false freezes static Force. */
 qboolean G_FlyingRespawn_FrameCmd(flyingRespawnState_t *state, int serverTime, usercmd_t *cmd);
 /* Preserve static Force timer intervals if the first GO tick is after its deadline. */

@@ -1007,3 +1007,57 @@ BOOST_AUTO_TEST_CASE(flying_respawn_checkpoint_overlapping_replay_contacts_prese
     BOOST_CHECK_EQUAL(h.state.automaticCheckpoint.checkpointEntityNum, 21);
     BOOST_CHECK_EQUAL(h.state.automaticCheckpoint.snapshot.serverTime, 1100);
 }
+
+BOOST_AUTO_TEST_CASE(flying_respawn_static_acknowledges_received_input)
+{
+    FlyingHistory h;
+    playerState_t ps = {};
+    usercmd_t cmd = {};
+    ps.commandTime = 2000;
+    h.state.replay.active = h.state.replay.staticReplay = qtrue;
+    cmd.serverTime = 2150;
+    G_FlyingRespawn_BufferLiveCmd(&h.state, &cmd);
+    G_FlyingRespawn_AcknowledgeStaticInput(&h.state, 2100, &ps);
+    BOOST_CHECK_EQUAL(ps.commandTime, 2100);
+    cmd.serverTime = 1900;
+    G_FlyingRespawn_BufferLiveCmd(&h.state, &cmd);
+    G_FlyingRespawn_AcknowledgeStaticInput(&h.state, 2200, &ps);
+    BOOST_CHECK_EQUAL(ps.commandTime, 2100);
+    for (int mode = 0; mode < 4; ++mode) {
+        h.state.replay.active = (mode != 0) ? qtrue : qfalse;
+        h.state.replay.staticReplay = (mode != 1) ? qtrue : qfalse;
+        h.state.replay.manualReplay = (mode == 2) ? qtrue : qfalse;
+        h.state.replay.hasLiveCmd = (mode != 3) ? qtrue : qfalse;
+        h.state.replay.liveCmd.serverTime = 2300;
+        G_FlyingRespawn_AcknowledgeStaticInput(&h.state, 2300, &ps);
+        BOOST_CHECK_EQUAL(ps.commandTime, 2100);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(flying_respawn_static_ack_validation_scope)
+{
+    for (int change = 0; change < 3; ++change) {
+        FlyingPlayback h;
+        flyingRespawnSnapshot_t contact = {};
+        usercmd_t cmd = {};
+        BOOST_REQUIRE(G_FlyingRespawn_BeginCheckpointReplay(&h.state, 2000, qtrue));
+        BOOST_REQUIRE(G_FlyingRespawn_HandleSecondPress(&h.state, 2050, &contact));
+        contact.movement.commandTime += 100;
+        if (change == 1) ++contact.movement.forcePower;
+        if (change == 2) ++contact.movement.checkpoints;
+        BOOST_REQUIRE(G_FlyingRespawn_Advance(&h.state, 2200, &contact.movement, &cmd));
+        BOOST_CHECK_EQUAL(h.state.mismatch, change != 0);
+    }
+    for (int diagnostic = 0; diagnostic < 2; ++diagnostic) {
+        FlyingPlayback h;
+        usercmd_t cmd = {};
+        if (diagnostic) BOOST_REQUIRE(G_FlyingRespawn_BeginTestReplay(&h.state, 2000, 100));
+        else BOOST_REQUIRE(G_FlyingRespawn_BeginCheckpointReplay(&h.state, 2000, qtrue));
+        int deadline = h.state.replay.releaseServerTime;
+        while (G_FlyingRespawn_OverrideCmd(&h.state, deadline, &cmd)) {}
+        flyingRespawnMovement_t actual = h.state.replay.expectedMovement;
+        ++actual.commandTime;
+        BOOST_REQUIRE(G_FlyingRespawn_Advance(&h.state, deadline, &actual, &cmd));
+        BOOST_CHECK(h.state.mismatch);
+    }
+}

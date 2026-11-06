@@ -6098,6 +6098,7 @@ qboolean G_FlyingRespawn_StartCheckpointReplay(gentity_t *ent)
 		ent->client->ps.eFlags |= EF_FLYING_RESPAWN;
 		G_FlyingRespawn_FrameCmd(state, level.time, &ent->client->pers.cmd);
 		G_FlyingRespawn_RestoreMovement(ent, &contact, 0);
+		G_FlyingRespawn_AcknowledgeStaticInput(state, level.time, &ent->client->ps);
 		FlyingRespawnCountdown(ent);
 		return qtrue;
 	}
@@ -6123,6 +6124,7 @@ static void FlyingRespawnLiveInput(gentity_t *ent)
 	state = &ent->client->pers.flyingRespawn;
 	if (state->replay.active) {
 		G_FlyingRespawn_BufferLiveCmd(state, &ent->client->pers.cmd);
+		G_FlyingRespawn_AcknowledgeStaticInput(state, level.time, &ent->client->ps);
 		G_FlyingRespawn_FrameCmd(state, level.time, &ent->client->pers.cmd);
 		return;
 	}

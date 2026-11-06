@@ -315,6 +315,109 @@ static void StaticTribesServerFrames(void)
     G_FlyingRespawn_FreeClient(state);
 }
 
+static void StaticCommandAcknowledgment(void)
+{
+    int oldSync = g_synchronousClients.integer;
+    for (int sync = 0; sync < 2; ++sync) {
+        gentity_t *player = Player();
+        flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
+        flyingRespawnMovement_t movement;
+        flyingRespawnCheckpointConfig_t config = {0};
+        usercmd_t live = {0};
+        int oldestViolation = 0, invariantViolation = 0, deadline, secondary, count;
+        flyingRespawnCapture_t frozen;
+        flyingRespawnMovement_t held, observed;
+        g_synchronousClients.integer = sync;
+        level.maxclients = 0;
+        CHECK(G_FlyingRespawn_OnTimerStart(state, 1000, 0, 6000, 0, 0));
+        player->client->ps.commandTime = 1200;
+        G_FlyingRespawn_CaptureMovement(player, &movement);
+        CHECK(G_FlyingRespawn_OnCheckpointTouch(state, 1200, 20, &config, &movement));
+        CHECK(G_FlyingRespawn_CaptureAutomaticHandoff(state, 7200, &movement));
+        CHECK(G_FlyingRespawn_BeginCheckpointReplay(state, 2000, qtrue));
+        level.time = 2050;
+        CHECK(G_FlyingRespawn_StartCheckpointReplay(player));
+        deadline = state->replay.releaseServerTime;
+        secondary = G_FlyingRespawn_GetSecondaryElapsed(state, level.time);
+        count = state->respawnCount;
+        frozen = state->automaticCheckpoint;
+        G_FlyingRespawn_CaptureMovement(player, &held);
+        CHECK(held.velocity[0] == 0 && held.velocity[1] == 0 && held.velocity[2] == 0);
+        CHECK(!G_FlyingRespawn_StartCheckpointReplay(player));
+        for (int i = 0; i < 600; ++i) {
+            level.time = 2060 + i * 9;
+            live.serverTime = level.time;
+            ClientThink(0, &live);
+            G_FlyingRespawn_CaptureMovement(player, &observed);
+            observed.commandTime = held.commandTime;
+            if (memcmp(&held, &observed, sizeof(held)) ||
+                memcmp(&frozen, &state->automaticCheckpoint, sizeof(frozen)) ||
+                deadline != state->replay.releaseServerTime || count != state->respawnCount ||
+                secondary != G_FlyingRespawn_GetSecondaryElapsed(state, level.time)) invariantViolation = 1;
+            if ((i >= 63 && live.serverTime - 63 * 9 > player->client->ps.commandTime) ||
+                (i >= 511 && live.serverTime - 511 * 9 > player->client->ps.commandTime))
+                oldestViolation = 1;
+        }
+        CHECK(!oldestViolation);
+        CHECK(!invariantViolation);
+        G_FlyingRespawn_CaptureMovement(player, &observed);
+        observed.commandTime = held.commandTime;
+        CHECK(!memcmp(&held, &observed, sizeof(held)));
+        CHECK(!memcmp(&frozen, &state->automaticCheckpoint, sizeof(frozen)));
+        CHECK(deadline == state->replay.releaseServerTime);
+        CHECK(secondary == G_FlyingRespawn_GetSecondaryElapsed(state, level.time));
+        CHECK(count == state->respawnCount);
+        live.serverTime = 1900;
+        int acknowledged = player->client->ps.commandTime;
+        ClientThink(0, &live);
+        CHECK(player->client->ps.commandTime == acknowledged);
+        live.serverTime = level.time + 1000;
+        ClientThink(0, &live);
+        CHECK(player->client->ps.commandTime == level.time);
+        ClientThink(0, &live);
+        CHECK(player->client->ps.commandTime == level.time);
+        acknowledged = player->client->ps.commandTime;
+        G_RunFrame(level.time + 50);
+        CHECK(player->client->ps.commandTime == acknowledged);
+        player->client->pers.connected = CON_CONNECTING;
+        level.time = deadline + (sync ? 50 : 0);
+        G_RunClient(player);
+        CHECK(!state->replay.active && !state->mismatch);
+        G_FlyingRespawn_FreeClient(state);
+    }
+    g_synchronousClients.integer = oldSync;
+}
+
+static void StaticAcknowledgmentCancellation(void)
+{
+    for (int reason = 0; reason < 4; ++reason) {
+        gentity_t *player = Player();
+        flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
+        flyingRespawnMovement_t movement;
+        flyingRespawnCheckpointConfig_t config = {0};
+        usercmd_t live = {0};
+        CHECK(G_FlyingRespawn_OnTimerStart(state, 1000, 0, 500, 0, 0));
+        G_FlyingRespawn_CaptureMovement(player, &movement);
+        CHECK(G_FlyingRespawn_OnCheckpointTouch(state, 1200, 20, &config, &movement));
+        CHECK(G_FlyingRespawn_CaptureAutomaticHandoff(state, 1700, &movement));
+        CHECK(G_FlyingRespawn_BeginCheckpointReplay(state, 2000, qtrue));
+        level.time = 2050;
+        CHECK(G_FlyingRespawn_StartCheckpointReplay(player));
+        live.serverTime = 2100;
+        level.time = 2100;
+        ClientThink(0, &live);
+        commandsSent = 0;
+        if (reason == 0) player->health = 0;
+        if (reason == 1) player->client->noclip = qtrue;
+        if (reason == 2) player->client->sess.raceMode = qfalse;
+        if (reason == 3) player->client->sess.sessionTeam = TEAM_SPECTATOR;
+        G_RunClient(player);
+        CHECK(!state->replay.active && !(player->client->ps.eFlags & EF_FLYING_RESPAWN));
+        for (int i = 0; i < commandsSent && i < 64; ++i) CHECK(!strstr(sent[i].text, "GO!"));
+        G_FlyingRespawn_FreeClient(state);
+    }
+}
+
 static void StaticServerFrameTimeout(void)
 {
     puts("Running static input timeout through G_RunFrame"); fflush(stdout);
@@ -2327,7 +2430,7 @@ static const IntegrationCase cases[] = {
     CASE(SavePointOccupancyReplayMatrix, 0), CASE(FirstGoCheckpointBrush, 0),
     CASE(ReplayJumpContext, 0), CASE(ReplayJumpContextModes, 0), CASE(ReplayMapperTransition, 0), CASE(ReplaySettingCommandResets, 0), CASE(StaticForceWait, 0), CASE(FlyingFrameInput, 0),
     CASE(ReplayTimerBrushes, 0), CASE(StaticTribesServerFrames, 0),
-    CASE(StaticServerFrameTimeout, 0), CASE(MovementResources, 0),
+    CASE(StaticServerFrameTimeout, 0), CASE(StaticCommandAcknowledgment, 0), CASE(StaticAcknowledgmentCancellation, 0), CASE(MovementResources, 0),
     CASE(StaticJetpackResources, 0), CASE(CoopTimerStartReset, 0),
     CASE(ProgressCountdown, 0), CASE(ManualReplayEligibilityAndRespawnCount, 0),
     CASE(FinishPublicPrivate, 1), CASE(FinishPersistence, 1), CASE(FinishHelp, 1),
