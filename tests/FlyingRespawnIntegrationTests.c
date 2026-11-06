@@ -161,6 +161,8 @@ static void RunCommandWithArg(const char *command, const char *arg)
 static void StaticForceWait(void)
 {
     puts("Running static Force wait"); fflush(stdout);
+    for (int variant = 0; variant < 4; ++variant) {
+    int late = (variant & 1) ? 50 : 0, zero = variant & 2;
     gentity_t *player = Player();
     flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
     flyingRespawnMovement_t movement;
@@ -168,25 +170,40 @@ static void StaticForceWait(void)
     flyingRespawnCheckpointConfig_t config = {0};
     CHECK(G_FlyingRespawn_OnTimerStart(state, 1000, 0, 500, 0, 0));
     player->client->ps.commandTime = 1200;
+    player->client->jetPackDebReduce = zero ? 0 : 1275;
+    player->client->jetPackDebRecharge = zero ? 0 : 1300;
+    player->client->overheatRechargeDebReduce = zero ? 0 : 1350;
     G_FlyingRespawn_CaptureMovement(player, &movement);
     CHECK(G_FlyingRespawn_OnCheckpointTouch(state, 1200, 20, &config, &movement));
     CHECK(G_FlyingRespawn_CaptureAutomaticHandoff(state, 1700, &movement));
     CHECK(G_FlyingRespawn_BeginCheckpointReplay(state, 2000, qtrue));
     CHECK(G_FlyingRespawn_HandleSecondPress(state, 2050, &contact));
     G_FlyingRespawn_WriteMovement(&player->client->ps, &contact.movement, 0);
+    player->client->jetPackDebReduce = contact.movement.jetPackDebReduce;
+    player->client->jetPackDebRecharge = contact.movement.jetPackDebRecharge;
+    player->client->overheatRechargeDebReduce = contact.movement.overheatRechargeDebReduce;
     for (level.time = 2100; level.time <= 2500; level.time += 50)
         WP_ForcePowersUpdate(player, &player->client->pers.cmd);
     CHECK(player->client->ps.fd.forcePower == 80);
     CHECK(player->client->ps.fd.forcePowerRegenDebounceTime == 2575);
     G_FlyingRespawn_CaptureMovement(player, &movement);
-    CHECK(G_FlyingRespawn_Advance(state, 2550, &movement, &player->client->pers.cmd));
-    G_FlyingRespawn_ReleaseStaticForce(state, 2550, &player->client->ps, &player->client->jetPackDebReduce);
+    CHECK(G_FlyingRespawn_Advance(state, 2500 + late, &movement, &player->client->pers.cmd));
+    G_FlyingRespawn_CaptureMovement(player, &movement);
+    G_FlyingRespawn_ReleaseStaticDeadlines(state, 2500 + late, &movement);
+    G_FlyingRespawn_WriteMovement(&player->client->ps, &movement, 0);
+    player->client->jetPackDebReduce = movement.jetPackDebReduce;
+    player->client->jetPackDebRecharge = movement.jetPackDebRecharge;
+    player->client->overheatRechargeDebReduce = movement.overheatRechargeDebReduce;
     CHECK(!state->mismatch);
-    CHECK(player->client->ps.fd.forcePowerRegenDebounceTime == 2625);
-    level.time = 2550;
+    CHECK(player->client->ps.fd.forcePowerRegenDebounceTime == 2575 + late);
+    CHECK(player->client->jetPackDebReduce == (zero ? 0 : 2575 + late));
+    CHECK(player->client->jetPackDebRecharge == (zero ? 0 : 2600 + late));
+    CHECK(player->client->overheatRechargeDebReduce == (zero ? 0 : 2650 + late));
+    level.time = 2500 + late;
     WP_ForcePowersUpdate(player, &player->client->pers.cmd);
     CHECK(player->client->ps.fd.forcePower == 80);
     G_FlyingRespawn_FreeClient(state);
+    }
 }
 
 static void FlyingFrameInput(void)
@@ -301,7 +318,12 @@ static void StaticTribesServerFrames(void)
     CHECK(player->client->jetPackDebReduce == 2575);
     G_FlyingRespawn_CaptureMovement(player, &movement);
     CHECK(G_FlyingRespawn_Advance(state, 2550, &movement, &player->client->pers.cmd));
-    G_FlyingRespawn_ReleaseStaticForce(state, 2550, &player->client->ps, &player->client->jetPackDebReduce);
+    G_FlyingRespawn_CaptureMovement(player, &movement);
+    G_FlyingRespawn_ReleaseStaticDeadlines(state, 2550, &movement);
+    G_FlyingRespawn_WriteMovement(&player->client->ps, &movement, 0);
+    player->client->jetPackDebReduce = movement.jetPackDebReduce;
+    player->client->jetPackDebRecharge = movement.jetPackDebRecharge;
+    player->client->overheatRechargeDebReduce = movement.overheatRechargeDebReduce;
     CHECK(!state->mismatch);
     CHECK(player->client->jetPackDebReduce == 2625);
     /* Keep normal movement idle while checking the real post-GO resource path. */
@@ -680,7 +702,8 @@ static void MovementResources(void)
 static void StaticJetpackResources(void)
 {
     puts("Running static jetpack resources through G_RunFrame");
-    for (int tribes = 0; tribes < 2; ++tribes) {
+    for (int variant = 0; variant < 8; ++variant) {
+        int tribes = variant & 1, late = (variant & 2) ? 50 : 0, zero = variant & 4;
         gentity_t *player = Player();
         flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
         flyingRespawnMovement_t movement;
@@ -695,8 +718,8 @@ static void StaticJetpackResources(void)
         player->client->ps.commandTime = 1200;
         player->client->ps.groundTime = 1100;
         player->client->jetPackDebReduce = 1275;
-        player->client->jetPackDebRecharge = 1300;
-        player->client->overheatRechargeDebReduce = 1350;
+        player->client->jetPackDebRecharge = zero ? 0 : 1300;
+        player->client->overheatRechargeDebReduce = zero ? 0 : 1350;
         CHECK(G_FlyingRespawn_OnTimerStart(state, 1000, 0, 500, 0, 0));
         G_FlyingRespawn_CaptureMovement(player, &movement);
         CHECK(G_FlyingRespawn_OnCheckpointTouch(state, 1200, 20, &config, &movement));
@@ -712,18 +735,20 @@ static void StaticJetpackResources(void)
         live.angles[YAW] = 12345;
         ClientThink(0, &live);
         /* Execute the real late handoff, stopping before unrelated collision imports. */
+        int teleportBefore = player->client->ps.eFlags & EF_TELEPORT_BIT;
         player->client->pers.connected = CON_CONNECTING;
-        level.time = 2550;
+        level.time = 2500 + late;
         ClientThink(0, NULL);
         CHECK(!state->replay.active && !state->mismatch);
+        CHECK((player->client->ps.eFlags & EF_TELEPORT_BIT) == teleportBefore);
         CHECK(player->client->pers.cmd.forwardmove == 127);
         CHECK(player->client->ps.delta_angles[YAW] == -12345);
-        CHECK(player->client->ps.groundTime == 2450);
-        CHECK(player->client->jetPackDebReduce == 2625);
-        CHECK(player->client->jetPackDebRecharge == 2650);
-        CHECK(player->client->overheatRechargeDebReduce == 2700);
-        CHECK(state->movementStates[state->stateHead].movement.commandTime == 2549);
-        CHECK(state->movementStates[state->stateHead].movement.jetPackDebRecharge == 2650);
+        CHECK(player->client->ps.groundTime == 2400 + late);
+        CHECK(player->client->jetPackDebReduce == 2575 + late);
+        CHECK(player->client->jetPackDebRecharge == (zero ? 0 : 2600 + late));
+        CHECK(player->client->overheatRechargeDebReduce == (zero ? 0 : 2650 + late));
+        CHECK(state->movementStates[state->stateHead].movement.commandTime == 2499 + late);
+        CHECK(state->movementStates[state->stateHead].movement.jetPackDebRecharge == (zero ? 0 : 2600 + late));
         G_FlyingRespawn_FreeClient(state);
     }
 }

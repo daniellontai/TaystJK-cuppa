@@ -137,7 +137,7 @@ void G_FlyingRespawn_AcknowledgeStaticInput(const flyingRespawnState_t *state, i
 /* Non-consuming authoritative input for frame consumers; false freezes static Force. */
 qboolean G_FlyingRespawn_FrameCmd(flyingRespawnState_t *state, int serverTime, usercmd_t *cmd);
 /* Preserve static Force timer intervals if the first GO tick is after its deadline. */
-void G_FlyingRespawn_ReleaseStaticForce(const flyingRespawnState_t *state, int serverTime, playerState_t *ps, int *jetPackDebReduce);
+void G_FlyingRespawn_ReleaseStaticDeadlines(const flyingRespawnState_t *state, int serverTime, flyingRespawnMovement_t *movement);
 int G_FlyingRespawn_ShiftDeadline(int deadline, int timeOffset);
 /* Only returns recorded movement steps when they are due; live input stays buffered. */
 qboolean G_FlyingRespawn_OverrideCmd(flyingRespawnState_t *state, int serverTime, usercmd_t *cmd);

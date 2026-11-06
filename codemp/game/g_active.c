@@ -6216,12 +6216,11 @@ static void FlyingRespawnThink(gentity_t *ent)
 					state->replay.mismatchCount, state->replay.maxOriginError, state->replay.maxVelocityError));
 			/* Static waiting runs no movement. Begin its first live step at this tick. */
 			if (staticReplay) {
-				int late = level.time - state->replay.releaseServerTime;
-				G_FlyingRespawn_ReleaseStaticForce(state, level.time, &ent->client->ps, &ent->client->jetPackDebReduce);
-				if (late > 0) {
-					ent->client->jetPackDebRecharge = G_FlyingRespawn_ShiftDeadline(ent->client->jetPackDebRecharge, late);
-					ent->client->overheatRechargeDebReduce = G_FlyingRespawn_ShiftDeadline(ent->client->overheatRechargeDebReduce, late);
-				}
+				G_FlyingRespawn_ReleaseStaticDeadlines(state, level.time, &actual);
+				G_FlyingRespawn_WriteMovement(&ent->client->ps, &actual, 0);
+				ent->client->jetPackDebReduce = actual.jetPackDebReduce;
+				ent->client->jetPackDebRecharge = actual.jetPackDebRecharge;
+				ent->client->overheatRechargeDebReduce = actual.overheatRechargeDebReduce;
 				ent->client->ps.commandTime = level.time - 1;
 			}
 			FlyingRespawnRelease(ent, qfalse);

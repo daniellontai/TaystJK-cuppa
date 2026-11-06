@@ -320,23 +320,43 @@ static qboolean FR_GetSelectedCmd(const flyingRespawnState_t *state, const flyin
 	return qtrue;
 }
 
+static void FR_ShiftPausableDeadlines(flyingRespawnMovement_t *movement, int offset)
+{
+    int i;
+    for (i = 0; i < NUM_FORCE_POWERS; ++i) {
+        movement->forcePowerDebounce[i] = G_FlyingRespawn_ShiftDeadline(movement->forcePowerDebounce[i], offset);
+        movement->forcePowerDuration[i] = G_FlyingRespawn_ShiftDeadline(movement->forcePowerDuration[i], offset);
+    }
+    movement->forcePowerRegenDebounceTime = G_FlyingRespawn_ShiftDeadline(movement->forcePowerRegenDebounceTime, offset);
+    movement->forceJumpAddTime = G_FlyingRespawn_ShiftDeadline(movement->forceJumpAddTime, offset);
+    movement->forceRageRecoveryTime = G_FlyingRespawn_ShiftDeadline(movement->forceRageRecoveryTime, offset);
+    movement->groundTime = G_FlyingRespawn_ShiftDeadline(movement->groundTime, offset);
+    movement->jetPackDebReduce = G_FlyingRespawn_ShiftDeadline(movement->jetPackDebReduce, offset);
+    movement->jetPackDebRecharge = G_FlyingRespawn_ShiftDeadline(movement->jetPackDebRecharge, offset);
+    movement->overheatRechargeDebReduce = G_FlyingRespawn_ShiftDeadline(movement->overheatRechargeDebReduce, offset);
+}
+
 static void FR_ShiftMovement(flyingRespawnMovement_t *movement, int offset)
 {
-	playerState_t ps;
-	int jetPackDebReduce = G_FlyingRespawn_ShiftDeadline(movement->jetPackDebReduce, offset);
-	int jetPackDebRecharge = G_FlyingRespawn_ShiftDeadline(movement->jetPackDebRecharge, offset);
-	int overheatRechargeDebReduce = G_FlyingRespawn_ShiftDeadline(movement->overheatRechargeDebReduce, offset);
-	int savedJumpLevel = movement->savedJumpLevel;
-	qboolean fjDidJump = movement->fjDidJump, jetPackOn = movement->jetPackOn;
-	memset(&ps, 0, sizeof(ps));
-	G_FlyingRespawn_WriteMovement(&ps, movement, offset);
-	G_FlyingRespawn_ReadMovement(movement, &ps, movement->movementStyle, movement->checkpoints, movement->courseID);
-	movement->jetPackDebReduce = jetPackDebReduce;
-	movement->jetPackDebRecharge = jetPackDebRecharge;
-	movement->overheatRechargeDebReduce = overheatRechargeDebReduce;
-	movement->savedJumpLevel = savedJumpLevel;
-	movement->fjDidJump = fjDidJump;
-	movement->jetPackOn = jetPackOn;
+    playerState_t ps;
+    int jetPackDebReduce, jetPackDebRecharge, overheatRechargeDebReduce, savedJumpLevel;
+    qboolean fjDidJump, jetPackOn;
+    FR_ShiftPausableDeadlines(movement, offset);
+    movement->commandTime = FR_ShiftTime(movement->commandTime, offset);
+    if (movement->lastOnGround) movement->lastOnGround = FR_ShiftTime(movement->lastOnGround, offset);
+    jetPackDebReduce = movement->jetPackDebReduce;
+    jetPackDebRecharge = movement->jetPackDebRecharge;
+    overheatRechargeDebReduce = movement->overheatRechargeDebReduce;
+    savedJumpLevel = movement->savedJumpLevel;
+    fjDidJump = movement->fjDidJump; jetPackOn = movement->jetPackOn;
+    memset(&ps, 0, sizeof(ps));
+    G_FlyingRespawn_WriteMovement(&ps, movement, 0);
+    G_FlyingRespawn_ReadMovement(movement, &ps, movement->movementStyle, movement->checkpoints, movement->courseID);
+    movement->jetPackDebReduce = jetPackDebReduce;
+    movement->jetPackDebRecharge = jetPackDebRecharge;
+    movement->overheatRechargeDebReduce = overheatRechargeDebReduce;
+    movement->savedJumpLevel = savedJumpLevel;
+    movement->fjDidJump = fjDidJump; movement->jetPackOn = jetPackOn;
 }
 
 int G_FlyingRespawn_ShiftDeadline(int deadline, int offset)
@@ -530,48 +550,24 @@ static void FR_MarkStaticContact(flyingRespawnState_t *state, int time)
 	}
 }
 
-static void FR_ShiftForceDeadlines(playerState_t *ps, int offset)
+void G_FlyingRespawn_ReleaseStaticDeadlines(const flyingRespawnState_t *state, int time, flyingRespawnMovement_t *movement)
 {
-	int i;
-	for (i = 0; i < NUM_FORCE_POWERS; ++i) {
-		ps->fd.forcePowerDebounce[i] = G_FlyingRespawn_ShiftDeadline(ps->fd.forcePowerDebounce[i], offset);
-		ps->fd.forcePowerDuration[i] = G_FlyingRespawn_ShiftDeadline(ps->fd.forcePowerDuration[i], offset);
-	}
-	ps->fd.forcePowerRegenDebounceTime = G_FlyingRespawn_ShiftDeadline(ps->fd.forcePowerRegenDebounceTime, offset);
-	ps->fd.forceJumpAddTime = G_FlyingRespawn_ShiftDeadline(ps->fd.forceJumpAddTime, offset);
-	ps->fd.forceRageRecoveryTime = G_FlyingRespawn_ShiftDeadline(ps->fd.forceRageRecoveryTime, offset);
-}
-
-void G_FlyingRespawn_ReleaseStaticForce(const flyingRespawnState_t *state, int time, playerState_t *ps, int *jetPackDebReduce)
-{
-	int late = time - state->replay.releaseServerTime;
-	if (!ps || state->replay.active || !state->replay.staticReplay || late <= 0) return;
-	FR_ShiftForceDeadlines(ps, late);
-	ps->groundTime = G_FlyingRespawn_ShiftDeadline(ps->groundTime, late);
-	if (jetPackDebReduce && *jetPackDebReduce) *jetPackDebReduce = FR_ShiftTime(*jetPackDebReduce, late);
+    int late = time - state->replay.releaseServerTime;
+    if (!movement || state->replay.active || !state->replay.staticReplay || late <= 0) return;
+    FR_ShiftPausableDeadlines(movement, late);
 }
 
 qboolean G_FlyingRespawn_HandleSecondPress(flyingRespawnState_t *state, int time, flyingRespawnSnapshot_t *contact)
 {
 	flyingRespawnReplay_t *replay = &state->replay;
-	int i, remaining;
+	int remaining;
 	if (!contact || !replay->active || replay->manualReplay || replay->staticReplay) return qfalse;
 	*contact = replay->testReplay ? replay->syntheticContact : state->automaticCheckpoint.snapshot;
 	FR_ShiftMovement(&contact->movement, time - contact->serverTime);
 	/* Force cannot run while held. Keep each source timer's remaining interval
 	 * relative to GO, rather than letting the static waiting period expire it. */
 	remaining = replay->releaseServerTime > time ? replay->releaseServerTime - time : 0;
-	for (i = 0; i < NUM_FORCE_POWERS; ++i) {
-		if (contact->movement.forcePowerDebounce[i]) contact->movement.forcePowerDebounce[i] = FR_ShiftTime(contact->movement.forcePowerDebounce[i], remaining);
-		if (contact->movement.forcePowerDuration[i]) contact->movement.forcePowerDuration[i] = FR_ShiftTime(contact->movement.forcePowerDuration[i], remaining);
-	}
-	if (contact->movement.forcePowerRegenDebounceTime) contact->movement.forcePowerRegenDebounceTime = FR_ShiftTime(contact->movement.forcePowerRegenDebounceTime, remaining);
-	if (contact->movement.forceJumpAddTime) contact->movement.forceJumpAddTime = FR_ShiftTime(contact->movement.forceJumpAddTime, remaining);
-	contact->movement.jetPackDebReduce = G_FlyingRespawn_ShiftDeadline(contact->movement.jetPackDebReduce, remaining);
-	contact->movement.jetPackDebRecharge = G_FlyingRespawn_ShiftDeadline(contact->movement.jetPackDebRecharge, remaining);
-	contact->movement.overheatRechargeDebReduce = G_FlyingRespawn_ShiftDeadline(contact->movement.overheatRechargeDebReduce, remaining);
-	contact->movement.forceRageRecoveryTime = G_FlyingRespawn_ShiftDeadline(contact->movement.forceRageRecoveryTime, remaining);
-	contact->movement.groundTime = G_FlyingRespawn_ShiftDeadline(contact->movement.groundTime, remaining);
+	FR_ShiftPausableDeadlines(&contact->movement, remaining);
 	contact->serverTime = time;
 	memset(contact->movement.velocity, 0, sizeof(contact->movement.velocity));
 	if (!replay->testReplay) G_FlyingRespawn_ApplyExpectedCheckpointProgress(state, &contact->movement);
@@ -708,6 +704,9 @@ static int FR_ShiftTime(int time, int offset)
 
 void G_FlyingRespawn_WriteMovement(playerState_t *ps, const flyingRespawnMovement_t *m, int offset)
 {
+    flyingRespawnMovement_t shifted = *m;
+    FR_ShiftPausableDeadlines(&shifted, offset);
+    m = &shifted;
 	memcpy(ps->origin, m->origin, sizeof(m->origin));
 	memcpy(ps->velocity, m->velocity, sizeof(m->velocity));
 	memcpy(ps->viewangles, m->viewangles, sizeof(m->viewangles));
@@ -730,8 +729,7 @@ void G_FlyingRespawn_WriteMovement(playerState_t *ps, const flyingRespawnMovemen
 	ps->fd.forceJumpZStart = m->forceJumpZStart;
 	ps->fd.forceJumpCharge = m->forceJumpCharge;
 	ps->fd.forceRageRecoveryTime = m->forceRageRecoveryTime;
-	FR_ShiftForceDeadlines(ps, offset);
-	ps->groundTime = G_FlyingRespawn_ShiftDeadline(m->groundTime, offset);
+	ps->groundTime = m->groundTime;
 	ps->stats[STAT_DASHTIME] = m->dashTime;
 	ps->stats[STAT_WJTIME] = m->wallJumpTime;
 	ps->stats[STAT_JUMPTIME] = m->jumpTime;

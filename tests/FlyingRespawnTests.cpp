@@ -1147,3 +1147,79 @@ BOOST_AUTO_TEST_CASE(flying_respawn_other_sources_peek_consume_contract)
         }
     }
 }
+
+BOOST_AUTO_TEST_CASE(flying_respawn_pausable_deadline_contract)
+{
+    playerState_t ps = {}, out = {};
+    ps.commandTime = 1000; ps.lastOnGround = 900; ps.groundTime = 1200;
+    ps.pm_time = 33; ps.origin[0] = 8; ps.fd.forcePower = 42;
+    for (int i = 0; i < NUM_FORCE_POWERS; ++i) {
+        ps.fd.forcePowerDebounce[i] = i ? 1200 + i : 0;
+        ps.fd.forcePowerDuration[i] = i ? 1300 + i : 0;
+    }
+    ps.fd.forcePowerRegenDebounceTime = 1400; ps.fd.forceJumpAddTime = 1500;
+    ps.fd.forceRageRecoveryTime = INT_MAX - 5;
+    flyingRespawnMovement_t m = {};
+    G_FlyingRespawn_ReadMovement(&m, &ps, 0, 0, 0);
+    for (int offset : {0, -100, 100}) {
+        G_FlyingRespawn_WriteMovement(&out, &m, offset);
+        for (int i = 0; i < NUM_FORCE_POWERS; ++i) {
+            BOOST_CHECK_EQUAL(out.fd.forcePowerDebounce[i], i ? 1200 + i + offset : 0);
+            BOOST_CHECK_EQUAL(out.fd.forcePowerDuration[i], i ? 1300 + i + offset : 0);
+        }
+        BOOST_CHECK_EQUAL(out.fd.forcePowerRegenDebounceTime, 1400 + offset);
+        BOOST_CHECK_EQUAL(out.fd.forceJumpAddTime, 1500 + offset);
+        BOOST_CHECK_EQUAL(out.fd.forceRageRecoveryTime, offset > 5 ? INT_MAX : INT_MAX - 5 + offset);
+        BOOST_CHECK_EQUAL(out.groundTime, 1200 + offset);
+        BOOST_CHECK_EQUAL(out.commandTime, 1000 + offset);
+        BOOST_CHECK_EQUAL(out.lastOnGround, 900 + offset);
+        BOOST_CHECK_EQUAL(out.pm_time, 33); BOOST_CHECK_EQUAL(out.origin[0], 8);
+        BOOST_CHECK_EQUAL(out.fd.forcePower, 42);
+    }
+    FlyingPlayback h;
+    auto &src = h.state.automaticCheckpoint.snapshot.movement;
+    src.jetPackDebReduce = 1250; src.jetPackDebRecharge = 0; src.overheatRechargeDebReduce = 1350;
+    src.forcePowerDebounce[1] = 1400; src.forcePowerDuration[1] = 1500;
+    src.forcePowerRegenDebounceTime = 1600; src.forceJumpAddTime = 1700;
+    src.forceRageRecoveryTime = INT_MAX - 5; src.groundTime = 1100; src.lastOnGround = 1100;
+    src.pmTime = 33;
+    BOOST_REQUIRE(G_FlyingRespawn_BeginCheckpointReplay(&h.state, 2000, qtrue));
+    flyingRespawnSnapshot_t contact = {};
+    BOOST_REQUIRE(G_FlyingRespawn_HandleSecondPress(&h.state, 2050, &contact));
+    BOOST_CHECK_EQUAL(contact.movement.commandTime, 2050);
+    BOOST_CHECK_EQUAL(contact.movement.lastOnGround, 1950);
+    BOOST_CHECK_EQUAL(contact.movement.jetPackDebReduce, 2250);
+    BOOST_CHECK_EQUAL(contact.movement.jetPackDebRecharge, 0);
+    BOOST_CHECK_EQUAL(contact.movement.overheatRechargeDebReduce, 2350);
+    BOOST_CHECK_EQUAL(contact.movement.forcePowerDebounce[1], 2400);
+    BOOST_CHECK_EQUAL(contact.movement.forcePowerDuration[1], 2500);
+    BOOST_CHECK_EQUAL(contact.movement.forcePowerRegenDebounceTime, 2600);
+    BOOST_CHECK_EQUAL(contact.movement.forceJumpAddTime, 2700);
+    BOOST_CHECK_EQUAL(contact.movement.forceRageRecoveryTime, INT_MAX);
+    BOOST_CHECK_EQUAL(contact.movement.groundTime, 2100);
+    BOOST_CHECK_EQUAL(contact.movement.pmTime, 33);
+}
+
+BOOST_AUTO_TEST_CASE(flying_respawn_captured_setup_remaining_boundaries)
+{
+    FlyingPlayback h;
+    auto before = h.state.replay;
+    h.state.automaticCheckpoint.valid = qfalse;
+    BOOST_CHECK(!G_FlyingRespawn_BeginCheckpointReplay(&h.state, 2000, qtrue));
+    BOOST_CHECK_EQUAL(memcmp(&before, &h.state.replay, sizeof(before)), 0);
+    h.state.automaticCheckpoint.valid = qtrue;
+    h.state.automaticCheckpoint.handoff.serverTime = h.state.automaticCheckpoint.start.serverTime - 1;
+    BOOST_CHECK(!G_FlyingRespawn_BeginCheckpointReplay(&h.state, 2000, qtrue));
+    BOOST_CHECK_EQUAL(memcmp(&before, &h.state.replay, sizeof(before)), 0);
+    h.state.automaticCheckpoint.handoff = h.state.automaticCheckpoint.start;
+    BOOST_REQUIRE(G_FlyingRespawn_BeginCheckpointReplay(&h.state, 2000, qtrue));
+    BOOST_CHECK_EQUAL(h.state.replay.releaseServerTime, 2000);
+    BOOST_CHECK_EQUAL(h.state.replay.selection.endServerTime, h.state.automaticCheckpoint.start.serverTime);
+    FlyingHistory manual;
+    flyingRespawnMovement_t m = {};
+    BOOST_REQUIRE(G_FlyingRespawn_CaptureManual(&manual.state, 1000, &m));
+    manual.state.manualSave.snapshot.serverTime = 999;
+    before = manual.state.replay;
+    BOOST_CHECK(!G_FlyingRespawn_BeginManualReplay(&manual.state, 2000, qtrue));
+    BOOST_CHECK_EQUAL(memcmp(&before, &manual.state.replay, sizeof(before)), 0);
+}
