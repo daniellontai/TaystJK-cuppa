@@ -1061,3 +1061,89 @@ BOOST_AUTO_TEST_CASE(flying_respawn_static_ack_validation_scope)
         BOOST_CHECK(h.state.mismatch);
     }
 }
+
+BOOST_AUTO_TEST_CASE(flying_respawn_captured_setup_contract)
+{
+    FlyingPlayback h;
+    auto before = h.state.replay;
+    BOOST_CHECK(!G_FlyingRespawn_BeginCheckpointReplay(&h.state, 2000, qfalse));
+    BOOST_CHECK_EQUAL(memcmp(&before, &h.state.replay, sizeof(before)), 0);
+    h.state.automaticCheckpoint.pending = qtrue;
+    BOOST_CHECK(!G_FlyingRespawn_BeginCheckpointReplay(&h.state, 2000, qtrue));
+    h.state.automaticCheckpoint.pending = qfalse;
+    BOOST_CHECK(!G_FlyingRespawn_BeginCheckpointReplay(&h.state, INT_MAX, qtrue));
+    BOOST_CHECK_EQUAL(memcmp(&before, &h.state.replay, sizeof(before)), 0);
+    BOOST_REQUIRE(G_FlyingRespawn_BeginCheckpointReplay(&h.state, 2000, qtrue));
+    BOOST_CHECK_EQUAL(h.state.replay.selection.endServerTime, 1300);
+    BOOST_CHECK_EQUAL(h.state.replay.expectedMovement.origin[0], 30);
+    BOOST_CHECK(!G_FlyingRespawn_BeginCheckpointReplay(&h.state, 2000, qtrue));
+    FlyingHistory manual;
+    flyingRespawnMovement_t m = {};
+    BOOST_REQUIRE(G_FlyingRespawn_CaptureManual(&manual.state, 1000, &m));
+    BOOST_CHECK(!G_FlyingRespawn_BeginManualReplay(&manual.state, 2000, qfalse));
+    BOOST_REQUIRE(G_FlyingRespawn_BeginManualReplay(&manual.state, 2000, qtrue));
+    BOOST_CHECK_EQUAL(manual.state.replay.selection.endServerTime, 1000);
+    BOOST_CHECK_EQUAL(manual.state.replay.releaseServerTime, 2000);
+}
+
+BOOST_AUTO_TEST_CASE(flying_respawn_command_peek_consume_contract)
+{
+    FlyingPlayback h;
+    BOOST_REQUIRE(G_FlyingRespawn_BeginCheckpointReplay(&h.state, 2000, qtrue));
+    usercmd_t cmd = {};
+    for (int i = 0; i < 2; ++i) {
+        BOOST_REQUIRE(G_FlyingRespawn_FrameCmd(&h.state, 2100, &cmd));
+        BOOST_CHECK_EQUAL(cmd.forwardmove, 37);
+        BOOST_CHECK_EQUAL(h.state.replay.commandCursor, 0);
+    }
+    BOOST_CHECK(!G_FlyingRespawn_OverrideCmd(&h.state, 2099, &cmd));
+    BOOST_REQUIRE(G_FlyingRespawn_OverrideCmd(&h.state, 2100, &cmd));
+    BOOST_CHECK_EQUAL(cmd.serverTime, 2100);
+    BOOST_CHECK_EQUAL(h.state.replay.commandCursor, 1);
+    BOOST_REQUIRE(G_FlyingRespawn_FrameCmd(&h.state, 2200, &cmd));
+    BOOST_CHECK_EQUAL(cmd.upmove, 127);
+    BOOST_CHECK_EQUAL(h.state.replay.commandCursor, 1);
+    BOOST_REQUIRE(G_FlyingRespawn_OverrideCmd(&h.state, 2200, &cmd));
+    BOOST_CHECK_EQUAL(h.state.replay.commandCursor, 2);
+}
+
+BOOST_AUTO_TEST_CASE(flying_respawn_other_sources_peek_consume_contract)
+{
+    for (bool diagnostic : {false, true}) {
+        FlyingHistory h;
+        BOOST_REQUIRE(G_FlyingRespawn_Configure(&h.state, 100, 0, diagnostic ? 1 : 0));
+        flyingRespawnMovement_t m = {};
+        usercmd_t c = {};
+        for (int t : {1000, 1050, 1100}) {
+            c.serverTime = m.commandTime = t;
+            c.forwardmove = (t - 1000) / 10;
+            G_FlyingRespawn_RecordExecutionCmd(&h.state, t, &c);
+            G_FlyingRespawn_RecordState(&h.state, t, &m);
+        }
+        if (diagnostic) BOOST_REQUIRE(G_FlyingRespawn_BeginTestReplay(&h.state, 1100, 100));
+        else {
+            BOOST_REQUIRE(G_FlyingRespawn_CaptureManual(&h.state, 1100, &m));
+            BOOST_REQUIRE(G_FlyingRespawn_BeginManualReplay(&h.state, 1100, qtrue));
+        }
+        for (int i = 0; i < 2; ++i) {
+            BOOST_REQUIRE(G_FlyingRespawn_FrameCmd(&h.state, 1150, &c));
+            BOOST_CHECK_EQUAL(c.forwardmove, 5);
+            BOOST_CHECK_EQUAL(c.serverTime, 1150);
+            BOOST_CHECK_EQUAL(h.state.replay.commandCursor, 0);
+        }
+        BOOST_CHECK(!G_FlyingRespawn_OverrideCmd(&h.state, 1149, &c));
+        BOOST_REQUIRE(G_FlyingRespawn_OverrideCmd(&h.state, 1150, &c));
+        BOOST_CHECK_EQUAL(h.state.replay.commandCursor, 1);
+        if (diagnostic) {
+            h.state.historyGeneration++;
+            BOOST_CHECK(!G_FlyingRespawn_OverrideCmd(&h.state, 1200, &c));
+            BOOST_REQUIRE(G_FlyingRespawn_FrameCmd(&h.state, 1200, &c));
+            BOOST_CHECK_EQUAL(c.forwardmove, 5);
+            BOOST_CHECK_EQUAL(h.state.replay.commandCursor, 1);
+        } else {
+            BOOST_REQUIRE(G_FlyingRespawn_OverrideCmd(&h.state, 1200, &c));
+            BOOST_CHECK_EQUAL(c.forwardmove, 10);
+            BOOST_CHECK_EQUAL(h.state.replay.commandCursor, 2);
+        }
+    }
+}

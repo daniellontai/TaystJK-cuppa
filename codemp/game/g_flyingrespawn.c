@@ -8,7 +8,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-static qboolean FR_NextManualCmd(flyingRespawnState_t *, int, flyingRespawnCmd_t *);
 static qboolean FR_CaptureAutomaticStart(flyingRespawnState_t *, int, const flyingRespawnMovement_t *, int, int);
 static int FR_ShiftTime(int time, int offset);
 
@@ -395,21 +394,45 @@ qboolean G_FlyingRespawn_BeginTestReplay(flyingRespawnState_t *state, int server
 	return qtrue;
 }
 
+static qboolean FR_BeginCapturedReplay(flyingRespawnState_t *state,
+    const flyingRespawnCapture_t *capture, const flyingRespawnSnapshot_t *end, int serverTime)
+{
+    int64_t duration = (int64_t)end->serverTime - capture->start.serverTime;
+    if (duration < 0 || (int64_t)serverTime + duration > INT_MAX) return qfalse;
+    memset(&state->replay, 0, sizeof(state->replay));
+    state->replay.active = qtrue;
+    state->replay.selection.snapshot = capture->start;
+    state->replay.selection.endServerTime = end->serverTime;
+    state->replay.selection.commandCount = capture->commandCount;
+    state->replay.startServerTime = serverTime;
+    state->replay.frameCmd = capture->startCmd;
+    state->replay.frameCmd.serverTime = FR_ShiftTime(state->replay.frameCmd.serverTime, serverTime - capture->start.serverTime);
+    state->replay.releaseServerTime = serverTime + (int)duration;
+    return qtrue;
+}
+
+static qboolean FR_ReplayCommandAt(const flyingRespawnState_t *state, int index, flyingRespawnCmd_t *cmd)
+{
+    const flyingRespawnReplay_t *replay = &state->replay;
+    const flyingRespawnCapture_t *capture;
+    if (!cmd || index < 0 || index >= replay->selection.commandCount) return qfalse;
+    if (replay->testReplay) return FR_GetSelectedCmd(state, &replay->selection, index, cmd);
+    capture = replay->manualReplay ? &state->manualSave : &state->automaticCheckpoint;
+    if (index >= capture->commandCount) return qfalse;
+    *cmd = capture->commands[index];
+    return qtrue;
+}
+
+static qboolean FR_ReplayCommandDue(const flyingRespawnReplay_t *replay, const flyingRespawnCmd_t *cmd, int serverTime)
+{
+    return (int64_t)serverTime - replay->startServerTime >= (int64_t)cmd->serverTime - replay->selection.snapshot.serverTime;
+}
+
 qboolean G_FlyingRespawn_BeginCheckpointReplay(flyingRespawnState_t *state, int time, qboolean enabled)
 {
 	flyingRespawnCapture_t *capture = &state->automaticCheckpoint;
-	int64_t duration = (int64_t)capture->handoff.serverTime - capture->start.serverTime;
-	if (!enabled || state->replay.active || !capture->valid || capture->pending || duration < 0 ||
-		(int64_t)time + duration > INT_MAX) return qfalse;
-	memset(&state->replay, 0, sizeof(state->replay));
-	state->replay.active = qtrue;
-	state->replay.selection.snapshot = capture->start;
-	state->replay.selection.endServerTime = capture->handoff.serverTime;
-	state->replay.selection.commandCount = capture->commandCount;
-	state->replay.startServerTime = time;
-	state->replay.frameCmd = capture->startCmd;
-	state->replay.frameCmd.serverTime = FR_ShiftTime(state->replay.frameCmd.serverTime, time - capture->start.serverTime);
-	state->replay.releaseServerTime = time + (int)duration;
+	if (!enabled || state->replay.active || !capture->valid || capture->pending ||
+        !FR_BeginCapturedReplay(state, capture, &capture->handoff, time)) return qfalse;
 	state->replay.expectedMovement = capture->handoff.movement;
 	FR_ShiftMovement(&state->replay.expectedMovement, time - capture->start.serverTime);
 	state->replay.expectedSecondaryMs = capture->secondaryElapsedMs;
@@ -466,15 +489,8 @@ qboolean G_FlyingRespawn_OverrideCmd(flyingRespawnState_t *state, int time, user
 	flyingRespawnReplay_t *replay = &state->replay;
 	flyingRespawnCmd_t next;
 	if (!cmd || !replay->active || replay->staticReplay || replay->commandCursor >= replay->selection.commandCount) return qfalse;
-	if (replay->manualReplay) {
-		if (!FR_NextManualCmd(state, time, &next)) return qfalse;
-	} else {
-		if (replay->testReplay) {
-			if (!FR_GetSelectedCmd(state, &replay->selection, replay->commandCursor, &next)) return qfalse;
-		} else next = state->automaticCheckpoint.commands[replay->commandCursor];
-		if ((int64_t)time - replay->startServerTime < (int64_t)next.serverTime - replay->selection.snapshot.serverTime) return qfalse;
-		replay->commandCursor++;
-	}
+	if (!FR_ReplayCommandAt(state, replay->commandCursor, &next) || !FR_ReplayCommandDue(replay, &next, time)) return qfalse;
+	replay->commandCursor++;
 	*cmd = next.cmd;
 	cmd->serverTime += replay->startServerTime - replay->selection.snapshot.serverTime;
 	replay->frameCmd = *cmd;
@@ -497,10 +513,7 @@ qboolean G_FlyingRespawn_FrameCmd(flyingRespawnState_t *state, int time, usercmd
 	 * without consuming any step or ever consulting the buffered live command. */
 	for (i = replay->commandCursor; i < replay->selection.commandCount; ++i) {
 		flyingRespawnCmd_t next;
-		if (replay->testReplay) {
-			if (!FR_GetSelectedCmd(state, &replay->selection, i, &next)) break;
-		} else next = (replay->manualReplay ? state->manualSave.commands : state->automaticCheckpoint.commands)[i];
-		if ((int64_t)time - replay->startServerTime < (int64_t)next.serverTime - replay->selection.snapshot.serverTime) break;
+		if (!FR_ReplayCommandAt(state, i, &next) || !FR_ReplayCommandDue(replay, &next, time)) break;
 		*cmd = next.cmd;
 		cmd->serverTime = FR_ShiftTime(cmd->serverTime, replay->startServerTime - replay->selection.snapshot.serverTime);
 	}
@@ -790,30 +803,9 @@ void G_FlyingRespawn_ClearAutomaticCheckpoint(flyingRespawnState_t *state)
 qboolean G_FlyingRespawn_BeginManualReplay(flyingRespawnState_t *state, int time, qboolean practice)
 {
 	flyingRespawnCapture_t *capture = &state->manualSave;
-	int64_t duration = (int64_t)capture->snapshot.serverTime - capture->start.serverTime;
-	if (!practice || state->replay.active || !capture->valid || duration < 0 || (int64_t)time + duration > INT_MAX) return qfalse;
-	memset(&state->replay, 0, sizeof(state->replay));
-	state->replay.active = state->replay.manualReplay = qtrue;
-	state->replay.selection.snapshot = capture->start;
-	state->replay.selection.endServerTime = capture->snapshot.serverTime;
-	state->replay.selection.commandCount = capture->commandCount;
-	state->replay.startServerTime = time;
-	state->replay.frameCmd = capture->startCmd;
-	state->replay.frameCmd.serverTime = FR_ShiftTime(state->replay.frameCmd.serverTime, time - capture->start.serverTime);
-	state->replay.releaseServerTime = time + (int)duration;
-	return qtrue;
-}
-
-static qboolean FR_NextManualCmd(flyingRespawnState_t *state, int time, flyingRespawnCmd_t *cmd)
-{
-	flyingRespawnReplay_t *replay = &state->replay;
-	const flyingRespawnCapture_t *capture = &state->manualSave;
-	const flyingRespawnCmd_t *next;
-	if (!cmd || !replay->active || !replay->manualReplay || replay->commandCursor >= capture->commandCount) return qfalse;
-	next = &capture->commands[replay->commandCursor];
-	if ((int64_t)time - replay->startServerTime < (int64_t)next->serverTime - capture->start.serverTime) return qfalse;
-	*cmd = *next;
-	replay->commandCursor++;
+	if (!practice || state->replay.active || !capture->valid ||
+        !FR_BeginCapturedReplay(state, capture, &capture->snapshot, time)) return qfalse;
+	state->replay.manualReplay = qtrue;
 	return qtrue;
 }
 
