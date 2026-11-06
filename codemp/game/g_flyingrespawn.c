@@ -649,6 +649,7 @@ void G_FlyingRespawn_ReadMovement(flyingRespawnMovement_t *m, const playerState_
 	memcpy(m->viewangles, ps->viewangles, sizeof(m->viewangles));
 	memcpy(m->deltaAngles, ps->delta_angles, sizeof(m->deltaAngles));
 	memcpy(m->moveDir, ps->moveDir, sizeof(m->moveDir));
+	memcpy(m->ammo, ps->ammo, sizeof(m->ammo));
 	m->commandTime = ps->commandTime;
 	m->pmFlags = ps->pm_flags;
 	m->pmTime = ps->pm_time;
@@ -712,6 +713,7 @@ void G_FlyingRespawn_WriteMovement(playerState_t *ps, const flyingRespawnMovemen
 	memcpy(ps->viewangles, m->viewangles, sizeof(m->viewangles));
 	memcpy(ps->delta_angles, m->deltaAngles, sizeof(m->deltaAngles));
 	memcpy(ps->moveDir, m->moveDir, sizeof(m->moveDir));
+	memcpy(ps->ammo, m->ammo, sizeof(m->ammo));
 	ps->commandTime = FR_ShiftTime(m->commandTime, offset);
 	ps->pm_flags = m->pmFlags;
 	ps->pm_time = m->pmTime;

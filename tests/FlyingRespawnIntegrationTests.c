@@ -2722,9 +2722,94 @@ static void FinishCoopActiveReplay(void)
     }
 }
 
+static void SavedAmmoRestoration(void)
+{
+    for (int skip = 0; skip < 3; ++skip) {
+        gentity_t *player = Player();
+        flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
+        flyingRespawnMovement_t movement;
+        usercmd_t cmd = {0};
+        player->client->pers.practice = qtrue;
+        player->client->ps.stats[STAT_HEALTH] = 100;
+        CHECK(G_FlyingRespawn_OnTimerStart(state, 1000, skip == 2 ? 0 : 100, 0, 0, 100));
+        player->client->ps.ammo[AMMO_DETPACK] = 1;
+        player->client->ps.ammo[AMMO_METAL_BOLTS] = 3;
+        G_FlyingRespawn_CaptureMovement(player, &movement);
+        G_FlyingRespawn_RecordState(state, 1000, &movement);
+        level.time = 1100;
+        RunCommand("savepos");
+        CHECK(state->manualSave.valid);
+        player->client->ps.ammo[AMMO_DETPACK] = 0;
+        player->client->ps.ammo[AMMO_METAL_BOLTS] = 0;
+        level.time = 2000;
+        RunCommand("respos");
+        if (skip == 1) { level.time = 2050; RunCommand("respos"); }
+        if (skip == 0) { level.time = 2200; cmd.serverTime = 2200; ClientThink(0, &cmd); }
+        CHECK(!state->replay.active);
+        CHECK(player->client->ps.ammo[AMMO_DETPACK] == 1);
+        CHECK(player->client->ps.ammo[AMMO_METAL_BOLTS] == 3);
+        G_FlyingRespawn_FreeClient(state);
+    }
+}
+
+static void CheckpointAmmoRestoration(void)
+{
+    for (int positive = 0; positive < 2; ++positive) {
+        for (int skip = 0; skip < 2; ++skip) {
+            gentity_t *player = Player();
+            flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
+            flyingRespawnMovement_t movement;
+            flyingRespawnCheckpointConfig_t config = {0};
+            usercmd_t cmd = {0};
+            player->client->ps.stats[STAT_HEALTH] = 100;
+            player->client->ps.ammo[AMMO_DETPACK] = 1;
+            CHECK(G_FlyingRespawn_OnTimerStart(state, 1000, 100, positive ? 100 : 0, 0, 100));
+            G_FlyingRespawn_CaptureMovement(player, &movement);
+            G_FlyingRespawn_RecordState(state, 1000, &movement);
+            cmd.serverTime = 1100;
+            G_FlyingRespawn_RecordExecutionCmd(state, 1100, &cmd);
+            G_FlyingRespawn_CaptureMovement(player, &movement);
+            CHECK(G_FlyingRespawn_OnCheckpointTouch(state, 1100, 20, &config, &movement));
+            if (positive) player->client->ps.ammo[AMMO_DETPACK] = 0;
+            G_FlyingRespawn_CaptureMovement(player, &movement);
+            if (positive) CHECK(G_FlyingRespawn_CaptureAutomaticHandoff(state, 1200, &movement));
+            CHECK(state->automaticCheckpoint.valid);
+            CHECK(state->automaticCheckpoint.start.serverTime == 1000);
+            CHECK(state->automaticCheckpoint.commandCount == 1);
+            player->client->ps.ammo[AMMO_DETPACK] = 0;
+            g_enableFlyingRespawn.integer = 1;
+            level.time = 2000;
+            CHECK(G_FlyingRespawn_StartCheckpointReplay(player));
+            CHECK(player->client->ps.ammo[AMMO_DETPACK] == 1);
+            if (skip) {
+                level.time = 2050;
+                CHECK(G_FlyingRespawn_StartCheckpointReplay(player));
+                CHECK(player->client->ps.ammo[AMMO_DETPACK] == 1);
+            } else if (positive) {
+                /* The recorded handoff has already spent the charge. */
+                CHECK(state->replay.expectedMovement.ammo[AMMO_DETPACK] == 0);
+                player->client->ps.ammo[AMMO_DETPACK] = 0;
+            }
+            if (!skip) {
+                gentity_t *checkpoint = &g_entities[20];
+                checkpoint->s.number = 20;
+                TimerCheckpoint(checkpoint, player, NULL);
+            }
+            player->client->pers.connected = CON_CONNECTING;
+            level.time = state->replay.releaseServerTime + 50;
+            cmd.serverTime = level.time;
+            ClientThink(0, &cmd);
+            CHECK(!state->replay.active);
+            CHECK(player->client->ps.ammo[AMMO_DETPACK] == (positive && !skip ? 0 : 1));
+            G_FlyingRespawn_FreeClient(state);
+        }
+    }
+}
+
 typedef struct { const char *name; void (*run)(void); int finish; } IntegrationCase;
 #define CASE(name, finish) { #name, name, finish }
 static const IntegrationCase cases[] = {
+    CASE(SavedAmmoRestoration, 0), CASE(CheckpointAmmoRestoration, 0),
     CASE(RespawnSchemaHistorical, 0), CASE(RespawnSchemaExisting, 0), CASE(RespawnSchemaError, 0),
     CASE(SynchronousReceiptsCoalesce, 0), CASE(ManualSkipDeadlines, 0), CASE(ReplayRejectedBeginAndConfiguration, 0), CASE(ManualReleaseTimer, 0), CASE(PracticeBookmarkTransaction, 0), CASE(ManualReleaseHistory, 0),
     CASE(SavePointReplacementAtomic, 0), CASE(SavePointDefinitionNoclip, 0), CASE(ManualLiveClockQueue, 0), CASE(ManualTimerEntryAlignment, 0), CASE(ManualSetupMomentum, 0), CASE(ManualSetupSameTickBoundary, 0), CASE(NoclipImmediateBookmark, 0), CASE(SetupSameTickExecution, 0), CASE(SetupPreservesOwnersAndWindow, 0), CASE(LaunchRejectedDuringReplay, 0), CASE(SetupTestReplayWaitsForEndpoint, 0), CASE(NoclipCancelsReplayWithoutGo, 0), CASE(NoclipSpaceMomentum, 0), CASE(NoclipCancelThenExitBoundary, 0), CASE(SavepointFeedback, 0), CASE(SavedRankedRunCompletesInPractice, 0), CASE(LaunchSaveClock, 0), CASE(SavePointReplayPreservesBookmark, 0),

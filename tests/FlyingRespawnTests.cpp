@@ -44,6 +44,31 @@ BOOST_AUTO_TEST_CASE(flying_respawn_jump_context_roundtrip)
     BOOST_CHECK_EQUAL(ps.fd.forcePowerLevel[FP_LEVITATION], 1);
 }
 
+BOOST_AUTO_TEST_CASE(flying_respawn_ammo_roundtrip_and_mismatch)
+{
+    playerState_t input = {}, output = {};
+    for (int i = 0; i < MAX_AMMO; ++i) input.ammo[i] = i == 0 ? 0 : i == 1 ? -1 : i * 7;
+    flyingRespawnMovement_t movement = {};
+    G_FlyingRespawn_ReadMovement(&movement, &input, 0, 0, 0);
+    G_FlyingRespawn_WriteMovement(&output, &movement, 500);
+    for (int i = 0; i < MAX_AMMO; ++i) BOOST_CHECK_EQUAL(output.ammo[i], input.ammo[i]);
+    for (int i = 0; i < MAX_AMMO; ++i) {
+        for (int changed = 0; changed < 2; ++changed) {
+            FlyingPlayback h;
+            BOOST_REQUIRE(G_FlyingRespawn_BeginCheckpointReplay(&h.state, 2100, qtrue));
+            usercmd_t cmd = {};
+            while (G_FlyingRespawn_OverrideCmd(&h.state, 2300, &cmd)) {}
+            flyingRespawnMovement_t actual = h.state.automaticCheckpoint.handoff.movement;
+            actual.commandTime = 2300;
+            h.state.replay.expectedMovement.ammo[i] = input.ammo[i];
+            actual.ammo[i] = input.ammo[i] + changed;
+            G_FlyingRespawn_ApplyExpectedCheckpointProgress(&h.state, &actual);
+            BOOST_REQUIRE(G_FlyingRespawn_Advance(&h.state, 2300, &actual, &cmd));
+            BOOST_CHECK_EQUAL(h.state.mismatch, changed != 0);
+        }
+    }
+}
+
 // A later checkpoint must never pair the failed route's pose with post-GO input.
 BOOST_AUTO_TEST_CASE(flying_respawn_successive_checkpoint_rewinds_only_continuous_history)
 {

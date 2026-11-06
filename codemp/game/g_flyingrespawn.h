@@ -16,6 +16,7 @@ typedef struct {
 	int deltaAngles[3];
 	int commandTime, pmFlags, pmTime, groundEntityNum;
 	int movementStyle, forcePower;
+	int ammo[MAX_AMMO];
 	int forceJumpLevel, savedJumpLevel;
 	int forcePowersActive, forcePowerSelected, forceButtonNeedRelease;
 	int forcePowerDebounce[NUM_FORCE_POWERS], forcePowerDuration[NUM_FORCE_POWERS];
