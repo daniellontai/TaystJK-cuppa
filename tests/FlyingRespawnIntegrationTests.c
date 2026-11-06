@@ -1939,7 +1939,10 @@ static void CheckpointFeedbackRecipients(void)
     for (int required = 0; required < 2; ++required) {
         for (int flags = 0; flags < 8; ++flags) {
             gentity_t *player = Player(), *checkpoint = &g_entities[MAX_CLIENTS];
-            int counts[5] = {0};
+            /* Distinct masks expose source/recipient preference mixups; each still
+             * covers all eight combinations across the loop. */
+            const int preferences[5] = {flags, flags ^ 7, flags ^ 3, 7, 7};
+            int counts[5][3] = {{0}};
             SetTimes(2000, 20000);
             level.frameStartTime = 20000;
             player->client->pers.cmd.serverTime = 2000;
@@ -1951,9 +1954,9 @@ static void CheckpointFeedbackRecipients(void)
             for (int i = 0; i < 5; ++i) {
                 g_entities[i].inuse = qtrue;
                 g_entities[i].client = &g_clients[i];
-                g_clients[i].pers.showCenterCP = flags & 1;
-                g_clients[i].pers.showConsoleCP = flags & 2;
-                g_clients[i].pers.showChatCP = flags & 4;
+                g_clients[i].pers.showCenterCP = preferences[i] & 1;
+                g_clients[i].pers.showConsoleCP = preferences[i] & 2;
+                g_clients[i].pers.showChatCP = preferences[i] & 4;
                 if (i >= 2) {
                     g_clients[i].sess.sessionTeam = i == 4 ? TEAM_FREE : TEAM_SPECTATOR;
                     g_clients[i].ps.pm_flags = i == 2 ? PMF_FOLLOW : 0;
@@ -1966,22 +1969,27 @@ static void CheckpointFeedbackRecipients(void)
             for (int i = 0; i < commandsSent && i < 64; ++i) {
                 const int recipient = sent[i].client;
                 CHECK(recipient >= 0 && recipient < 3);
-                if (recipient < 0 || recipient >= 5) continue;
-                counts[recipient]++;
+                if (recipient < 0 || recipient >= 3) continue;
                 if (!strncmp(sent[i].text, "cp ", 3)) {
+                    counts[recipient][0]++;
                     CHECK(!strcmp(sent[i].text, required && recipient == 0
                         ? "cp \"^5Required Checkpoint 3:\n^38.500s^5, avg ^30^5u, max ^30^5u\n\n\n\n\n\n\n\n\n\""
                         : "cp \"^38.500s^5, avg ^30^5u, max ^30^5u\n\n\n\n\n\n\n\n\n\n\""));
                 } else {
+                    const int console = recipient != 2 && (preferences[recipient] & 2);
+                    counts[recipient][console ? 1 : 2]++;
                     CHECK(!strcmp(sent[i].text, required && recipient == 0
-                        ? ((flags & 2) ? "print \"^5Required Checkpoint 3: ^38.500^5, avg ^30^5, max ^30^5 ups\n\"" : "chat \"^5Required Checkpoint 3: ^38.500^5, avg ^30^5, max ^30^5 ups\"")
-                        : ((recipient != 2 && (flags & 2)) ? "print \"^5Checkpoint: ^38.500^5, avg ^30^5, max ^30^5 ups\n\"" : "chat \"^5Checkpoint: ^38.500^5, avg ^30^5, max ^30^5 ups\"")));
+                        ? (console ? "print \"^5Required Checkpoint 3: ^38.500^5, avg ^30^5, max ^30^5 ups\n\"" : "chat \"^5Required Checkpoint 3: ^38.500^5, avg ^30^5, max ^30^5 ups\"")
+                        : (console ? "print \"^5Checkpoint: ^38.500^5, avg ^30^5, max ^30^5 ups\n\"" : "chat \"^5Checkpoint: ^38.500^5, avg ^30^5, max ^30^5 ups\"")));
                 }
             }
-            CHECK(counts[0] == !!(flags & 1) + !!(flags & 6));
-            CHECK(counts[1] == counts[0]);
-            CHECK(counts[2] == !!(flags & 1) + !!(flags & 4));
-            CHECK(!counts[3] && !counts[4]);
+            for (int recipient = 0; recipient < 5; ++recipient) {
+                const int eligible = recipient < 3;
+                const int console = recipient != 2 && (preferences[recipient] & 2);
+                CHECK(counts[recipient][0] == (eligible && (preferences[recipient] & 1)));
+                CHECK(counts[recipient][1] == (eligible && console));
+                CHECK(counts[recipient][2] == (eligible && !console && (preferences[recipient] & 4)));
+            }
             CHECK(player->client->pers.stats.checkpoints == (required ? 4 : 0));
             CHECK(player->client->pers.stats.lastCheckpointTime == 2000);
             CHECK(g_clients[1].pers.stats.lastCheckpointTime == 0);
