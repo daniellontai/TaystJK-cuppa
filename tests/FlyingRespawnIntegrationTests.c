@@ -1760,6 +1760,73 @@ static void NoclipCancelsReplayWithoutGo(void)
     G_FlyingRespawn_FreeClient(state);
 }
 
+static void NoclipCancellationView(void)
+{
+    int oldSync = g_synchronousClients.integer, oldAllow = g_allowRaceTele.integer;
+    int oldTest = g_flyingRespawnTestMode.integer, oldEnable = g_enableFlyingRespawn.integer;
+    for (int mode = 0; mode < 4; ++mode) for (int sync = 0; sync < 2; ++sync) {
+        gentity_t *player = Player();
+        flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
+        flyingRespawnMovement_t movement;
+        flyingRespawnCheckpointConfig_t config = {0};
+        usercmd_t live = {0};
+        int timer;
+        g_synchronousClients.integer = 0;
+        g_allowRaceTele.integer = 2;
+        g_enableFlyingRespawn.integer = 1;
+        g_flyingRespawnTestMode.integer = 1;
+        player->client->pers.practice = qtrue;
+        player->client->ps.stats[STAT_HEALTH] = 100;
+        player->client->ps.commandTime = 950;
+        CHECK(G_FlyingRespawn_OnTimerStart(state, 1000, 100, 500, 1, 100));
+        G_FlyingRespawn_CaptureMovement(player, &movement);
+        G_FlyingRespawn_RecordState(state, 1000, &movement);
+        level.time = 1100;
+        RunCommand("savepos");
+        G_FlyingRespawn_RecordState(state, 1100, &movement);
+        CHECK(G_FlyingRespawn_OnCheckpointTouch(state, 1100, 20, &config, &movement));
+        CHECK(G_FlyingRespawn_CaptureAutomaticHandoff(state, 1600, &movement));
+        level.time = 2000;
+        if (mode == 0) RunCommand("respos");
+        else if (mode == 3) CHECK(G_FlyingRespawn_StartTestReplay(player, 100));
+        else {
+            CHECK(G_FlyingRespawn_StartCheckpointReplay(player));
+            if (mode == 2) CHECK(G_FlyingRespawn_StartCheckpointReplay(player));
+        }
+        CHECK(state->replay.active);
+        g_synchronousClients.integer = sync;
+        live.serverTime = level.time = 2010;
+        live.angles[YAW] = ANGLE2SHORT(130);
+        live.angles[PITCH] = ANGLE2SHORT(-25);
+        ClientThink(0, &live);
+        player->client->ps.viewangles[YAW] = 359;
+        player->client->ps.viewangles[PITCH] = 15;
+        player->client->ps.ammo[AMMO_DETPACK] = 0;
+        timer = player->client->pers.stats.startTime;
+        commandsSent = 0;
+        RunCommand("noclip");
+        CHECK(player->client->noclip);
+        level.time = 2020;
+        G_RunClient(player);
+        CHECK(!state->replay.active && !(player->client->ps.eFlags & EF_FLYING_RESPAWN));
+        CHECK(fabsf(AngleSubtract(player->client->ps.viewangles[YAW], 359)) < 0.1f);
+        CHECK(fabsf(AngleSubtract(player->client->ps.viewangles[PITCH], 15)) < 0.1f);
+        CHECK(player->client->pers.stats.startTime == timer);
+        CHECK(player->client->ps.ammo[AMMO_DETPACK] == 0);
+        for (int i = 0; i < commandsSent && i < 64; ++i) CHECK(!strstr(sent[i].text, "GO!"));
+        live.serverTime = level.time = 2030;
+        live.angles[YAW] += ANGLE2SHORT(3);
+        live.angles[PITCH] += ANGLE2SHORT(2);
+        ClientThink(0, &live);
+        if (sync) G_RunClient(player);
+        CHECK(fabsf(AngleSubtract(player->client->ps.viewangles[YAW], 2)) < 0.15f);
+        CHECK(fabsf(AngleSubtract(player->client->ps.viewangles[PITCH], 17)) < 0.15f);
+        G_FlyingRespawn_FreeClient(state);
+    }
+    g_synchronousClients.integer = oldSync; g_allowRaceTele.integer = oldAllow;
+    g_flyingRespawnTestMode.integer = oldTest; g_enableFlyingRespawn.integer = oldEnable;
+}
+
 static void NoclipSpaceMomentum(void)
 {
     gentity_t *player = Player();
@@ -2812,7 +2879,7 @@ static const IntegrationCase cases[] = {
     CASE(SavedAmmoRestoration, 0), CASE(CheckpointAmmoRestoration, 0),
     CASE(RespawnSchemaHistorical, 0), CASE(RespawnSchemaExisting, 0), CASE(RespawnSchemaError, 0),
     CASE(SynchronousReceiptsCoalesce, 0), CASE(ManualSkipDeadlines, 0), CASE(ReplayRejectedBeginAndConfiguration, 0), CASE(ManualReleaseTimer, 0), CASE(PracticeBookmarkTransaction, 0), CASE(ManualReleaseHistory, 0),
-    CASE(SavePointReplacementAtomic, 0), CASE(SavePointDefinitionNoclip, 0), CASE(ManualLiveClockQueue, 0), CASE(ManualTimerEntryAlignment, 0), CASE(ManualSetupMomentum, 0), CASE(ManualSetupSameTickBoundary, 0), CASE(NoclipImmediateBookmark, 0), CASE(SetupSameTickExecution, 0), CASE(SetupPreservesOwnersAndWindow, 0), CASE(LaunchRejectedDuringReplay, 0), CASE(SetupTestReplayWaitsForEndpoint, 0), CASE(NoclipCancelsReplayWithoutGo, 0), CASE(NoclipSpaceMomentum, 0), CASE(NoclipCancelThenExitBoundary, 0), CASE(SavepointFeedback, 0), CASE(SavedRankedRunCompletesInPractice, 0), CASE(LaunchSaveClock, 0), CASE(SavePointReplayPreservesBookmark, 0),
+    CASE(SavePointReplacementAtomic, 0), CASE(SavePointDefinitionNoclip, 0), CASE(ManualLiveClockQueue, 0), CASE(ManualTimerEntryAlignment, 0), CASE(ManualSetupMomentum, 0), CASE(ManualSetupSameTickBoundary, 0), CASE(NoclipImmediateBookmark, 0), CASE(SetupSameTickExecution, 0), CASE(SetupPreservesOwnersAndWindow, 0), CASE(LaunchRejectedDuringReplay, 0), CASE(SetupTestReplayWaitsForEndpoint, 0), CASE(NoclipCancelsReplayWithoutGo, 0), CASE(NoclipCancellationView, 0), CASE(NoclipSpaceMomentum, 0), CASE(NoclipCancelThenExitBoundary, 0), CASE(SavepointFeedback, 0), CASE(SavedRankedRunCompletesInPractice, 0), CASE(LaunchSaveClock, 0), CASE(SavePointReplayPreservesBookmark, 0),
     CASE(SavepointFeedbackLag, 0), CASE(CheckpointFeedbackRecipients, 0),
     CASE(SavePointOccupancyReplayMatrix, 0), CASE(FirstGoCheckpointBrush, 0),
     CASE(ReplayJumpContext, 0), CASE(ReplayJumpContextModes, 0), CASE(ReplayMapperTransition, 0), CASE(ReplaySettingCommandResets, 0), CASE(StaticForceWait, 0), CASE(FlyingFrameInput, 0),

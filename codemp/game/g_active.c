@@ -5987,14 +5987,19 @@ static void FlyingRespawnCountdown(gentity_t *ent);
 
 static void SavePointSyncOccupancy(gentity_t *ent);
 
+static void FlyingRespawnRebaseView(gentity_t *ent)
+{
+	int i;
+	for (i = 0; i < 3; ++i)
+		ent->client->ps.delta_angles[i] = ANGLE2SHORT(ent->client->ps.viewangles[i]) - ent->client->pers.cmd.angles[i];
+}
+
 static void FlyingRespawnRelease(gentity_t *ent, qboolean manual)
 {
 	flyingRespawnState_t *state = &ent->client->pers.flyingRespawn;
 	flyingRespawnMovement_t movement;
-	int i;
 	if (state->replay.hasLiveCmd) ent->client->pers.cmd = state->replay.liveCmd;
-	for (i = 0; i < 3; ++i)
-		ent->client->ps.delta_angles[i] = ANGLE2SHORT(ent->client->ps.viewangles[i]) - ent->client->pers.cmd.angles[i];
+	FlyingRespawnRebaseView(ent);
 	ent->client->pers.cmd.weapon = ent->client->ps.weapon;
 	if (!manual && ent->client->ps.commandTime < level.time - 1) ent->client->ps.commandTime = level.time - 1;
 	ent->client->ps.eFlags &= ~EF_FLYING_RESPAWN;
@@ -6155,6 +6160,7 @@ static void FlyingRespawnThink(gentity_t *ent)
 			ent->health <= 0 || ent->client->noclip ||
 			ent->client->sess.sessionTeam == TEAM_SPECTATOR) {
 			G_FlyingRespawn_CancelReplay(state, level.time, &ent->client->pers.cmd);
+			FlyingRespawnRebaseView(ent);
 			ent->client->ps.eFlags &= ~EF_FLYING_RESPAWN;
 			if (ent->client->noclip) state->historyNoclip = qtrue;
 			SavePointSyncOccupancy(ent);
