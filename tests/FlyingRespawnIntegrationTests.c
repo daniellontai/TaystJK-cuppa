@@ -1100,6 +1100,54 @@ static void ManualReleaseTimer(void)
     }
 }
 
+static void SavePointReplacementAtomic(void)
+{
+    for (int armed = 0; armed < 2; ++armed) {
+        for (int axis = 0; axis < 3; ++axis) {
+            gentity_t *player = Player();
+            clientPersistant_t *pers = &player->client->pers;
+            player->client->noclip = axis == 2;
+            VectorSet(player->client->ps.origin, 1, 1, 1);
+            RunCommand("addSavePoint");
+            VectorSet(player->client->ps.origin, 10, 10, 10);
+            RunCommand("addSavePoint");
+            pers->addSavePointArmed = armed;
+            pers->addSavePointInside = armed;
+            VectorSet(player->client->ps.origin, 20, 30, 40);
+            RunCommand("addSavePoint");
+            VectorSet(player->client->ps.origin, 50, 60, 70);
+            player->client->ps.origin[axis] = pers->addSavePointFirst[axis];
+            RunCommand("addSavePoint");
+            for (int i = 0; i < 3; ++i) {
+                CHECK(pers->addSavePointMins[i] == 1);
+                CHECK(pers->addSavePointMaxs[i] == 10);
+                CHECK(pers->addSavePointFirst[i] == 20 + i * 10);
+            }
+            CHECK(pers->addSavePointArmed == armed);
+            CHECK(pers->addSavePointInside == armed);
+            CHECK(pers->addSavePointPending);
+            VectorSet(player->client->ps.origin, 50, 60, 70);
+            RunCommand("addSavePoint");
+            for (int i = 0; i < 3; ++i) {
+                CHECK(pers->addSavePointMins[i] == 20 + i * 10);
+                CHECK(pers->addSavePointMaxs[i] == 50 + i * 10);
+            }
+            CHECK(pers->addSavePointArmed && !pers->addSavePointInside);
+            CHECK(!pers->addSavePointPending);
+            pers->addSavePointInside = qtrue;
+            RunCommand("addSavePoint");
+            RunCommandWithArg("addSavePoint", "cancel");
+            CHECK(!pers->addSavePointPending);
+            CHECK(pers->addSavePointArmed && pers->addSavePointInside);
+            for (int i = 0; i < 3; ++i) {
+                CHECK(pers->addSavePointMins[i] == 20 + i * 10);
+                CHECK(pers->addSavePointMaxs[i] == 50 + i * 10);
+            }
+            G_FlyingRespawn_FreeClient(&pers->flyingRespawn);
+        }
+    }
+}
+
 static void SavePointDefinitionNoclip(void)
 {
     gentity_t *player = Player();
@@ -2442,7 +2490,7 @@ typedef struct { const char *name; void (*run)(void); int finish; } IntegrationC
 static const IntegrationCase cases[] = {
     CASE(RespawnSchemaHistorical, 0), CASE(RespawnSchemaExisting, 0), CASE(RespawnSchemaError, 0),
     CASE(SynchronousReceiptsCoalesce, 0), CASE(ManualSkipDeadlines, 0), CASE(ReplayRejectedBeginAndConfiguration, 0), CASE(ManualReleaseTimer, 0), CASE(ManualReleaseHistory, 0),
-    CASE(SavePointDefinitionNoclip, 0), CASE(ManualLiveClockQueue, 0), CASE(ManualTimerEntryAlignment, 0), CASE(ManualSetupMomentum, 0), CASE(ManualSetupSameTickBoundary, 0), CASE(NoclipImmediateBookmark, 0), CASE(SetupSameTickExecution, 0), CASE(SetupPreservesOwnersAndWindow, 0), CASE(LaunchRejectedDuringReplay, 0), CASE(SetupTestReplayWaitsForEndpoint, 0), CASE(NoclipCancelsReplayWithoutGo, 0), CASE(NoclipSpaceMomentum, 0), CASE(NoclipCancelThenExitBoundary, 0), CASE(SavepointFeedback, 0), CASE(SavedRankedRunCompletesInPractice, 0), CASE(LaunchSaveClock, 0), CASE(SavePointReplayPreservesBookmark, 0),
+    CASE(SavePointReplacementAtomic, 0), CASE(SavePointDefinitionNoclip, 0), CASE(ManualLiveClockQueue, 0), CASE(ManualTimerEntryAlignment, 0), CASE(ManualSetupMomentum, 0), CASE(ManualSetupSameTickBoundary, 0), CASE(NoclipImmediateBookmark, 0), CASE(SetupSameTickExecution, 0), CASE(SetupPreservesOwnersAndWindow, 0), CASE(LaunchRejectedDuringReplay, 0), CASE(SetupTestReplayWaitsForEndpoint, 0), CASE(NoclipCancelsReplayWithoutGo, 0), CASE(NoclipSpaceMomentum, 0), CASE(NoclipCancelThenExitBoundary, 0), CASE(SavepointFeedback, 0), CASE(SavedRankedRunCompletesInPractice, 0), CASE(LaunchSaveClock, 0), CASE(SavePointReplayPreservesBookmark, 0),
     CASE(SavePointOccupancyReplayMatrix, 0), CASE(FirstGoCheckpointBrush, 0),
     CASE(ReplayJumpContext, 0), CASE(ReplayJumpContextModes, 0), CASE(ReplayMapperTransition, 0), CASE(ReplaySettingCommandResets, 0), CASE(StaticForceWait, 0), CASE(FlyingFrameInput, 0),
     CASE(ReplayTimerBrushes, 0), CASE(StaticTribesServerFrames, 0),

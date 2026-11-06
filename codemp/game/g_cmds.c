@@ -7342,6 +7342,7 @@ static qboolean FlyingRespawnCommandPlayer(gentity_t *ent)
 static void Cmd_AddSavePoint_f(gentity_t *ent)
 {
 	clientPersistant_t *pers;
+	vec3_t mins, maxs;
 	int i;
 	char arg[16];
 	if (!FlyingRespawnCommandRacer(ent)) {
@@ -7368,13 +7369,15 @@ static void Cmd_AddSavePoint_f(gentity_t *ent)
 		return;
 	}
 	for (i = 0; i < 3; ++i) {
-		pers->addSavePointMins[i] = Q_min(pers->addSavePointFirst[i], ent->client->ps.origin[i]);
-		pers->addSavePointMaxs[i] = Q_max(pers->addSavePointFirst[i], ent->client->ps.origin[i]);
-		if (pers->addSavePointMins[i] == pers->addSavePointMaxs[i]) {
+		mins[i] = Q_min(pers->addSavePointFirst[i], ent->client->ps.origin[i]);
+		maxs[i] = Q_max(pers->addSavePointFirst[i], ent->client->ps.origin[i]);
+		if (mins[i] == maxs[i]) {
 			trap->SendServerCommand(ent - g_entities, "print \"Savepoint needs volume on all three axes.\n\"");
 			return;
 		}
 	}
+	VectorCopy(mins, pers->addSavePointMins);
+	VectorCopy(maxs, pers->addSavePointMaxs);
 	pers->addSavePointPending = qfalse;
 	pers->addSavePointArmed = qtrue;
 	pers->addSavePointInside = qfalse;
