@@ -50,6 +50,8 @@ set(MPGameGameFiles
 	"${MPDir}/game/g_account.c"
 	"${MPDir}/game/g_flyingrespawn.c"
 	"${MPDir}/game/g_flyingrespawn.h"
+	"${MPDir}/game/g_practicebookmark.c"
+	"${MPDir}/game/g_practicebookmark.h"
 	"${MPDir}/game/g_racefeedback.c"
 	"${MPDir}/game/g_racefeedback.h"
 	"${MPDir}/game/g_secretcourses.c"

@@ -1125,6 +1125,79 @@ static void ManualReleaseTimer(void)
     }
 }
 
+static void PracticeBookmarkTransaction(void)
+{
+    for (int mode = 0; mode < 3; ++mode) {
+        gentity_t *player = Player();
+        flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
+        flyingRespawnMovement_t initial;
+        flyingRespawnSnapshot_t saved;
+        practiceTimerSnapshot_t savedTimer;
+        flyingRespawnCheckpointConfig_t config = {0};
+        config.hasRewind = config.hasRelease = qtrue;
+        config.releaseMs = 100;
+        player->client->pers.practice = qtrue;
+        CHECK(G_FlyingRespawn_OnTimerStart(state, 600, 500, 0, 0, 500));
+        G_FlyingRespawn_CaptureMovement(player, &initial);
+        G_FlyingRespawn_RecordState(state, 600, &initial);
+        CHECK(G_FlyingRespawn_OnCheckpointTouch(state, 700, 20, &config, &initial));
+        CHECK(G_FlyingRespawn_CaptureAutomaticHandoff(state, 800, &initial));
+        SetTimes(1100, 20000);
+        player->client->pers.stats.startTime = mode == 1 ? 0 : mode == 2 ? 20000 : 11500;
+        player->client->pers.stats.startLevelTime = 900;
+        player->client->pers.stats.checkpoints = 7;
+        player->client->ps.origin[0] = 42;
+        RunCommand("savepos");
+        CHECK(state->automaticCheckpoint.valid);
+        saved = state->manualSave.snapshot;
+        savedTimer = player->client->pers.savePosTimer;
+        CHECK(saved.movement.checkpoints == 7);
+        player->client->ps.origin[0] = 99;
+        player->client->pers.stats.topSpeed = 999;
+        player->client->noclip = qtrue;
+        RunCommand("savepos");
+        player->client->noclip = qfalse;
+        player->health = 0;
+        RunCommand("savepos");
+        player->health = 100;
+        CHECK(!memcmp(&saved, &state->manualSave.snapshot, sizeof(saved)));
+        CHECK(!memcmp(&savedTimer, &player->client->pers.savePosTimer, sizeof(savedTimer)));
+        CHECK(state->automaticCheckpoint.valid);
+        SetTimes(1750, 22000);
+        player->client->pers.stats.checkpoints = 19;
+        player->client->pers.practice = qfalse;
+        player->client->pers.stats.startTime = 12345;
+        CHECK(!G_FlyingRespawn_StartManualReplay(player));
+        CHECK(player->client->pers.stats.startTime == 12345);
+        CHECK(state->automaticCheckpoint.valid);
+        player->client->pers.practice = qtrue;
+        RunCommand("respos");
+        CHECK(state->replay.active);
+        CHECK(!state->automaticCheckpoint.valid);
+        RunCommand("savepos");
+        CHECK(!memcmp(&saved, &state->manualSave.snapshot, sizeof(saved)));
+        CHECK(!memcmp(&savedTimer, &player->client->pers.savePosTimer, sizeof(savedTimer)));
+        {
+            int entryStart = player->client->pers.stats.startTime;
+            G_FlyingRespawn_CancelReplay(state, level.time, &player->client->pers.cmd);
+            CHECK(player->client->pers.stats.startTime == entryStart);
+            CHECK(!state->replay.active);
+        }
+        RunCommand("respos");
+        CHECK(state->replay.active);
+        SetTimes(2050, 22300);
+        RunCommand("respos");
+        CHECK(!state->replay.active);
+        CHECK(player->client->ps.origin[0] == 42);
+        if (mode == 1) CHECK(!player->client->pers.stats.startTime);
+        else {
+            CHECK(Clock() - player->client->pers.stats.startTime == (mode == 2 ? 0 : 8500));
+            CHECK(player->client->pers.stats.checkpoints == 7);
+        }
+        G_FlyingRespawn_FreeClient(state);
+    }
+}
+
 static void SavePointReplacementAtomic(void)
 {
     for (int armed = 0; armed < 2; ++armed) {
@@ -1244,7 +1317,7 @@ static void ManualLiveClockQueue(void)
         if (variant == 4) player->client->pers.stats.startTime = 0;
         RunCommand("savepos");
         savedX = player->client->ps.origin[0];
-        CHECK(player->client->pers.savePosTimerElapsed == (variant == 4 ? 0 : 7946));
+        CHECK(player->client->pers.savePosTimer.elapsedMs == (variant == 4 ? 0 : 7946));
         CHECK(state->manualSave.snapshot.movement.commandTime == 6378096);
         VectorClear(player->client->ps.velocity);
         RunCommand("practice");
@@ -1845,7 +1918,7 @@ static void SavepointFeedbackLag(void)
                     player->client->ps.pm_type = PM_FREEZE;
                     LiveStep(2000);
                     CHECK(player->client->pers.flyingRespawn.manualSave.valid);
-                    CHECK(player->client->pers.savePosTimerElapsed == (variant == 3 ? 0 : 8500));
+                    CHECK(player->client->pers.savePosTimer.elapsedMs == (variant == 3 ? 0 : 8500));
                 }
                 for (int i = 0; i < commandsSent && i < 64; ++i) {
                     if (!strstr(sent[i].text, "avg")) continue;
@@ -2004,8 +2077,8 @@ static void LaunchSaveClock(void)
     SetTimes(66660050, 20066);
     LiveStep(66660050);
     CHECK(state->manualSave.valid && state->manualSave.snapshot.serverTime == 66660050);
-    CHECK(player->client->pers.savePosTimerElapsed == 50);
-    CHECK(player->client->pers.savePosLevelTimeElapsed == 50);
+    CHECK(player->client->pers.savePosTimer.elapsedMs == 50);
+    CHECK(player->client->pers.savePosTimer.levelElapsedMs == 50);
     VectorClear(player->client->ps.velocity);
     RunCommand("practice");
     RunCommand("practice");
@@ -2093,16 +2166,16 @@ static void SavePointReplayPreservesBookmark(void)
         CHECK(!mode || commandCount > 0);
         commands = commandCount ? malloc(commandCount * sizeof(*commands)) : NULL;
         if (commandCount) memcpy(commands, state->manualSave.commands, commandCount * sizeof(*commands));
-        savedElapsed = player->client->pers.savePosTimerElapsed;
-        savedLevel = player->client->pers.savePosLevelTimeElapsed;
-        savedSecondary = player->client->pers.savePosNoRespawnElapsed;
-        savedCount = player->client->pers.savePosRespawnCount;
-        savedLag = player->client->pers.savePosStartLag;
-        savedSamples = player->client->pers.savePosDisplacementSamples;
-        savedCheckpoints = player->client->pers.savePosCheckpoints;
-        savedDisplacement = player->client->pers.savePosDisplacement;
-        savedTop = player->client->pers.savePosTopSpeed;
-        savedRunning = player->client->pers.savePosTimerRunning;
+        savedElapsed = player->client->pers.savePosTimer.elapsedMs;
+        savedLevel = player->client->pers.savePosTimer.levelElapsedMs;
+        savedSecondary = player->client->pers.savePosTimer.secondaryElapsedMs;
+        savedCount = player->client->pers.savePosTimer.respawnCount;
+        savedLag = player->client->pers.savePosTimer.startLag;
+        savedSamples = player->client->pers.savePosTimer.displacementSamples;
+        savedCheckpoints = player->client->pers.flyingRespawn.manualSave.snapshot.movement.checkpoints;
+        savedDisplacement = player->client->pers.savePosTimer.displacement;
+        savedTop = player->client->pers.savePosTimer.topSpeed;
+        savedRunning = player->client->pers.savePosTimer.running;
         messageCount = SaveMessages();
         player->client->ps.origin[0] = 100;
         LiveStep(1150);
@@ -2122,16 +2195,16 @@ static void SavePointReplayPreservesBookmark(void)
         CHECK(state->manualSave.commandCount == commandCount);
         if (commandCount == state->manualSave.commandCount && commandCount)
             CHECK(!memcmp(state->manualSave.commands, commands, commandCount * sizeof(*commands)));
-        CHECK(player->client->pers.savePosTimerElapsed == savedElapsed);
-        CHECK(player->client->pers.savePosLevelTimeElapsed == savedLevel);
-        CHECK(player->client->pers.savePosNoRespawnElapsed == savedSecondary);
-        CHECK(player->client->pers.savePosRespawnCount == savedCount);
-        CHECK(player->client->pers.savePosStartLag == savedLag);
-        CHECK(player->client->pers.savePosDisplacementSamples == savedSamples);
-        CHECK(player->client->pers.savePosCheckpoints == savedCheckpoints);
-        CHECK(player->client->pers.savePosDisplacement == savedDisplacement);
-        CHECK(player->client->pers.savePosTopSpeed == savedTop);
-        CHECK(player->client->pers.savePosTimerRunning == savedRunning);
+        CHECK(player->client->pers.savePosTimer.elapsedMs == savedElapsed);
+        CHECK(player->client->pers.savePosTimer.levelElapsedMs == savedLevel);
+        CHECK(player->client->pers.savePosTimer.secondaryElapsedMs == savedSecondary);
+        CHECK(player->client->pers.savePosTimer.respawnCount == savedCount);
+        CHECK(player->client->pers.savePosTimer.startLag == savedLag);
+        CHECK(player->client->pers.savePosTimer.displacementSamples == savedSamples);
+        CHECK(player->client->pers.flyingRespawn.manualSave.snapshot.movement.checkpoints == savedCheckpoints);
+        CHECK(player->client->pers.savePosTimer.displacement == savedDisplacement);
+        CHECK(player->client->pers.savePosTimer.topSpeed == savedTop);
+        CHECK(player->client->pers.savePosTimer.running == savedRunning);
         CHECK(SaveMessages() == messageCount);
         player->client->ps.origin[0] = 100;
         LiveStep(1450);
@@ -2645,7 +2718,7 @@ typedef struct { const char *name; void (*run)(void); int finish; } IntegrationC
 #define CASE(name, finish) { #name, name, finish }
 static const IntegrationCase cases[] = {
     CASE(RespawnSchemaHistorical, 0), CASE(RespawnSchemaExisting, 0), CASE(RespawnSchemaError, 0),
-    CASE(SynchronousReceiptsCoalesce, 0), CASE(ManualSkipDeadlines, 0), CASE(ReplayRejectedBeginAndConfiguration, 0), CASE(ManualReleaseTimer, 0), CASE(ManualReleaseHistory, 0),
+    CASE(SynchronousReceiptsCoalesce, 0), CASE(ManualSkipDeadlines, 0), CASE(ReplayRejectedBeginAndConfiguration, 0), CASE(ManualReleaseTimer, 0), CASE(PracticeBookmarkTransaction, 0), CASE(ManualReleaseHistory, 0),
     CASE(SavePointReplacementAtomic, 0), CASE(SavePointDefinitionNoclip, 0), CASE(ManualLiveClockQueue, 0), CASE(ManualTimerEntryAlignment, 0), CASE(ManualSetupMomentum, 0), CASE(ManualSetupSameTickBoundary, 0), CASE(NoclipImmediateBookmark, 0), CASE(SetupSameTickExecution, 0), CASE(SetupPreservesOwnersAndWindow, 0), CASE(LaunchRejectedDuringReplay, 0), CASE(SetupTestReplayWaitsForEndpoint, 0), CASE(NoclipCancelsReplayWithoutGo, 0), CASE(NoclipSpaceMomentum, 0), CASE(NoclipCancelThenExitBoundary, 0), CASE(SavepointFeedback, 0), CASE(SavedRankedRunCompletesInPractice, 0), CASE(LaunchSaveClock, 0), CASE(SavePointReplayPreservesBookmark, 0),
     CASE(SavepointFeedbackLag, 0), CASE(CheckpointFeedbackRecipients, 0),
     CASE(SavePointOccupancyReplayMatrix, 0), CASE(FirstGoCheckpointBrush, 0),

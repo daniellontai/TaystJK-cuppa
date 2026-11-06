@@ -32,6 +32,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #include "g_public.h"
 #include "g_flyingrespawn.h"
 #include "g_racefeedback.h"
+#include "g_practicebookmark.h"
 #include "qcommon/q_version.h"
 
 typedef struct gentity_s gentity_t;
@@ -900,21 +901,8 @@ typedef struct clientPersistant_s {
 	qboolean	addSavePointPending, addSavePointArmed, addSavePointInside;
 	vec3_t		addSavePointFirst, addSavePointMins, addSavePointMaxs;
 
-	// Frozen pose/input is owned by flyingRespawn.manualSave; only manual practice timer data follows.
-	qboolean	savePosUsed;
-	// Timer snapshot at savepos time; zero elapsed may still be a running timer.
-	qboolean	savePosTimerRunning;
-	qboolean	savePosCoopStarted;
-	int64_t		savePosCommandWallOffset; /* saved movement clock relative to save's wall sample */
-	int			savePosTimerElapsed;		// trap->Milliseconds() - stats.startTime
-	int			savePosLevelTimeElapsed;	// level.time - stats.startLevelTime
-	int			savePosNoRespawnElapsed;
-	int			savePosRespawnCount;
-	int			savePosStartLag;
-	float		savePosDisplacement;
-	int			savePosDisplacementSamples;
-	float		savePosTopSpeed;
-	int			savePosCheckpoints;
+	practiceTimerSnapshot_t savePosTimer;
+
 } clientPersistant_t;
 
 typedef struct renderInfo_s
@@ -1946,7 +1934,6 @@ void G_FlyingRespawn_RestoreMovement(gentity_t *ent, const flyingRespawnSnapshot
 qboolean G_FlyingRespawn_StartManualReplay(gentity_t *ent);
 qboolean G_FlyingRespawn_StartCheckpointReplay(gentity_t *ent);
 qboolean G_FlyingRespawn_StartTestReplay(gentity_t *ent, int durationMs);
-qboolean G_SavePosition(gentity_t *ent, qboolean announce);
 
 //
 // g_team.c

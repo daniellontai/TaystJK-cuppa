@@ -5985,38 +5985,6 @@ void G_FlyingRespawn_RestoreMovement(gentity_t *ent, const flyingRespawnSnapshot
 
 static void FlyingRespawnCountdown(gentity_t *ent);
 
-/* Rewind saved practice clocks at entry, then restore the saved state at GO. */
-static int FlyingRespawnRestorePracticeTimer(gentity_t *ent, int rewindMs)
-{
-	int wall = trap->Milliseconds();
-	if (!ent->client || !ent->client->pers.practice ||
-		!ent->client->pers.flyingRespawn.replay.manualReplay) return wall;
-	ent->client->pers.flyingRespawn.respawnCount = ent->client->pers.savePosRespawnCount;
-	if (ent->client->pers.savePosTimerRunning) {
-		ent->client->pers.stats.coopStarted         = ent->client->pers.savePosCoopStarted;
-		ent->client->pers.stats.startTime           = wall - ent->client->pers.savePosTimerElapsed + rewindMs;
-		ent->client->pers.stats.startLevelTime      = level.time - ent->client->pers.savePosLevelTimeElapsed + rewindMs;
-		ent->client->pers.startLag                  = ent->client->pers.savePosStartLag;
-		ent->client->pers.stats.displacement        = ent->client->pers.savePosDisplacement;
-		ent->client->pers.stats.displacementSamples = ent->client->pers.savePosDisplacementSamples;
-		ent->client->pers.stats.topSpeed            = ent->client->pers.savePosTopSpeed;
-		ent->client->pers.stats.checkpoints         = ent->client->pers.savePosCheckpoints;
-		ent->client->pers.stats.lastCheckpointTime  = 0;
-		ent->client->ps.duelTime                    = level.time - ent->client->pers.savePosLevelTimeElapsed + rewindMs;
-		G_FlyingRespawn_ResetSecondarySegment(&ent->client->pers.flyingRespawn, level.time, ent->client->pers.savePosNoRespawnElapsed - rewindMs);
-	} else {
-		// timer was not running at savepos — clear any run that started after the save
-		// (can't use ResetSpecificPlayerTimers: it clears velocity and overrides force for some styles)
-		ent->client->pers.stats.startTime      = 0;
-		ent->client->pers.stats.coopStarted    = qfalse;
-		ent->client->pers.stats.startLevelTime = 0;
-		ent->client->ps.duelTime               = 0;
-		ent->client->pers.flyingRespawn.secondaryRunning = qfalse;
-		ent->client->pers.flyingRespawn.secondaryBaseMs = 0;
-	}
-	return wall;
-}
-
 static void SavePointSyncOccupancy(gentity_t *ent);
 
 static void FlyingRespawnRelease(gentity_t *ent, qboolean manual)
@@ -6040,9 +6008,7 @@ static void FlyingRespawnRelease(gentity_t *ent, qboolean manual)
 
 static void FlyingRespawnManualRelease(gentity_t *ent)
 {
-	int wall = FlyingRespawnRestorePracticeTimer(ent, 0);
-	int64_t commandTime = (int64_t)wall + ent->client->pers.savePosCommandWallOffset;
-	ent->client->ps.commandTime = commandTime > INT_MAX ? INT_MAX : commandTime < INT_MIN ? INT_MIN : (int)commandTime;
+	G_PracticeBookmark_RestoreAtRelease(ent);
 	FlyingRespawnRelease(ent, qtrue);
 }
 
@@ -6069,7 +6035,7 @@ qboolean G_FlyingRespawn_StartManualReplay(gentity_t *ent)
 	if (!G_FlyingRespawn_BeginManualReplay(state, level.time, ent->client->pers.practice)) return qfalse;
 	FlyingRespawnInstallReplay(ent);
 	G_FlyingRespawn_ClearAutomaticCheckpoint(state);
-	FlyingRespawnRestorePracticeTimer(ent, state->manualSave.snapshot.serverTime - state->manualSave.start.serverTime);
+	G_PracticeBookmark_RestoreAtEntry(ent, state->manualSave.snapshot.serverTime - state->manualSave.start.serverTime);
 	FlyingRespawnCountdown(ent);
 	if (G_FlyingRespawn_FinishManualReplay(state, level.time, ent->client->pers.practice)) {
 		FlyingRespawnManualRelease(ent);

@@ -3189,7 +3189,6 @@ void ClientBegin( int clientNum, qboolean allowTeamReset ) {
 
 	G_FlyingRespawn_FreeClient(&client->pers.flyingRespawn);
 	G_FlyingRespawn_InitClient(&client->pers.flyingRespawn);
-	client->pers.savePosUsed = qfalse;
 	memset( &client->ps, 0, sizeof( client->ps ) );
 	client->ps.eFlags = flags;
 	client->ps.persistant[PERS_SPAWN_COUNT] = spawnCount;
