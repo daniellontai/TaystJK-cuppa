@@ -323,9 +323,10 @@ static void StaticCommandAcknowledgment(void)
         flyingRespawnState_t *state = &player->client->pers.flyingRespawn;
         flyingRespawnMovement_t movement;
         flyingRespawnCheckpointConfig_t config = {0};
-        usercmd_t live = {0};
+        usercmd_t live = {0}, recorded = {0};
         int oldestViolation = 0, invariantViolation = 0, deadline, secondary, count;
         flyingRespawnCapture_t frozen;
+        flyingRespawnCmd_t frozenCommand;
         flyingRespawnMovement_t held, observed;
         g_synchronousClients.integer = sync;
         level.maxclients = 0;
@@ -333,7 +334,18 @@ static void StaticCommandAcknowledgment(void)
         player->client->ps.commandTime = 1200;
         G_FlyingRespawn_CaptureMovement(player, &movement);
         CHECK(G_FlyingRespawn_OnCheckpointTouch(state, 1200, 20, &config, &movement));
+        recorded.serverTime = 1250;
+        recorded.forwardmove = 37;
+        recorded.angles[YAW] = 12345;
+        G_FlyingRespawn_RecordExecutionCmd(state, 1250, &recorded);
         CHECK(G_FlyingRespawn_CaptureAutomaticHandoff(state, 7200, &movement));
+        CHECK(state->automaticCheckpoint.commandCount == 1);
+        CHECK(state->automaticCheckpoint.commands != NULL);
+        if (state->automaticCheckpoint.commandCount != 1 || !state->automaticCheckpoint.commands) {
+            G_FlyingRespawn_FreeClient(state);
+            continue;
+        }
+        frozenCommand = state->automaticCheckpoint.commands[0];
         CHECK(G_FlyingRespawn_BeginCheckpointReplay(state, 2000, qtrue));
         level.time = 2050;
         CHECK(G_FlyingRespawn_StartCheckpointReplay(player));
@@ -352,6 +364,8 @@ static void StaticCommandAcknowledgment(void)
             observed.commandTime = held.commandTime;
             if (memcmp(&held, &observed, sizeof(held)) ||
                 memcmp(&frozen, &state->automaticCheckpoint, sizeof(frozen)) ||
+                !state->automaticCheckpoint.commands ||
+                memcmp(&frozenCommand, state->automaticCheckpoint.commands, sizeof(frozenCommand)) ||
                 deadline != state->replay.releaseServerTime || count != state->respawnCount ||
                 secondary != G_FlyingRespawn_GetSecondaryElapsed(state, level.time)) invariantViolation = 1;
             if ((i >= 63 && live.serverTime - 63 * 9 > player->client->ps.commandTime) ||
@@ -381,8 +395,10 @@ static void StaticCommandAcknowledgment(void)
         CHECK(player->client->ps.commandTime == acknowledged);
         player->client->pers.connected = CON_CONNECTING;
         level.time = deadline + (sync ? 50 : 0);
+        commandsSent = 0;
         G_RunClient(player);
         CHECK(!state->replay.active && !state->mismatch);
+        CHECK(commandsSent > 0 && strstr(sent[0].text, "GO!") != NULL);
         G_FlyingRespawn_FreeClient(state);
     }
     g_synchronousClients.integer = oldSync;
