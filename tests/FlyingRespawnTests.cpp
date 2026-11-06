@@ -1223,3 +1223,70 @@ BOOST_AUTO_TEST_CASE(flying_respawn_captured_setup_remaining_boundaries)
     BOOST_CHECK(!G_FlyingRespawn_BeginManualReplay(&manual.state, 2000, qtrue));
     BOOST_CHECK_EQUAL(memcmp(&before, &manual.state.replay, sizeof(before)), 0);
 }
+
+// Exercise pause-only adjustments through public operations, including sentinels.
+BOOST_AUTO_TEST_CASE(flying_respawn_pause_only_all_deadlines_contract)
+{
+    using Deadline = int flyingRespawnMovement_t::*;
+    const Deadline scalars[] = {
+        &flyingRespawnMovement_t::forcePowerRegenDebounceTime,
+        &flyingRespawnMovement_t::forceJumpAddTime,
+        &flyingRespawnMovement_t::forceRageRecoveryTime,
+        &flyingRespawnMovement_t::groundTime,
+        &flyingRespawnMovement_t::jetPackDebReduce,
+        &flyingRespawnMovement_t::jetPackDebRecharge,
+        &flyingRespawnMovement_t::overheatRechargeDebReduce
+    };
+    auto seed = [&](flyingRespawnMovement_t &m, int value) {
+        for (int i = 0; i < NUM_FORCE_POWERS; ++i)
+            m.forcePowerDebounce[i] = m.forcePowerDuration[i] = value;
+        for (auto field : scalars) m.*field = value;
+        m.commandTime = 1200; m.lastOnGround = 1100;
+        m.origin[0] = 12; m.viewangles[YAW] = 45;
+        m.pmTime = 33; m.dashTime = 34; m.wallJumpTime = 35; m.jumpTime = 36;
+        m.weaponTime = 37; m.forcePower = 42; m.jetpackFuel = 43;
+    };
+    auto deadlines = [&](const flyingRespawnMovement_t &m, int expected) {
+        for (int i = 0; i < NUM_FORCE_POWERS; ++i) {
+            BOOST_CHECK_EQUAL(m.forcePowerDebounce[i], expected);
+            BOOST_CHECK_EQUAL(m.forcePowerDuration[i], expected);
+        }
+        for (auto field : scalars) BOOST_CHECK_EQUAL(m.*field, expected);
+    };
+    auto unchanged = [&](const flyingRespawnMovement_t &m, int commandTime, int lastOnGround) {
+        BOOST_CHECK_EQUAL(m.commandTime, commandTime); BOOST_CHECK_EQUAL(m.lastOnGround, lastOnGround);
+        BOOST_CHECK_EQUAL(m.origin[0], 12); BOOST_CHECK_EQUAL(m.viewangles[YAW], 45);
+        BOOST_CHECK_EQUAL(m.pmTime, 33); BOOST_CHECK_EQUAL(m.dashTime, 34);
+        BOOST_CHECK_EQUAL(m.wallJumpTime, 35); BOOST_CHECK_EQUAL(m.jumpTime, 36);
+        BOOST_CHECK_EQUAL(m.weaponTime, 37); BOOST_CHECK_EQUAL(m.forcePower, 42);
+        BOOST_CHECK_EQUAL(m.jetpackFuel, 43);
+    };
+    for (int value : {0, 1400, INT_MAX - 5}) {
+        FlyingPlayback h;
+        auto &source = h.state.automaticCheckpoint.snapshot.movement;
+        seed(source, value);
+        BOOST_REQUIRE(G_FlyingRespawn_BeginCheckpointReplay(&h.state, 2000, qtrue));
+        flyingRespawnSnapshot_t contact = {};
+        BOOST_REQUIRE(G_FlyingRespawn_HandleSecondPress(&h.state, 2050, &contact));
+        deadlines(contact.movement, value == 0 ? 0 : value == 1400 ? 2400 : INT_MAX);
+        unchanged(contact.movement, 2050, 1950);
+
+        flyingRespawnMovement_t movement = {};
+        seed(movement, value);
+        const auto original = movement;
+        // Active, non-static, early, and exactly-on-time release must be no-ops.
+        G_FlyingRespawn_ReleaseStaticDeadlines(&h.state, 2250, &movement);
+        BOOST_CHECK_EQUAL(memcmp(&original, &movement, sizeof(movement)), 0);
+        h.state.replay.active = qfalse; h.state.replay.staticReplay = qfalse;
+        G_FlyingRespawn_ReleaseStaticDeadlines(&h.state, 2250, &movement);
+        BOOST_CHECK_EQUAL(memcmp(&original, &movement, sizeof(movement)), 0);
+        h.state.replay.staticReplay = qtrue;
+        G_FlyingRespawn_ReleaseStaticDeadlines(&h.state, 2199, &movement);
+        BOOST_CHECK_EQUAL(memcmp(&original, &movement, sizeof(movement)), 0);
+        G_FlyingRespawn_ReleaseStaticDeadlines(&h.state, 2200, &movement);
+        BOOST_CHECK_EQUAL(memcmp(&original, &movement, sizeof(movement)), 0);
+        G_FlyingRespawn_ReleaseStaticDeadlines(&h.state, 2250, &movement);
+        deadlines(movement, value == 0 ? 0 : value == 1400 ? 1450 : INT_MAX);
+        unchanged(movement, 1200, 1100);
+    }
+}
